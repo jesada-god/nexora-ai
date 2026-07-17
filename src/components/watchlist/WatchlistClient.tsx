@@ -1,0 +1,206 @@
+'use client';
+
+import { useEffect, useMemo, useRef, useState, useTransition } from 'react';
+import { useRouter } from 'next/navigation';
+import { ArrowDownRight, ArrowUpRight, Plus, Search, Star, Trash2, X } from 'lucide-react';
+import { addWatchlistItemAction, removeWatchlistItemAction } from '@/app/watchlist/actions';
+import { Button } from '@/src/components/ui/Button';
+import { EmptyState } from '@/src/components/ui/EmptyState';
+import { useToast } from '@/src/components/ui/Toast';
+import type { MarketDataEnvelope, SymbolSearchResult } from '@/src/lib/market-data/types';
+import type { WatchlistItemRecord, WatchlistQuote, WatchlistRecord } from '@/src/lib/watchlist/types';
+
+type SortKey = 'newest' | 'symbol' | 'price' | 'change';
+
+function displayTime(value: string | null) {
+  if (!value) return 'ไม่ทราบเวลา';
+  return new Intl.DateTimeFormat('th-TH', {
+    dateStyle: 'medium', timeStyle: 'short', timeZone: 'Asia/Bangkok',
+  }).format(new Date(value));
+}
+
+function freshnessLabel(quote: WatchlistQuote | undefined) {
+  if (!quote || quote.freshness.status === 'unavailable') return 'Quote ไม่พร้อมใช้งาน';
+  const labels: Record<string, string> = {
+    realtime: 'เรียลไทม์', delayed: 'ล่าช้า', 'end-of-day': 'ราคาปิด', cached: 'แคช', unknown: 'ไม่ทราบ',
+  };
+  return `${labels[quote.freshness.status] ?? quote.freshness.status} · ${displayTime(quote.freshness.asOf)}`;
+}
+
+export function WatchlistClient({ watchlist, initialQuotes }: {
+  watchlist: WatchlistRecord;
+  initialQuotes: Record<string, WatchlistQuote>;
+}) {
+  const router = useRouter();
+  const { addToast } = useToast();
+  const [items, setItems] = useState(watchlist.items);
+  const [quotes, setQuotes] = useState(initialQuotes);
+  const [sort, setSort] = useState<SortKey>('newest');
+  const [query, setQuery] = useState('');
+  const [results, setResults] = useState<SymbolSearchResult[]>([]);
+  const [searching, setSearching] = useState(false);
+  const [searchError, setSearchError] = useState('');
+  const [pendingSymbols, setPendingSymbols] = useState<Set<string>>(new Set());
+  const [, startTransition] = useTransition();
+  const searchRequest = useRef(0);
+
+  const existingSymbols = useMemo(() => new Set(items.map((item) => item.symbol)), [items]);
+  const sortedItems = useMemo(() => [...items].sort((a, b) => {
+    if (sort === 'symbol') return a.symbol.localeCompare(b.symbol);
+    if (sort === 'price') return (quotes[b.symbol]?.quote?.price ?? -Infinity) - (quotes[a.symbol]?.quote?.price ?? -Infinity);
+    if (sort === 'change') return (quotes[b.symbol]?.quote?.changePercent ?? -Infinity) - (quotes[a.symbol]?.quote?.changePercent ?? -Infinity);
+    return b.createdAt.localeCompare(a.createdAt);
+  }), [items, quotes, sort]);
+
+  useEffect(() => {
+    const normalized = query.trim();
+    if (!normalized) return;
+    const requestId = ++searchRequest.current;
+    const controller = new AbortController();
+    const timer = window.setTimeout(async () => {
+      setSearching(true); setSearchError('');
+      try {
+        const response = await fetch(`/api/market/search?q=${encodeURIComponent(normalized)}`, { signal: controller.signal });
+        const payload = await response.json() as MarketDataEnvelope<SymbolSearchResult[]>;
+        if (requestId !== searchRequest.current) return;
+        if (!response.ok || !payload.data) throw new Error(payload.error?.message ?? 'Search unavailable');
+        setResults(payload.data);
+      } catch (error) {
+        if (controller.signal.aborted) return;
+        if (requestId === searchRequest.current) {
+          setResults([]); setSearchError(error instanceof Error ? error.message : 'ค้นหาไม่สำเร็จ');
+        }
+      } finally {
+        if (requestId === searchRequest.current) setSearching(false);
+      }
+    }, 350);
+    return () => { window.clearTimeout(timer); controller.abort(); };
+  }, [query]);
+
+  function markPending(symbol: string, pending: boolean) {
+    setPendingSymbols((current) => {
+      const next = new Set(current);
+      if (pending) next.add(symbol); else next.delete(symbol);
+      return next;
+    });
+  }
+
+  function updateQuery(value: string) {
+    setQuery(value);
+    if (!value.trim()) {
+      searchRequest.current += 1;
+      setResults([]);
+      setSearchError('');
+      setSearching(false);
+    }
+  }
+
+  function addSymbol(symbol: string) {
+    if (existingSymbols.has(symbol) || pendingSymbols.has(symbol)) return;
+    markPending(symbol, true);
+    startTransition(async () => {
+      const result = await addWatchlistItemAction(symbol);
+      markPending(symbol, false);
+      if (!result.ok || !result.item) {
+        addToast({ title: 'เพิ่มไม่สำเร็จ', message: result.ok ? undefined : result.message, type: 'error' });
+        return;
+      }
+      setItems((current) => [result.item as WatchlistItemRecord, ...current]);
+      setQuery(''); setResults([]);
+      addToast({ title: `เพิ่ม ${symbol} แล้ว`, type: 'success' });
+      // Quote is independent from the persisted item. Failure only changes its display state.
+      try {
+        const response = await fetch(`/api/market/quote/${encodeURIComponent(symbol)}`);
+        const payload = await response.json() as MarketDataEnvelope<NonNullable<WatchlistQuote['quote']>>;
+        setQuotes((current) => ({ ...current, [symbol]: {
+          quote: payload.data,
+          freshness: payload.meta.freshness,
+        } }));
+      } catch {
+        setQuotes((current) => ({ ...current, [symbol]: {
+          quote: null, freshness: { status: 'unavailable', asOf: null, maxAgeSeconds: null },
+        } }));
+      }
+    });
+  }
+
+  function removeSymbol(item: WatchlistItemRecord) {
+    if (pendingSymbols.has(item.symbol)) return;
+    const previousItems = items;
+    setItems((current) => current.filter((candidate) => candidate.id !== item.id));
+    markPending(item.symbol, true);
+    startTransition(async () => {
+      const result = await removeWatchlistItemAction(item.symbol);
+      markPending(item.symbol, false);
+      if (!result.ok) {
+        setItems(previousItems);
+        addToast({ title: 'ลบไม่สำเร็จ', message: result.message, type: 'error' });
+      } else {
+        addToast({ title: `ลบ ${item.symbol} แล้ว`, type: 'success' });
+      }
+    });
+  }
+
+  return (
+    <div className="space-y-5">
+      <section className="rounded-2xl border border-slate-800 bg-[#151B28] p-4 shadow-xl sm:p-5">
+        <label htmlFor="watchlist-search" className="mb-2 block text-sm font-semibold text-white">เพิ่ม Symbol</label>
+        <div className="relative">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" size={18} />
+          <input id="watchlist-search" value={query} onChange={(event) => updateQuery(event.target.value)}
+            placeholder="ค้นหา Symbol หรือชื่อบริษัท"
+            className="min-h-12 w-full rounded-xl border border-slate-700 bg-slate-950/40 pl-10 pr-12 text-base text-white placeholder:text-slate-500 focus:border-[#D4FF00] focus:outline-none" />
+          {query && <button aria-label="ล้างคำค้น" onClick={() => updateQuery('')} className="absolute right-1 top-1/2 flex min-h-11 min-w-11 -translate-y-1/2 items-center justify-center text-slate-400 hover:text-white"><X size={18} /></button>}
+        </div>
+        {query.trim() && (
+          <div className="mt-3 max-h-72 overflow-y-auto rounded-xl border border-slate-800 bg-slate-950/40">
+            {searching && <p className="p-4 text-sm text-slate-400">กำลังค้นหา…</p>}
+            {!searching && searchError && <p className="p-4 text-sm text-amber-300">{searchError} — Watchlist ที่บันทึกไว้ไม่ได้รับผลกระทบ</p>}
+            {!searching && !searchError && results.length === 0 && <p className="p-4 text-sm text-slate-400">ไม่พบผลลัพธ์</p>}
+            {!searching && results.map((result) => {
+              const added = existingSymbols.has(result.symbol);
+              const pending = pendingSymbols.has(result.symbol);
+              return <div key={result.symbol} className="flex min-w-0 items-center gap-3 border-b border-slate-800/70 p-3 last:border-0">
+                <button onClick={() => router.push(`/stock/${encodeURIComponent(result.symbol)}`)} className="min-w-0 flex-1 text-left">
+                  <span className="block font-bold text-white">{result.symbol}</span>
+                  <span className="block truncate text-xs text-slate-400">{result.name} · {result.region}</span>
+                </button>
+                <Button size="sm" disabled={added || pending} onClick={() => addSymbol(result.symbol)} className="min-w-24 shrink-0">
+                  <Plus size={16} /> {added ? 'เพิ่มแล้ว' : pending ? 'กำลังเพิ่ม' : 'เพิ่ม'}
+                </Button>
+              </div>;
+            })}
+          </div>
+        )}
+      </section>
+
+      <section className="overflow-hidden rounded-2xl border border-slate-800 bg-[#151B28] shadow-xl">
+        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-800 p-4 sm:px-5">
+          <div className="min-w-0"><h2 className="truncate font-semibold text-white">{watchlist.name}</h2><p className="text-xs text-slate-500">{items.length} รายการ · ซิงก์กับบัญชีของคุณ</p></div>
+          <label className="flex items-center gap-2 text-xs text-slate-400">เรียงตาม
+            <select value={sort} onChange={(event) => setSort(event.target.value as SortKey)} className="min-h-11 rounded-lg border border-slate-700 bg-slate-900 px-3 text-sm text-white">
+              <option value="newest">เพิ่มล่าสุด</option><option value="symbol">Symbol</option><option value="price">ราคา</option><option value="change">การเปลี่ยนแปลง</option>
+            </select>
+          </label>
+        </div>
+        {sortedItems.length === 0 ? <EmptyState icon={Star} title="Watchlist ยังว่าง" description="ค้นหาและเพิ่มหุ้นที่คุณสนใจจากช่องด้านบน" /> :
+          <div className="divide-y divide-slate-800/60">{sortedItems.map((item) => {
+            const data = quotes[item.symbol]; const quote = data?.quote; const change = quote?.changePercent;
+            return <article key={item.id} className="flex min-w-0 items-center gap-3 p-4 hover:bg-slate-800/30 sm:px-5">
+              <button onClick={() => router.push(`/stock/${encodeURIComponent(item.symbol)}`)} className="min-w-0 flex-1 text-left">
+                <span className="block font-bold text-white hover:text-[#D4FF00]">{item.symbol}</span>
+                <span className={`block truncate text-xs ${quote ? 'text-slate-500' : 'text-amber-300'}`}>{freshnessLabel(data)}</span>
+              </button>
+              <button onClick={() => router.push(`/stock/${encodeURIComponent(item.symbol)}`)} className="shrink-0 text-right">
+                <span className="block font-mono text-sm font-medium text-white">{quote ? `${quote.price.toLocaleString(undefined, { maximumFractionDigits: 4 })}` : '—'}</span>
+                <span className={`flex items-center justify-end text-xs font-bold ${change == null ? 'text-slate-500' : change >= 0 ? 'text-emerald-500' : 'text-red-500'}`}>
+                  {change != null && (change >= 0 ? <ArrowUpRight size={13} /> : <ArrowDownRight size={13} />)}{change == null ? 'ไม่มี quote' : `${Math.abs(change).toFixed(2)}%`}
+                </span>
+              </button>
+              <button aria-label={`ลบ ${item.symbol}`} disabled={pendingSymbols.has(item.symbol)} onClick={() => removeSymbol(item)} className="flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-lg text-slate-500 hover:bg-red-500/10 hover:text-red-400 disabled:opacity-40"><Trash2 size={18} /></button>
+            </article>;
+          })}</div>}
+      </section>
+    </div>
+  );
+}

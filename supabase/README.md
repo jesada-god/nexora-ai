@@ -13,4 +13,4 @@
 
 Use only the publishable/anon project key in `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`. A Service Role key is neither required nor used by this application.
 
-The SQL migration enables RLS on `profiles` and `user_settings`; policies compare each row to `auth.uid()`. It also exposes `delete_own_account()` only to authenticated users, and that function can delete only the caller's own `auth.users` row.
+The SQL migrations enable RLS on user-owned tables; policies compare each row to `auth.uid()`. Apply migrations in filename order. Phase 3 adds one default `watchlists` row per user and parent-owner policies for every `watchlist_items` operation. It also enforces unique `(watchlist_id, symbol)` values in the database.

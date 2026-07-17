@@ -53,12 +53,28 @@ export interface Database {
         };
         Relationships: [];
       };
+      watchlists: {
+        Row: { id: string; user_id: string; name: string; created_at: string; updated_at: string };
+        Insert: { id?: string; user_id: string; name?: string; created_at?: string; updated_at?: string };
+        Update: { name?: string; updated_at?: string };
+        Relationships: [];
+      };
+      watchlist_items: {
+        Row: { id: string; watchlist_id: string; symbol: string; created_at: string };
+        Insert: { id?: string; watchlist_id: string; symbol: string; created_at?: string };
+        Update: { symbol?: string };
+        Relationships: [];
+      };
     };
     Views: Record<string, never>;
     Functions: {
       delete_own_account: {
         Args: Record<PropertyKey, never>;
         Returns: undefined;
+      };
+      get_or_create_default_watchlist: {
+        Args: Record<PropertyKey, never>;
+        Returns: string;
       };
     };
     Enums: Record<string, never>;

@@ -14,17 +14,19 @@ const optionalSecret = z.preprocess(
 const serverEnvSchema = z.object({
   APP_URL: optionalUrl,
   GEMINI_API_KEY: optionalSecret,
+  ALPHA_VANTAGE_API_KEY: optionalSecret,
 });
 
 const parsedServerEnv = serverEnvSchema.safeParse({
   APP_URL: process.env.APP_URL,
   GEMINI_API_KEY: process.env.GEMINI_API_KEY,
+  ALPHA_VANTAGE_API_KEY: process.env.ALPHA_VANTAGE_API_KEY,
 });
 
 // Missing or invalid optional integrations must not crash the application.
 export const serverEnv = parsedServerEnv.success
   ? parsedServerEnv.data
-  : { APP_URL: undefined, GEMINI_API_KEY: undefined };
+  : { APP_URL: undefined, GEMINI_API_KEY: undefined, ALPHA_VANTAGE_API_KEY: undefined };
 
 export const serverEnvIssues = parsedServerEnv.success
   ? []

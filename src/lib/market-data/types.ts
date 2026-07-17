@@ -1,0 +1,141 @@
+import { z } from 'zod';
+
+const finiteNumber = z.number().finite();
+const nullableNumber = finiteNumber.nullable();
+
+export const freshnessSchema = z.object({
+  status: z.enum(['realtime', 'delayed', 'end-of-day', 'cached', 'unknown', 'unavailable']),
+  asOf: z.iso.datetime().nullable(),
+  maxAgeSeconds: z.number().int().nonnegative().nullable(),
+});
+
+export type DataFreshness = z.infer<typeof freshnessSchema>;
+
+export const symbolSearchResultSchema = z.object({
+  symbol: z.string(),
+  name: z.string(),
+  assetType: z.string(),
+  region: z.string(),
+  currency: z.string().nullable(),
+  marketOpen: z.string().nullable(),
+  marketClose: z.string().nullable(),
+  timezone: z.string().nullable(),
+  matchScore: z.number().min(0).max(1).nullable(),
+});
+
+export const quoteSchema = z.object({
+  symbol: z.string(),
+  price: finiteNumber,
+  open: nullableNumber,
+  high: nullableNumber,
+  low: nullableNumber,
+  previousClose: nullableNumber,
+  change: nullableNumber,
+  changePercent: nullableNumber,
+  volume: z.number().int().nonnegative().nullable(),
+  latestTradingDay: z.iso.date().nullable(),
+});
+
+export const historicalPriceSchema = z.object({
+  date: z.iso.date(),
+  open: finiteNumber,
+  high: finiteNumber,
+  low: finiteNumber,
+  close: finiteNumber,
+  volume: z.number().int().nonnegative(),
+});
+
+export const historicalPricesSchema = z.object({
+  symbol: z.string(),
+  range: z.enum(['1m', '3m', '6m', '1y', '5y', 'max']),
+  interval: z.literal('1d'),
+  prices: z.array(historicalPriceSchema),
+});
+
+export const companyProfileSchema = z.object({
+  symbol: z.string(),
+  name: z.string(),
+  description: z.string().nullable(),
+  exchange: z.string().nullable(),
+  currency: z.string().nullable(),
+  country: z.string().nullable(),
+  sector: z.string().nullable(),
+  industry: z.string().nullable(),
+  website: z.url().nullable(),
+  marketCapitalization: nullableNumber,
+  employees: z.number().int().nonnegative().nullable(),
+  fiscalYearEnd: z.string().nullable(),
+  latestQuarter: z.iso.date().nullable(),
+});
+
+export const marketStatusSchema = z.object({
+  marketType: z.string(),
+  region: z.string(),
+  primaryExchanges: z.array(z.string()),
+  localOpen: z.string().nullable(),
+  localClose: z.string().nullable(),
+  currentStatus: z.enum(['open', 'closed', 'unknown']),
+  notes: z.string().nullable(),
+});
+
+export const marketOverviewSchema = z.object({
+  markets: z.array(marketStatusSchema),
+});
+
+export type SymbolSearchResult = z.infer<typeof symbolSearchResultSchema>;
+export type Quote = z.infer<typeof quoteSchema>;
+export type HistoricalPrice = z.infer<typeof historicalPriceSchema>;
+export type HistoricalPrices = z.infer<typeof historicalPricesSchema>;
+export type HistoricalRange = HistoricalPrices['range'];
+export type CompanyProfile = z.infer<typeof companyProfileSchema>;
+export type MarketOverview = z.infer<typeof marketOverviewSchema>;
+
+export interface ProviderResult<T> {
+  data: T;
+  freshness: DataFreshness;
+}
+
+export interface MarketDataProvider {
+  readonly id: string;
+  search(query: string): Promise<ProviderResult<SymbolSearchResult[]>>;
+  getQuote(symbol: string): Promise<ProviderResult<Quote>>;
+  getHistoricalPrices(symbol: string, range: HistoricalRange): Promise<ProviderResult<HistoricalPrices>>;
+  getCompanyProfile(symbol: string): Promise<ProviderResult<CompanyProfile>>;
+  getMarketOverview(): Promise<ProviderResult<MarketOverview>>;
+}
+
+export const marketDataErrorCodeSchema = z.enum([
+  'provider-not-configured',
+  'invalid-request',
+  'not-found',
+  'rate-limited',
+  'timeout',
+  'provider-unauthorized',
+  'upstream-unavailable',
+  'invalid-provider-response',
+  'internal-error',
+]);
+
+export type MarketDataErrorCode = z.infer<typeof marketDataErrorCodeSchema>;
+
+export const responseMetaSchema = z.object({
+  provider: z.string().nullable(),
+  timestamp: z.iso.datetime(),
+  freshness: freshnessSchema,
+});
+
+export const apiErrorSchema = z.object({
+  code: marketDataErrorCodeSchema,
+  message: z.string(),
+  retryable: z.boolean(),
+  retryAfterSeconds: z.number().int().positive().optional(),
+  issues: z.array(z.object({ path: z.string(), message: z.string() })).optional(),
+});
+
+export type MarketDataApiError = z.infer<typeof apiErrorSchema>;
+
+export interface MarketDataEnvelope<T> {
+  data: T | null;
+  error?: MarketDataApiError;
+  meta: z.infer<typeof responseMetaSchema>;
+}
