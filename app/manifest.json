@@ -1,0 +1,17 @@
+{
+  "name": "Nexora AI",
+  "short_name": "Nexora AI",
+  "description": "Intelligent Investment Analytics",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0A0E17",
+  "theme_color": "#0A0E17",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

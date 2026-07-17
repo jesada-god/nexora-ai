@@ -1,0 +1,72 @@
+@import "tailwindcss";
+
+@theme {
+  --color-primary: #D4FF00; /* Neon Lime Green */
+  --color-primary-dark: #649e0c;
+  --color-primary-light: #a4e83a;
+  
+  --color-bg-base: #0A0E17; /* Very dark navy/black */
+  --color-bg-card: #151B28; /* Dark grey/blue card background */
+  --color-bg-card-hover: #1e293b;
+  
+  --color-text-main: #FFFFFF;
+  --color-text-muted: #94a3b8; /* Grey blue text */
+  
+  --color-positive: #10B981; /* Green */
+  --color-negative: #EF4444; /* Red */
+  
+  --color-accent-purple: #A855F7;
+  --color-accent-blue: #3B82F6;
+  --color-accent-orange: #F97316;
+  
+  --color-border: #1e293b;
+}
+
+@layer base {
+  body {
+    background-color: var(--color-bg-base);
+    color: var(--color-text-main);
+    font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans", sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji";
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    min-width: 320px;
+    overflow-x: hidden;
+  }
+
+  button, a, input, select, textarea {
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  button {
+    min-height: 44px;
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--color-primary);
+    outline-offset: 3px;
+  }
+
+  img, svg, canvas {
+    max-width: 100%;
+  }
+}
+
+/* Utilities for tabular numbers */
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Keep legacy compact labels readable without changing their hierarchy. */
+.text-\[10px\] {
+  font-size: 0.75rem;
+  line-height: 1rem;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
