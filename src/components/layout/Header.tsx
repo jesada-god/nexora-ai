@@ -19,7 +19,7 @@ export default function Header({ title, subtitle, status }: HeaderProps) {
   const unreadCount = useStore(state => state.notifications.filter(n => !n.read).length);
 
   return (
-    <header className="min-h-16 border-b border-slate-800 flex items-center justify-between gap-3 px-4 sm:px-6 lg:px-8 py-2 bg-[#0A0E17]/80 backdrop-blur-md sticky top-0 z-40">
+    <header className="min-h-16 border-b border-slate-800 flex items-center justify-between gap-3 px-4 sm:px-6 lg:px-8 pt-[max(0.5rem,env(safe-area-inset-top))] pb-2 bg-[#0A0E17]/80 backdrop-blur-md sticky top-0 z-40">
       <div className="flex min-w-0 items-center gap-3 sm:gap-4">
         <div className="lg:hidden shrink-0 w-9 h-9 rounded-lg bg-[#D4FF00] text-black font-black flex items-center justify-center" aria-label={appConfig.name}>N</div>
         <div>

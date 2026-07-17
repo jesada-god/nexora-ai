@@ -1,4 +1,15 @@
 import { Asset, PortfolioItem } from '../types';
+import type { DataFreshness } from '../types/api';
+
+/**
+ * DEMO FIXTURE: bundled with the UI for development and product demonstrations.
+ * Values are fictional/static and must never be presented as live market data.
+ */
+export const demoDataInfo = {
+  classification: 'demo',
+  freshness: 'demo' as DataFreshness,
+  label: 'ข้อมูลสาธิต',
+} as const;
 
 export const mockMarketIndices: Asset[] = [
   {

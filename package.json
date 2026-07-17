@@ -7,6 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint .",
+    "typecheck": "tsc --noEmit",
     "clean": "next clean"
   },
   "dependencies": {
@@ -25,6 +26,7 @@
     "react-dom": "^19.2.1",
     "recharts": "^3.9.2",
     "tailwind-merge": "^3.3.1",
+    "zod": "^4.4.3",
     "zustand": "^5.0.14"
   },
   "devDependencies": {
