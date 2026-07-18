@@ -7,6 +7,7 @@ import { Select } from '@/src/components/ui/Select';
 import { appConfig } from '@/src/config/app';
 import { createClient } from '@/src/lib/supabase/server';
 import { saveSettingsAction } from './actions';
+import { DevicePreferences } from '@/src/components/settings/DevicePreferences';
 
 export default async function SettingsPage({ searchParams }: { searchParams: Promise<Record<string, string | string[] | undefined>> }) {
   const params = await searchParams;
@@ -29,6 +30,7 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
           <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between"><label htmlFor="language" className="text-white font-medium">ภาษา</label><div className="w-full sm:w-36"><Select id="language" name="language" defaultValue={settings.language}><option value="th">ไทย</option><option value="en">English</option></Select></div></div>
           <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between"><div><p className="text-white font-medium">ธีมสี</p><p className="text-xs text-slate-400">{appConfig.name} Technical Dark</p></div><div className="w-full sm:w-36"><Select disabled defaultValue="dark"><option value="dark">Dark/Neon</option></Select></div></div>
         </div></section>
+        <DevicePreferences />
         <section className="space-y-4"><h2 className="text-lg font-semibold text-white">การแจ้งเตือน</h2><div className="bg-[#151B28] rounded-2xl border border-slate-800 p-5 sm:p-6 space-y-4 text-slate-300 text-sm">
           <label className="flex min-h-11 items-center justify-between gap-4"><span>ราคาถึงเป้าหมาย</span><input name="priceAlertsEnabled" type="checkbox" defaultChecked={settings.price_alerts_enabled} className="h-5 w-5 accent-[#D4FF00]" /></label>
           <label className="flex min-h-11 items-center justify-between gap-4"><span>สรุปตลาดรายวัน</span><input name="dailySummaryEnabled" type="checkbox" defaultChecked={settings.daily_summary_enabled} className="h-5 w-5 accent-[#D4FF00]" /></label>

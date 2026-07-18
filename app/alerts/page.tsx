@@ -1,9 +1,11 @@
-import { BellRing } from 'lucide-react';
 import Header from '@/src/components/layout/Header';
-import { EmptyState } from '@/src/components/ui/EmptyState';
+import { AlertsClient } from '@/src/components/alerts/AlertsClient';
+import { createClient } from '@/src/lib/supabase/server';
+import { AlertsRepository } from '@/src/lib/alerts/repository';
 
-export default function AlertsPage() {
-  return (
-    <div><Header title="การแจ้งเตือนราคา (Alerts)" subtitle="พื้นที่ส่วนตัวของบัญชีคุณ" /><div className="mx-auto max-w-3xl p-4 md:p-8"><EmptyState icon={BellRing} title="ยังไม่มีการแจ้งเตือนราคา" description="ระบบจัดเก็บ Alerts จริงจะเพิ่มใน Phase ถัดไป โดยหน้านี้ได้รับการป้องกันด้วย Supabase Auth แล้ว" /></div></div>
-  );
+export default async function AlertsPage() {
+  const client = await createClient(); if (!client) return null;
+  const { data: { user } } = await client.auth.getUser(); if (!user) return null;
+  const alerts = await new AlertsRepository(client, user.id).list();
+  return <div><Header title="การแจ้งเตือนราคา (Alerts)" subtitle="ประเมินเมื่อเปิดหรือรีเฟรชแอป ไม่ได้ตรวจสอบต่อเนื่อง" /><div className="mx-auto max-w-4xl p-4 md:p-8"><AlertsClient initialAlerts={alerts} /></div></div>;
 }

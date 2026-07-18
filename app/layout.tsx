@@ -12,6 +12,10 @@ export const metadata: Metadata = {
   },
   description: appConfig.description,
   manifest: '/manifest.json',
+  icons: {
+    icon: [{ url: '/icon.svg', type: 'image/svg+xml' }, { url: '/icons/icon-192.png', sizes: '192x192', type: 'image/png' }],
+    apple: [{ url: '/icons/icon-192.png', sizes: '192x192', type: 'image/png' }],
+  },
   appleWebApp: { capable: true, title: appConfig.shortName, statusBarStyle: 'black-translucent' },
   formatDetection: { telephone: false },
 };

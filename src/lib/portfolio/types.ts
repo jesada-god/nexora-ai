@@ -60,4 +60,4 @@ export interface PortfolioSummary {
   todayChangePercent: number;
 }
 
-export interface MarketPriceInput { price: string | number; previousClose?: string | number | null; cached?: boolean }
+export interface MarketPriceInput { price: string | number; previousClose?: string | number | null; cached?: boolean; stale?: boolean; asOf?: string | null }

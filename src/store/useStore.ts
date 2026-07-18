@@ -8,6 +8,12 @@ interface AppState {
   toggleCurrency: () => void;
   showBalances: boolean;
   toggleBalances: () => void;
+  privacyMode: boolean;
+  setPrivacyMode: (enabled: boolean) => void;
+  dataSaver: boolean;
+  setDataSaver: (enabled: boolean) => void;
+  reducedMotion: boolean;
+  setReducedMotion: (enabled: boolean) => void;
   
   watchlists: Watchlist[];
   activeWatchlistId: string;
@@ -40,6 +46,12 @@ export const useStore = create<AppState>()(
       toggleCurrency: () => set((state) => ({ currency: state.currency === 'THB' ? 'USD' : 'THB' })),
       showBalances: true,
       toggleBalances: () => set((state) => ({ showBalances: !state.showBalances })),
+      privacyMode: false,
+      setPrivacyMode: (privacyMode) => set({ privacyMode }),
+      dataSaver: false,
+      setDataSaver: (dataSaver) => set({ dataSaver }),
+      reducedMotion: false,
+      setReducedMotion: (reducedMotion) => set({ reducedMotion }),
       
       watchlists: [
         { id: '1', name: 'รายการโปรด', symbols: ['AAPL', 'NVDA', 'DELTA'] },

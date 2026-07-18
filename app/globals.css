@@ -76,3 +76,18 @@
     transition-duration: 0.01ms !important;
   }
 }
+
+html[data-reduce-motion] *,
+html[data-reduce-motion] *::before,
+html[data-reduce-motion] *::after {
+  scroll-behavior: auto !important;
+  animation-duration: 0.01ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.01ms !important;
+}
+
+@supports (height: 100svh) {
+  .keyboard-safe-modal {
+    max-height: 100svh;
+  }
+}

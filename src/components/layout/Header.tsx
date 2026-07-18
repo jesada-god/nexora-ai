@@ -2,8 +2,8 @@
 import { Search, Bell, User } from 'lucide-react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { useStore } from '@/src/store/useStore';
 import { appConfig } from '@/src/config/app';
+import { useEffect, useState } from 'react';
 
 interface HeaderProps {
   title: string;
@@ -16,7 +16,12 @@ interface HeaderProps {
 
 export default function Header({ title, subtitle, status }: HeaderProps) {
   const router = useRouter();
-  const unreadCount = useStore(state => state.notifications.filter(n => !n.read).length);
+  const [unreadCount, setUnreadCount] = useState(0);
+  useEffect(() => {
+    const load = () => { void fetch('/api/notifications/unread-count').then((response) => response.json()).then((data) => setUnreadCount(Number(data.count) || 0)).catch(() => undefined); };
+    load(); window.addEventListener('notifications-updated', load);
+    return () => window.removeEventListener('notifications-updated', load);
+  }, []);
 
   return (
     <header className="min-h-16 border-b border-slate-800 flex items-center justify-between gap-3 px-4 sm:px-6 lg:px-8 pt-[max(0.5rem,env(safe-area-inset-top))] pb-2 bg-[#0A0E17]/80 backdrop-blur-md sticky top-0 z-40">
@@ -52,21 +57,21 @@ export default function Header({ title, subtitle, status }: HeaderProps) {
           <input 
             type="text" 
             placeholder="ค้นหาหุ้น... (Symbol, Name)" 
-            className="bg-[#151B28] border border-slate-700 text-xs px-4 py-2 w-64 rounded-lg focus:outline-none focus:border-[#D4FF00] pointer-events-none" 
+            className="min-h-11 w-64 rounded-lg border border-slate-700 bg-[#151B28] px-4 py-2 text-xs focus:border-[#D4FF00] focus:outline-none pointer-events-none"
             readOnly
           />
           <kbd className="absolute right-2 top-1.5 px-1.5 py-0.5 bg-slate-800 text-[10px] text-slate-500 border border-slate-700 rounded">⌘K</kbd>
         </div>
         <div className="flex items-center gap-2 md:gap-3">
           <button 
-            className="p-2 text-slate-400 hover:text-white hover:bg-slate-800 rounded-full transition-colors md:hidden"
+            className="flex min-h-11 min-w-11 items-center justify-center rounded-full text-slate-400 transition-colors hover:bg-slate-800 hover:text-white md:hidden"
             onClick={() => router.push('/search')}
             aria-label="ค้นหา"
           >
             <Search size={20} />
           </button>
           <button 
-            className="relative p-2 text-slate-400 hover:text-white hover:bg-slate-800 rounded-full transition-colors"
+            className="relative flex min-h-11 min-w-11 items-center justify-center rounded-full text-slate-400 transition-colors hover:bg-slate-800 hover:text-white"
             onClick={() => router.push('/notifications')}
             aria-label={`การแจ้งเตือน${unreadCount > 0 ? `ที่ยังไม่ได้อ่าน ${unreadCount} รายการ` : ''}`}
           >

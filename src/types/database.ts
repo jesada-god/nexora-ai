@@ -146,6 +146,18 @@ export interface Database {
         Update: Partial<Database['public']['Tables']['market_fx_rates']['Insert']>;
         Relationships: [];
       };
+      price_alerts: {
+        Row: { id: string; user_id: string; symbol: string; condition: 'above' | 'below' | 'percent_change_up' | 'percent_change_down'; target_value: string; enabled: boolean; cooldown_minutes: number; last_evaluated_at: string | null; last_triggered_at: string | null; created_at: string; updated_at: string };
+        Insert: { id?: string; user_id: string; symbol: string; condition: 'above' | 'below' | 'percent_change_up' | 'percent_change_down'; target_value: string; enabled?: boolean; cooldown_minutes?: number; last_evaluated_at?: string | null; last_triggered_at?: string | null; created_at?: string; updated_at?: string };
+        Update: { symbol?: string; condition?: 'above' | 'below' | 'percent_change_up' | 'percent_change_down'; target_value?: string; enabled?: boolean; cooldown_minutes?: number; last_evaluated_at?: string | null; last_triggered_at?: string | null; updated_at?: string };
+        Relationships: [];
+      };
+      notifications: {
+        Row: { id: string; user_id: string; price_alert_id: string | null; type: 'price_alert' | 'system'; title: string; message: string; metadata: Json; read_at: string | null; created_at: string };
+        Insert: { id?: string; user_id: string; price_alert_id?: string | null; type?: 'price_alert' | 'system'; title: string; message: string; metadata?: Json; read_at?: string | null; created_at?: string };
+        Update: { read_at?: string | null };
+        Relationships: [];
+      };
     };
     Views: Record<string, never>;
     Functions: {
@@ -186,6 +198,7 @@ export interface Database {
       stage_market_instruments: { Args: { input_run_id: string; input_rows: Json }; Returns: number };
       fail_market_instrument_sync: { Args: { input_run_id: string; input_error: Json }; Returns: undefined };
       finalize_market_instrument_sync: { Args: { input_run_id: string; input_failed_count?: number }; Returns: Array<{ inserted: number; updated: number; skipped: number; failed: number }> };
+      trigger_price_alert: { Args: { alert_id: string; observed_price: number; observed_change_percent: number; observed_at: string; notification_title: string; notification_message: string }; Returns: string | null };
     };
     Enums: Record<string, never>;
     CompositeTypes: Record<string, never>;

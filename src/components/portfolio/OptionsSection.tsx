@@ -20,7 +20,7 @@ const statusLabels: Record<OptionStatus, string> = { open: 'Open', closed: 'Clos
 
 function date(value: string) { return new Intl.DateTimeFormat('th-TH', { dateStyle: 'medium' }).format(new Date(`${value}T12:00:00`)); }
 
-export function OptionsSection({ positions, currency, usdThbRate, showBalances }: { positions: OptionPosition[]; currency: SupportedCurrency; usdThbRate: string | null; showBalances: boolean }) {
+export function OptionsSection({ positions, currency, usdThbRate, showBalances, isOnline }: { positions: OptionPosition[]; currency: SupportedCurrency; usdThbRate: string | null; showBalances: boolean; isOnline: boolean }) {
   const router = useRouter(); const { addToast } = useToast(); const [pending, startTransition] = useTransition();
   const [formOpen, setFormOpen] = useState(false); const [editing, setEditing] = useState<OptionPosition | null>(null);
   const [form, setForm] = useState<OptionInput>(emptyForm); const [errors, setErrors] = useState<Record<string, string>>({});
@@ -40,7 +40,7 @@ export function OptionsSection({ positions, currency, usdThbRate, showBalances }
       impliedVolatility: position.impliedVolatility ?? '', delta: position.delta ?? '', theta: position.theta ?? '', note: position.note ?? '', status: position.status, idempotencyKey: position.idempotencyKey }); setFormOpen(true);
   }
   function submit(event: FormEvent) {
-    event.preventDefault(); if (pending) return;
+    event.preventDefault(); if (pending || !isOnline) { if (!isOnline) addToast({ title: 'บันทึกไม่ได้ขณะออฟไลน์', type: 'error' }); return; }
     startTransition(async () => {
       const result = editing ? await updateOptionPositionAction(editing.id, form) : await createOptionPositionAction(form);
       if (!result.ok) { setErrors(result.fields ?? {}); addToast({ title: 'บันทึกสัญญาไม่สำเร็จ', message: result.message, type: 'error' }); return; }
@@ -48,14 +48,14 @@ export function OptionsSection({ positions, currency, usdThbRate, showBalances }
     });
   }
   function confirmClose() {
-    if (!closing || pending) return; startTransition(async () => {
+    if (!closing || pending || !isOnline) return; startTransition(async () => {
       const result = await closeOptionPositionAction(closing.id, closedAt);
       if (!result.ok) { addToast({ title: 'ปิดสัญญาไม่สำเร็จ', message: result.message, type: 'error' }); return; }
       setClosing(null); addToast({ title: 'บันทึกการปิดสัญญาแล้ว', type: 'success' }); router.refresh();
     });
   }
   function confirmDelete() {
-    if (!deleting || pending) return; startTransition(async () => {
+    if (!deleting || pending || !isOnline) return; startTransition(async () => {
       const result = await deleteOptionPositionAction(deleting.id);
       if (!result.ok) { addToast({ title: 'ลบสัญญาไม่สำเร็จ', message: result.message, type: 'error' }); return; }
       setDeleting(null); addToast({ title: 'ลบข้อมูลสัญญาแล้ว', type: 'success' }); router.refresh();
@@ -65,7 +65,7 @@ export function OptionsSection({ positions, currency, usdThbRate, showBalances }
   return <section className="overflow-hidden rounded-2xl border border-slate-800 bg-[#151B28] shadow-xl">
     <div className="flex flex-col gap-4 border-b border-slate-800 p-4 sm:flex-row sm:items-center sm:justify-between sm:px-5">
       <div className="min-w-0"><div className="flex min-w-0 items-center gap-2"><ScrollText aria-hidden="true" className="shrink-0 text-[#D4FF00]" size={20} /><h3 className="min-w-0 font-bold text-white">สัญญาออปชันที่ถืออยู่</h3></div><p className="mt-1 text-xs text-slate-500">รายการจำลองที่คุณบันทึกย้อนหลัง</p></div>
-      <Button onClick={create}><Plus size={17} /> บันทึกสัญญาย้อนหลัง</Button>
+      <Button disabled={!isOnline} onClick={create}><Plus size={17} /> บันทึกสัญญาย้อนหลัง</Button>
     </div>
     <div className="flex gap-3 border-b border-amber-500/20 bg-amber-500/10 p-4 text-xs text-amber-100"><AlertTriangle size={18} className="shrink-0 text-amber-300" /><p>การเพิ่ม แก้ไข หรือ “ปิดสัญญา” เป็นการบันทึกข้อมูลย้อนหลังเท่านั้น ไม่มีการส่งคำสั่งไปตลาดหรือโบรกเกอร์</p></div>
     {positions.length === 0 ? <div className="p-10 text-center"><p className="font-semibold text-white">ยังไม่มีสัญญาออปชันที่บันทึก</p><p className="mt-1 text-sm text-slate-400">เพิ่มข้อมูลสัญญาที่เกิดขึ้นแล้วเพื่อดู DTE และต้นทุนรวม</p></div> :
@@ -79,9 +79,9 @@ export function OptionsSection({ positions, currency, usdThbRate, showBalances }
           <td className="px-3 py-4 text-right">{date(position.openedAt)}</td><td className="px-3 py-4 text-right">{date(position.expirationDate)}</td><td className="px-3 py-4 text-right font-mono">{dte}</td>
           <td className="px-3 py-4 text-right font-mono">{position.impliedVolatility ? `${position.impliedVolatility}%` : '—'}</td><td className="px-3 py-4 text-right font-mono">{position.delta ?? '—'}</td><td className="px-3 py-4 text-right font-mono">{position.theta ?? '—'}</td>
           <td className="px-3 py-4 text-right font-mono font-semibold text-white">{money(calculateOptionTotalCost(position.premiumPerShare, position.contracts))}<span className="ml-2 rounded bg-amber-500/15 px-1.5 py-0.5 text-[10px] text-amber-300">estimated value</span></td><td className="px-3 py-4 text-right"><StatusBadge status={status} /></td>
-          <td className="px-3 py-2"><div className="flex justify-end gap-1"><button aria-label={`แก้ไข ${position.underlyingSymbol}`} className="flex min-h-11 min-w-11 items-center justify-center text-slate-400 hover:text-white" onClick={() => edit(position)}><Edit3 size={16} /></button>
-            {position.status === 'open' && <button className="min-h-11 rounded-lg px-2 text-xs text-[#D4FF00] hover:bg-[#D4FF00]/10" onClick={() => { setClosing(position); setClosedAt(today()); }}>ปิดสัญญา</button>}
-            <button aria-label={`ลบ ${position.underlyingSymbol}`} className="flex min-h-11 min-w-11 items-center justify-center text-slate-400 hover:text-red-400" onClick={() => setDeleting(position)}><Trash2 size={16} /></button></div></td>
+          <td className="px-3 py-2"><div className="flex justify-end gap-1"><button disabled={!isOnline} aria-label={`แก้ไข ${position.underlyingSymbol}`} className="flex min-h-11 min-w-11 items-center justify-center text-slate-400 hover:text-white disabled:opacity-40" onClick={() => edit(position)}><Edit3 size={16} /></button>
+            {position.status === 'open' && <button disabled={!isOnline} className="min-h-11 rounded-lg px-2 text-xs text-[#D4FF00] hover:bg-[#D4FF00]/10 disabled:opacity-40" onClick={() => { setClosing(position); setClosedAt(today()); }}>ปิดสัญญา</button>}
+            <button disabled={!isOnline} aria-label={`ลบ ${position.underlyingSymbol}`} className="flex min-h-11 min-w-11 items-center justify-center text-slate-400 hover:text-red-400 disabled:opacity-40" onClick={() => setDeleting(position)}><Trash2 size={16} /></button></div></td>
         </tr>;
       })}</tbody></table></div>}
 
@@ -100,10 +100,10 @@ export function OptionsSection({ positions, currency, usdThbRate, showBalances }
           <Field label="สถานะที่บันทึก" error={errors.status}><select value={form.status} onChange={(event) => change('status', event.target.value)} className="form-input"><option value="open">Open</option>{editing?.status === 'closed' && <option value="closed">Closed</option>}<option value="cancelled">Cancelled</option></select></Field></div>
         <Field label="หมายเหตุ" error={errors.note}><textarea rows={3} maxLength={500} value={form.note ?? ''} onChange={(event) => change('note', event.target.value)} className="form-input h-auto py-3" /></Field>
         <div className={`rounded-xl border p-4 ${form.optionKind === 'call' ? 'border-emerald-500/30 bg-emerald-500/10' : 'border-red-500/30 bg-red-500/10'}`}><p className="text-xs text-slate-400">Live Total Cost (USD)</p><p className="mt-1 font-mono text-2xl font-bold text-white">{formatPortfolioMoney(totalCost, 'USD', null, true)}</p><p className="text-xs text-slate-500">Premium × {form.contracts || 0} สัญญา × 100</p></div>
-        <div className="sticky bottom-0 flex gap-2 bg-[#151B28] pb-[max(.25rem,env(safe-area-inset-bottom))] pt-2"><Button type="button" variant="outline" className="flex-1" disabled={pending} onClick={() => setFormOpen(false)}>ยกเลิก</Button><Button type="submit" className="flex-1" disabled={pending}>{pending ? 'กำลังบันทึก…' : 'ยืนยันการบันทึก'}</Button></div>
+        <div className="sticky bottom-0 flex gap-2 bg-[#151B28] pb-[max(.25rem,env(safe-area-inset-bottom))] pt-2"><Button type="button" variant="outline" className="flex-1" disabled={pending} onClick={() => setFormOpen(false)}>ยกเลิก</Button><Button type="submit" className="flex-1" disabled={pending || !isOnline}>{pending ? 'กำลังบันทึก…' : isOnline ? 'ยืนยันการบันทึก' : 'ออฟไลน์'}</Button></div>
       </form>
     </Modal>
-    <Modal isOpen={Boolean(closing)} onClose={() => !pending && setClosing(null)} title={`บันทึกปิดสัญญา ${closing?.underlyingSymbol ?? ''}`}><p className="text-sm text-slate-300">เป็นการบันทึกย้อนหลังเท่านั้น ไม่มีการส่งคำสั่งไปตลาดหรือโบรกเกอร์</p><Field label="วันที่ปิดสัญญา"><input type="date" min={closing?.openedAt} max={today()} value={closedAt} onChange={(event) => setClosedAt(event.target.value)} className="form-input mt-4" /></Field><div className="mt-5 flex gap-2"><Button variant="outline" className="flex-1" onClick={() => setClosing(null)}>ยกเลิก</Button><Button className="flex-1" disabled={pending} onClick={confirmClose}>บันทึกการปิด</Button></div></Modal>
+    <Modal isOpen={Boolean(closing)} onClose={() => !pending && setClosing(null)} title={`บันทึกปิดสัญญา ${closing?.underlyingSymbol ?? ''}`}><p className="text-sm text-slate-300">เป็นการบันทึกย้อนหลังเท่านั้น ไม่มีการส่งคำสั่งไปตลาดหรือโบรกเกอร์</p><Field label="วันที่ปิดสัญญา"><input type="date" min={closing?.openedAt} max={today()} value={closedAt} onChange={(event) => setClosedAt(event.target.value)} className="form-input mt-4" /></Field><div className="mt-5 flex gap-2"><Button variant="outline" className="flex-1" onClick={() => setClosing(null)}>ยกเลิก</Button><Button className="flex-1" disabled={pending || !isOnline} onClick={confirmClose}>บันทึกการปิด</Button></div></Modal>
     <Modal isOpen={Boolean(deleting)} onClose={() => !pending && setDeleting(null)} title={`ลบสัญญา ${deleting?.underlyingSymbol ?? ''} หรือไม่`}><p className="text-sm text-slate-300">ข้อมูลสัญญา {deleting?.optionKind.toUpperCase()} และต้นทุนรวมจะถูกนำออกจากกระเป๋าพอร์ตจำลอง การดำเนินการนี้ไม่ส่งผลต่อตลาดหรือโบรกเกอร์</p><div className="mt-5 flex gap-2"><Button variant="outline" className="flex-1" onClick={() => setDeleting(null)}>ยกเลิก</Button><Button className="flex-1 bg-red-500 text-white hover:bg-red-400" disabled={pending} onClick={confirmDelete}>ยืนยันการลบ</Button></div></Modal>
   </section>;
 }

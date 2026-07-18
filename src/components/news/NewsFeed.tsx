@@ -5,6 +5,9 @@ import { ImageOff, Newspaper } from 'lucide-react';
 import { Skeleton } from '@/src/components/ui/Skeleton';
 import type { NewsArticle, NewsPage } from '@/src/lib/news/types';
 import { newsErrorMessage, shouldRenderNewsImage } from './news-policy';
+import { useStore } from '@/src/store/useStore';
+import { useAppActive } from '@/src/hooks/useAppActive';
+import { useOnlineStatus } from '@/src/hooks/useOnlineStatus';
 
 type ApiError = { code: string; message: string; retryable?: boolean; retryAfterSeconds?: number };
 type ApiResponse = { data: NewsPage | null; error?: ApiError; meta?: { timestamp: string } };
@@ -15,19 +18,20 @@ function load(url: string, force = false) {
   const existing = pending.get(url); if (existing) return existing;
   const request = fetch(url).then(async (response) => (await response.json()) as ApiResponse).then((value) => { if (value.data) pages.set(url, { value, savedAt: Date.now() }); return value; }).catch((error) => { if (cached) return cached.value; throw error; }).finally(() => pending.delete(url)); pending.set(url, request); return request;
 }
-function useDataSaver() { const [enabled] = useState(() => typeof navigator !== 'undefined' && Boolean((navigator as Navigator & { connection?: { saveData?: boolean } }).connection?.saveData)); return enabled; }
+function useDataSaver() { const requested = useStore((state) => state.dataSaver); const [networkPreference] = useState(() => typeof navigator !== 'undefined' && Boolean((navigator as Navigator & { connection?: { saveData?: boolean } }).connection?.saveData)); return requested || networkPreference; }
 export function NewsFeed({ symbol, compact = false }: { symbol?: string; compact?: boolean }) {
   const root = useRef<HTMLDivElement>(null); const [ready, setReady] = useState(false); const [items, setItems] = useState<NewsArticle[]>([]); const [cursor, setCursor] = useState<string | null | undefined>(undefined);
   const [loading, setLoading] = useState(false); const [error, setError] = useState<ApiError>(); const [timestamp, setTimestamp] = useState<string>(); const [retryAt, setRetryAt] = useState(0); const [now, setNow] = useState(0); const saveData = useDataSaver();
+  const active = useAppActive(); const isOnline = useOnlineStatus();
   useEffect(() => { const node = root.current; if (!node || typeof IntersectionObserver === 'undefined') { queueMicrotask(() => setReady(true)); return; } const observer = new IntersectionObserver(([entry]) => { if (entry.isIntersecting) { setReady(true); observer.disconnect(); } }, { rootMargin: '200px' }); observer.observe(node); return () => observer.disconnect(); }, []);
   const fetchPage = useCallback(async (next?: string, force = false) => {
-    if (Date.now() < retryAt) return; setLoading(true); const params = new URLSearchParams(); if (symbol) params.set('symbol', symbol); if (next) params.set('cursor', next);
+    if (!active || !isOnline || Date.now() < retryAt) return; setLoading(true); const params = new URLSearchParams(); if (symbol) params.set('symbol', symbol); if (next) params.set('cursor', next);
     try { const result = await load(`/api/news?${params}`, force); if (result.error || !result.data) { const nextError = result.error ?? { code: 'provider-unavailable', message: 'News unavailable', retryable: true }; setError(nextError); if (nextError.retryable) { const currentTime = Date.now(); setNow(currentTime); setRetryAt(currentTime + (nextError.retryAfterSeconds ?? 30) * 1000); } }
       else { setItems((current) => { const map = new Map(next ? current.map((item) => [item.id, item]) : []); result.data!.articles.forEach((item) => map.set(item.id, item)); return [...map.values()]; }); setCursor(result.data.nextCursor); setTimestamp(result.meta?.timestamp); setError(undefined); }
     } catch { const currentTime = Date.now(); setNow(currentTime); setError({ code: 'provider-unavailable', message: 'News unavailable', retryable: true }); setRetryAt(currentTime + 30_000); } finally { setLoading(false); }
-  }, [retryAt, symbol]);
-  useEffect(() => { if (ready) queueMicrotask(() => void fetchPage()); }, [ready, fetchPage]);
-  useEffect(() => { if (!retryAt) return; const timer = window.setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(timer); }, [retryAt]);
+  }, [active, isOnline, retryAt, symbol]);
+  useEffect(() => { if (ready && active && isOnline) queueMicrotask(() => void fetchPage()); }, [ready, active, isOnline, fetchPage]);
+  useEffect(() => { if (!retryAt || !active) return; const timer = window.setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(timer); }, [active, retryAt]);
   const cooldown = Math.max(0, Math.ceil((retryAt - now) / 1000));
   let content: React.ReactNode;
   if (!ready || (loading && items.length === 0)) content = <div className="space-y-3" aria-label="Loading news">{[1,2,3].map((i) => <Skeleton key={i} className="h-24 w-full rounded-xl" />)}</div>;

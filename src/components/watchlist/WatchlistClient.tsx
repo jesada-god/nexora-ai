@@ -9,6 +9,7 @@ import { EmptyState } from '@/src/components/ui/EmptyState';
 import { useToast } from '@/src/components/ui/Toast';
 import type { MarketDataEnvelope, SymbolSearchResult } from '@/src/lib/market-data/types';
 import type { WatchlistItemRecord, WatchlistQuote, WatchlistRecord } from '@/src/lib/watchlist/types';
+import { useOnlineStatus } from '@/src/hooks/useOnlineStatus';
 
 type SortKey = 'newest' | 'symbol' | 'price' | 'change';
 
@@ -24,7 +25,8 @@ function freshnessLabel(quote: WatchlistQuote | undefined) {
   const labels: Record<string, string> = {
     realtime: 'เรียลไทม์', delayed: 'ล่าช้า', 'end-of-day': 'ราคาปิด', cached: 'แคช', unknown: 'ไม่ทราบ',
   };
-  return `${labels[quote.freshness.status] ?? quote.freshness.status} · ${displayTime(quote.freshness.asOf)}`;
+  const stale = quote.freshness.asOf && Date.now() - new Date(quote.freshness.asOf).valueOf() > Math.max(300, quote.freshness.maxAgeSeconds ?? 0) * 1000;
+  return `${stale ? 'ข้อมูลเก่า (stale)' : labels[quote.freshness.status] ?? quote.freshness.status} · ${displayTime(quote.freshness.asOf)}`;
 }
 
 export function WatchlistClient({ watchlist, initialQuotes }: {
@@ -43,6 +45,7 @@ export function WatchlistClient({ watchlist, initialQuotes }: {
   const [pendingSymbols, setPendingSymbols] = useState<Set<string>>(new Set());
   const [, startTransition] = useTransition();
   const searchRequest = useRef(0);
+  const isOnline = useOnlineStatus();
 
   const existingSymbols = useMemo(() => new Set(items.map((item) => item.symbol)), [items]);
   const sortedItems = useMemo(() => [...items].sort((a, b) => {
@@ -96,6 +99,7 @@ export function WatchlistClient({ watchlist, initialQuotes }: {
   }
 
   function addSymbol(symbol: string, status: SymbolSearchResult['status'] = 'active') {
+    if (!isOnline) { addToast({ title: 'เพิ่มไม่ได้ขณะออฟไลน์', message: 'เชื่อมต่ออินเทอร์เน็ตก่อนเพื่อป้องกันข้อมูลขัดแย้ง', type: 'error' }); return; }
     if (status === 'delisted') { addToast({ title: `${symbol} ถูก delisted`, message: 'ไม่สามารถเพิ่ม Symbol นี้เป็นรายการใหม่ได้', type: 'error' }); return; }
     if (existingSymbols.has(symbol) || pendingSymbols.has(symbol)) return;
     markPending(symbol, true);
@@ -126,6 +130,7 @@ export function WatchlistClient({ watchlist, initialQuotes }: {
   }
 
   function removeSymbol(item: WatchlistItemRecord) {
+    if (!isOnline) { addToast({ title: 'ลบไม่ได้ขณะออฟไลน์', type: 'error' }); return; }
     if (pendingSymbols.has(item.symbol)) return;
     const previousItems = items;
     setItems((current) => current.filter((candidate) => candidate.id !== item.id));
@@ -144,6 +149,7 @@ export function WatchlistClient({ watchlist, initialQuotes }: {
 
   return (
     <div className="space-y-5">
+      {!isOnline && <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-200">โหมดอ่านอย่างเดียวขณะออฟไลน์ — ราคาอาจเก่า และการเพิ่มหรือลบ Watchlist ถูกปิดไว้</div>}
       <section className="rounded-2xl border border-slate-800 bg-[#151B28] p-4 shadow-xl sm:p-5">
         <label htmlFor="watchlist-search" className="mb-2 block text-sm font-semibold text-white">เพิ่ม Symbol</label>
         <div className="relative">
@@ -167,7 +173,7 @@ export function WatchlistClient({ watchlist, initialQuotes }: {
                   <span className="block truncate text-xs text-slate-400">{result.name} · {result.exchange ?? 'ไม่ระบุตลาด'} · {result.assetType}</span>
                 </button>
                 {result.status === 'delisted' && <span className="rounded bg-amber-500/15 px-2 py-1 text-[10px] font-bold text-amber-300">DELISTED</span>}
-                <Button size="sm" disabled={added || pending || result.status === 'delisted'} onClick={() => addSymbol(result.symbol, result.status)} className="min-w-24 shrink-0">
+                <Button size="sm" disabled={!isOnline || added || pending || result.status === 'delisted'} onClick={() => addSymbol(result.symbol, result.status)} className="min-w-24 shrink-0">
                   <Plus size={16} /> {result.status === 'delisted' ? 'เพิ่มไม่ได้' : added ? 'เพิ่มแล้ว' : pending ? 'กำลังเพิ่ม' : 'เพิ่ม'}
                 </Button>
               </div>;
@@ -199,7 +205,7 @@ export function WatchlistClient({ watchlist, initialQuotes }: {
                   {change != null && (change >= 0 ? <ArrowUpRight size={13} /> : <ArrowDownRight size={13} />)}{change == null ? 'ไม่มี quote' : `${Math.abs(change).toFixed(2)}%`}
                 </span>
               </button>
-              <button aria-label={`ลบ ${item.symbol}`} disabled={pendingSymbols.has(item.symbol)} onClick={() => removeSymbol(item)} className="flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-lg text-slate-500 hover:bg-red-500/10 hover:text-red-400 disabled:opacity-40"><Trash2 size={18} /></button>
+              <button aria-label={`ลบ ${item.symbol}`} disabled={!isOnline || pendingSymbols.has(item.symbol)} onClick={() => removeSymbol(item)} className="flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-lg text-slate-500 hover:bg-red-500/10 hover:text-red-400 disabled:opacity-40"><Trash2 size={18} /></button>
             </article>;
           })}</div>}
       </section>

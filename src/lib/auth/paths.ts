@@ -1,4 +1,4 @@
-export const PROTECTED_PATHS = ['/portfolio', '/watchlist', '/alerts', '/settings', '/profile'] as const;
+export const PROTECTED_PATHS = ['/portfolio', '/watchlist', '/alerts', '/notifications', '/settings', '/profile'] as const;
 
 export function isProtectedPath(pathname: string): boolean {
   return PROTECTED_PATHS.some((path) => pathname === path || pathname.startsWith(`${path}/`));
