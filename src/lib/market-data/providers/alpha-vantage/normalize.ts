@@ -66,7 +66,9 @@ export function normalizeSearchResponse(input: unknown) {
   return parsed.bestMatches.map((match) => symbolSearchResultSchema.parse({
     symbol: match['1. symbol'].toUpperCase(),
     name: match['2. name'],
-    assetType: match['3. type'],
+    assetType: match['3. type'].toLowerCase() === 'etf' ? 'ETF' : 'Stock',
+    exchange: null,
+    status: 'active',
     region: match['4. region'],
     marketOpen: nullableText(match['5. marketOpen']),
     marketClose: nullableText(match['6. marketClose']),

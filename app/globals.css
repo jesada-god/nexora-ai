@@ -51,6 +51,12 @@
   }
 }
 
+@layer components {
+  .form-input {
+    @apply min-h-12 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 text-base text-white placeholder:text-slate-500 focus:border-[#D4FF00] focus:outline-none;
+  }
+}
+
 /* Utilities for tabular numbers */
 .tabular-nums {
   font-variant-numeric: tabular-nums;

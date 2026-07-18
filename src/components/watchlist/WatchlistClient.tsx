@@ -60,7 +60,7 @@ export function WatchlistClient({ watchlist, initialQuotes }: {
     const timer = window.setTimeout(async () => {
       setSearching(true); setSearchError('');
       try {
-        const response = await fetch(`/api/market/search?q=${encodeURIComponent(normalized)}`, { signal: controller.signal });
+        const response = await fetch(`/api/market/search?q=${encodeURIComponent(normalized)}&includeDelisted=true&limit=15`, { signal: controller.signal });
         const payload = await response.json() as MarketDataEnvelope<SymbolSearchResult[]>;
         if (requestId !== searchRequest.current) return;
         if (!response.ok || !payload.data) throw new Error(payload.error?.message ?? 'Search unavailable');
@@ -95,7 +95,8 @@ export function WatchlistClient({ watchlist, initialQuotes }: {
     }
   }
 
-  function addSymbol(symbol: string) {
+  function addSymbol(symbol: string, status: SymbolSearchResult['status'] = 'active') {
+    if (status === 'delisted') { addToast({ title: `${symbol} ถูก delisted`, message: 'ไม่สามารถเพิ่ม Symbol นี้เป็นรายการใหม่ได้', type: 'error' }); return; }
     if (existingSymbols.has(symbol) || pendingSymbols.has(symbol)) return;
     markPending(symbol, true);
     startTransition(async () => {
@@ -163,10 +164,11 @@ export function WatchlistClient({ watchlist, initialQuotes }: {
               return <div key={result.symbol} className="flex min-w-0 items-center gap-3 border-b border-slate-800/70 p-3 last:border-0">
                 <button onClick={() => router.push(`/stock/${encodeURIComponent(result.symbol)}`)} className="min-w-0 flex-1 text-left">
                   <span className="block font-bold text-white">{result.symbol}</span>
-                  <span className="block truncate text-xs text-slate-400">{result.name} · {result.region}</span>
+                  <span className="block truncate text-xs text-slate-400">{result.name} · {result.exchange ?? 'ไม่ระบุตลาด'} · {result.assetType}</span>
                 </button>
-                <Button size="sm" disabled={added || pending} onClick={() => addSymbol(result.symbol)} className="min-w-24 shrink-0">
-                  <Plus size={16} /> {added ? 'เพิ่มแล้ว' : pending ? 'กำลังเพิ่ม' : 'เพิ่ม'}
+                {result.status === 'delisted' && <span className="rounded bg-amber-500/15 px-2 py-1 text-[10px] font-bold text-amber-300">DELISTED</span>}
+                <Button size="sm" disabled={added || pending || result.status === 'delisted'} onClick={() => addSymbol(result.symbol, result.status)} className="min-w-24 shrink-0">
+                  <Plus size={16} /> {result.status === 'delisted' ? 'เพิ่มไม่ได้' : added ? 'เพิ่มแล้ว' : pending ? 'กำลังเพิ่ม' : 'เพิ่ม'}
                 </Button>
               </div>;
             })}

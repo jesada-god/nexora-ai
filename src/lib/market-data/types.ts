@@ -15,7 +15,9 @@ export const symbolSearchResultSchema = z.object({
   symbol: z.string(),
   name: z.string(),
   assetType: z.string(),
-  region: z.string(),
+  exchange: z.string().nullable(),
+  status: z.enum(['active', 'delisted']),
+  region: z.string().optional(),
   currency: z.string().nullable(),
   marketOpen: z.string().nullable(),
   marketClose: z.string().nullable(),
@@ -93,6 +95,7 @@ export type MarketOverview = z.infer<typeof marketOverviewSchema>;
 export interface ProviderResult<T> {
   data: T;
   freshness: DataFreshness;
+  provider?: string;
 }
 
 export interface MarketDataProvider {

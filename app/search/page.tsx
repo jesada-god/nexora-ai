@@ -1,156 +1,79 @@
 'use client';
-import { useState, useMemo } from 'react';
-import Header from '@/src/components/layout/Header';
-import { Search, X, History, TrendingUp, Plus } from 'lucide-react';
-import { useStore } from '@/src/store/useStore';
-import { mockAssets, mockMarketIndices } from '@/src/mocks/marketData';
-import { Tabs } from '@/src/components/ui/Tabs';
+
+import { useEffect, useRef, useState } from 'react';
+import { History, Plus, Search, X } from 'lucide-react';
 import { useRouter } from 'next/navigation';
+import Header from '@/src/components/layout/Header';
+import { Tabs } from '@/src/components/ui/Tabs';
 import { useToast } from '@/src/components/ui/Toast';
+import { useStore } from '@/src/store/useStore';
+import type { MarketDataEnvelope, SymbolSearchResult } from '@/src/lib/market-data/types';
+import { addWatchlistItemAction } from '@/app/watchlist/actions';
 
 export default function SearchPage() {
   const router = useRouter();
-  const { recentSearches, addRecentSearch, clearRecentSearches, activeWatchlistId, addToWatchlist } = useStore();
+  const { recentSearches, addRecentSearch, clearRecentSearches } = useStore();
   const { addToast } = useToast();
-  
   const [query, setQuery] = useState('');
   const [activeTab, setActiveTab] = useState('ALL');
+  const [results, setResults] = useState<SymbolSearchResult[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+  const requestId = useRef(0);
 
-  const searchResults = useMemo(() => {
-    if (!query) return [];
-    const allAssets = [...mockAssets, ...mockMarketIndices];
-    const q = query.toLowerCase();
-    return allAssets.filter(a => 
-      (activeTab === 'ALL' || a.type === activeTab.slice(0, -1) || (activeTab === 'STOCKS' && a.type === 'STOCK')) &&
-      (a.symbol.toLowerCase().includes(q) || a.name.toLowerCase().includes(q))
-    );
+  useEffect(() => {
+    const normalized = query.trim();
+    if (!normalized) return;
+    const current = ++requestId.current;
+    const controller = new AbortController();
+    const timer = window.setTimeout(async () => {
+      setLoading(true); setError('');
+      const assetType = activeTab === 'STOCKS' ? '&assetType=Stock' : activeTab === 'ETFS' ? '&assetType=ETF' : '';
+      try {
+        const response = await fetch(`/api/market/search?q=${encodeURIComponent(normalized)}${assetType}&includeDelisted=true&limit=20`, { signal: controller.signal });
+        const payload = await response.json() as MarketDataEnvelope<SymbolSearchResult[]>;
+        if (current !== requestId.current) return;
+        if (!response.ok || !payload.data) throw new Error(payload.error?.message ?? 'Search unavailable');
+        setResults(payload.data);
+      } catch (cause) {
+        if (!controller.signal.aborted && current === requestId.current) { setResults([]); setError(cause instanceof Error ? cause.message : 'ค้นหาไม่สำเร็จ'); }
+      } finally { if (current === requestId.current) setLoading(false); }
+    }, 250);
+    return () => { window.clearTimeout(timer); controller.abort(); };
   }, [query, activeTab]);
 
-  const handleResultClick = (symbol: string) => {
-    addRecentSearch(symbol);
-    router.push(`/stock/${symbol}`);
-  };
+  function openSymbol(symbol: string) { addRecentSearch(symbol); router.push(`/stock/${encodeURIComponent(symbol)}`); }
+  function updateQuery(value: string) {
+    setQuery(value);
+    if (!value.trim()) { requestId.current += 1; setResults([]); setLoading(false); setError(''); }
+  }
+  async function addToWatchlist(event: React.MouseEvent, result: SymbolSearchResult) {
+    event.stopPropagation();
+    if (result.status === 'delisted') { addToast({ title: `${result.symbol} ถูก delisted`, message: 'ไม่สามารถเพิ่ม Symbol นี้เป็นรายการใหม่ได้', type: 'error' }); return; }
+    const response = await addWatchlistItemAction(result.symbol);
+    addToast(response.ok
+      ? { title: `เพิ่ม ${result.symbol} เข้า Watchlist แล้ว`, type: 'success' }
+      : { title: 'เพิ่มไม่สำเร็จ', message: response.message, type: 'error' });
+  }
 
-  const handleAddWatchlist = (e: React.MouseEvent, symbol: string) => {
-    e.stopPropagation();
-    addToWatchlist(activeWatchlistId, symbol);
-    addToast({ title: "เพิ่มเข้า Watchlist แล้ว", message: `${symbol} ถูกเพิ่มลงในรายการโปรด`, type: "success" });
-  };
-
-  return (
-    <div>
-      <Header title="ค้นหา (Search)" />
-      
-      <div className="p-4 md:p-8 max-w-3xl mx-auto space-y-6">
-        <div className="relative">
-          <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-500" size={20} />
-          <input 
-            type="text" 
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder="ค้นหา Symbol, Company Name..." 
-            className="w-full bg-[#151B28] border border-slate-700 rounded-xl py-4 pl-12 pr-12 text-white placeholder:text-slate-500 focus:outline-none focus:border-[#D4FF00] focus:ring-1 focus:ring-[#D4FF00]/50 transition-all text-lg"
-            autoFocus
-          />
-          {query && (
-            <button onClick={() => setQuery('')} className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-500 hover:text-white p-1">
-              <X size={16} />
-            </button>
-          )}
-        </div>
-
-        <Tabs tabs={['ALL', 'STOCKS', 'CRYPTO', 'INDICES']} activeTab={activeTab} onChange={setActiveTab} />
-
-        {query ? (
-          <div className="bg-[#151B28] rounded-2xl border border-slate-800 overflow-hidden shadow-xl">
-             {searchResults.length > 0 ? (
-               <div className="divide-y divide-slate-800/50">
-                 {searchResults.map(result => (
-                   <div 
-                     key={result.symbol} 
-                     onClick={() => handleResultClick(result.symbol)}
-                     className="p-4 flex items-center justify-between hover:bg-slate-800/50 cursor-pointer transition-colors"
-                   >
-                     <div className="flex items-center gap-4">
-                       <div className="w-10 h-10 rounded-lg bg-slate-800 flex items-center justify-center font-bold text-slate-300">
-                         {result.symbol.substring(0, 2)}
-                       </div>
-                       <div>
-                         <h4 className="font-bold text-white">{result.symbol}</h4>
-                         <p className="text-[10px] text-slate-500">{result.name} &bull; {result.market}</p>
-                       </div>
-                     </div>
-                     <div className="flex items-center gap-4">
-                       <div className="text-right">
-                         <p className="font-mono text-white text-sm">{result.price.toFixed(2)}</p>
-                         <p className={`text-[10px] font-bold ${result.change >= 0 ? 'text-emerald-500' : 'text-red-500'}`}>
-                           {result.change >= 0 ? '+' : ''}{result.changePercent.toFixed(2)}%
-                         </p>
-                       </div>
-                       <button 
-                         onClick={(e) => handleAddWatchlist(e, result.symbol)}
-                         className="p-2 text-slate-500 hover:text-[#D4FF00] hover:bg-[#D4FF00]/10 rounded-full transition-colors"
-                       >
-                         <Plus size={20} />
-                       </button>
-                     </div>
-                   </div>
-                 ))}
-               </div>
-             ) : (
-               <div className="p-8 text-center text-slate-500">
-                 ไม่พบข้อมูลสำหรับ &quot;{query}&quot;
-               </div>
-             )}
-          </div>
-        ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-            <div className="bg-[#151B28] rounded-2xl border border-slate-800 p-6 shadow-xl">
-               <div className="flex justify-between items-center mb-4">
-                  <h3 className="font-semibold text-white flex items-center gap-2">
-                    <History size={16} className="text-slate-400" /> Recent Searches
-                  </h3>
-                  {recentSearches.length > 0 && (
-                    <button onClick={clearRecentSearches} className="text-xs text-slate-500 hover:text-white">Clear</button>
-                  )}
-               </div>
-               {recentSearches.length > 0 ? (
-                 <div className="flex flex-wrap gap-2">
-                    {recentSearches.map(term => (
-                      <button 
-                        key={term} 
-                        onClick={() => setQuery(term)}
-                        className="px-3 py-1.5 bg-slate-800 text-slate-300 text-xs rounded-lg hover:bg-slate-700 transition-colors"
-                      >
-                        {term}
-                      </button>
-                    ))}
-                 </div>
-               ) : (
-                 <p className="text-sm text-slate-500">ไม่มีประวัติการค้นหา</p>
-               )}
-            </div>
-
-            <div className="bg-[#151B28] rounded-2xl border border-slate-800 p-6 shadow-xl">
-               <h3 className="font-semibold text-white flex items-center gap-2 mb-4">
-                 <TrendingUp size={16} className="text-emerald-500" /> Trending Assets
-               </h3>
-               <div className="space-y-3">
-                 {['NVDA', 'AAPL', 'TSLA'].map(sym => (
-                   <div 
-                     key={sym} 
-                     onClick={() => handleResultClick(sym)}
-                     className="flex items-center justify-between p-2 hover:bg-slate-800/50 rounded-lg cursor-pointer transition-colors"
-                   >
-                     <span className="font-bold text-white text-sm">{sym}</span>
-                     <span className="text-xs text-emerald-500 bg-emerald-500/10 px-2 py-0.5 rounded">Hot</span>
-                   </div>
-                 ))}
-               </div>
-            </div>
-          </div>
-        )}
-      </div>
+  return <div><Header title="ค้นหา (Search)" /><div className="mx-auto max-w-3xl space-y-6 p-4 md:p-8">
+    <div className="relative"><Search className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-500" size={20} />
+      <input value={query} onChange={(event) => updateQuery(event.target.value)} placeholder="ค้นหา Symbol หรือชื่อบริษัท" autoFocus
+        className="w-full rounded-xl border border-slate-700 bg-[#151B28] py-4 pl-12 pr-12 text-lg text-white placeholder:text-slate-500 focus:border-[#D4FF00] focus:outline-none focus:ring-1 focus:ring-[#D4FF00]/50" />
+      {query && <button aria-label="ล้างคำค้น" onClick={() => updateQuery('')} className="absolute right-3 top-1/2 flex min-h-11 min-w-11 -translate-y-1/2 items-center justify-center text-slate-500 hover:text-white"><X size={16} /></button>}
     </div>
-  );
+    <Tabs tabs={['ALL', 'STOCKS', 'ETFS']} activeTab={activeTab} onChange={setActiveTab} />
+    {query.trim() ? <div className="overflow-hidden rounded-2xl border border-slate-800 bg-[#151B28] shadow-xl">
+      {loading && <p className="p-6 text-sm text-slate-400">กำลังค้นหา…</p>}
+      {!loading && error && <p className="p-6 text-sm text-amber-300">{error}</p>}
+      {!loading && !error && results.length === 0 && <p className="p-8 text-center text-slate-500">ไม่พบข้อมูลสำหรับ &quot;{query}&quot;</p>}
+      {!loading && results.map((result) => <button key={`${result.symbol}-${result.exchange ?? ''}`} onClick={() => openSymbol(result.symbol)} className="flex min-h-16 w-full items-center gap-3 border-b border-slate-800/50 p-4 text-left last:border-0 hover:bg-slate-800/50">
+        <span className="w-20 shrink-0 font-bold text-white">{result.symbol}</span><span className="min-w-0 flex-1"><span className="block truncate text-sm text-slate-200">{result.name}</span><span className="block truncate text-xs text-slate-500">{result.exchange ?? 'ไม่ระบุตลาด'} · {result.assetType} · {result.currency ?? 'USD'}</span></span>
+        {result.status === 'delisted' && <span className="rounded bg-amber-500/15 px-2 py-1 text-[10px] font-bold text-amber-300">DELISTED</span>}
+        <span role="button" aria-label={`เพิ่ม ${result.symbol} เข้า Watchlist`} aria-disabled={result.status === 'delisted'} onClick={(event) => void addToWatchlist(event, result)} className={`flex min-h-11 min-w-11 items-center justify-center rounded-full ${result.status === 'delisted' ? 'cursor-not-allowed text-slate-700' : 'text-slate-500 hover:bg-[#D4FF00]/10 hover:text-[#D4FF00]'}`}><Plus size={20} /></span>
+      </button>)}
+    </div> : <div className="rounded-2xl border border-slate-800 bg-[#151B28] p-6"><div className="mb-4 flex items-center justify-between"><h3 className="flex items-center gap-2 font-semibold text-white"><History size={16} className="text-slate-400" /> Recent Searches</h3>{recentSearches.length > 0 && <button onClick={clearRecentSearches} className="text-xs text-slate-500 hover:text-white">Clear</button>}</div>
+      {recentSearches.length ? <div className="flex flex-wrap gap-2">{recentSearches.map((term) => <button key={term} onClick={() => updateQuery(term)} className="rounded-lg bg-slate-800 px-3 py-1.5 text-xs text-slate-300 hover:bg-slate-700">{term}</button>)}</div> : <p className="text-sm text-slate-500">ไม่มีประวัติการค้นหา</p>}
+    </div>}
+  </div></div>;
 }

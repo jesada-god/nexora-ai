@@ -16,7 +16,7 @@ describe('market data request validation', () => {
   });
 
   it('validates search query length and trims it', () => {
-    expect(searchParamsSchema.parse({ q: '  microsoft  ' })).toEqual({ q: 'microsoft' });
+    expect(searchParamsSchema.parse({ q: '  microsoft  ' })).toEqual({ q: 'microsoft', includeDelisted: false, limit: 15 });
     expect(searchParamsSchema.safeParse({ q: '' }).success).toBe(false);
     expect(searchParamsSchema.safeParse({ q: 'x'.repeat(81) }).success).toBe(false);
   });

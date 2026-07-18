@@ -22,4 +22,7 @@ export const historyQuerySchema = z.object({
 
 export const searchParamsSchema = z.object({
   q: searchQuerySchema,
+  assetType: z.enum(['Stock', 'ETF']).optional(),
+  includeDelisted: z.enum(['true', 'false']).transform((value) => value === 'true').default(false),
+  limit: z.coerce.number().int().min(1).max(20).default(15),
 });

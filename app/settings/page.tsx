@@ -15,7 +15,7 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) redirect('/auth/sign-in?next=/settings');
   const { data } = await supabase.from('user_settings').select('*').eq('user_id', user.id).maybeSingle();
-  const settings = data ?? { base_currency: 'THB' as const, language: 'th' as const, price_alerts_enabled: true, daily_summary_enabled: true };
+  const settings = data ?? { base_currency: 'USD' as const, language: 'th' as const, price_alerts_enabled: true, daily_summary_enabled: true };
   const error = typeof params.error === 'string' ? params.error : undefined;
   const message = typeof params.message === 'string' ? params.message : undefined;
 

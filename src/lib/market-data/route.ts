@@ -19,7 +19,7 @@ export async function marketDataResponse<T>(
     const response = NextResponse.json({
       data: result.data,
       meta: {
-        provider: MARKET_DATA_PROVIDER_ID,
+        provider: result.provider ?? MARKET_DATA_PROVIDER_ID,
         timestamp: new Date().toISOString(),
         freshness: result.freshness,
       },

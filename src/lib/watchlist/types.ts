@@ -19,4 +19,4 @@ export interface WatchlistQuote {
 
 export type WatchlistActionResult =
   | { ok: true; item?: WatchlistItemRecord }
-  | { ok: false; code: 'invalid' | 'duplicate' | 'unauthorized' | 'not-found' | 'database'; message: string };
+  | { ok: false; code: 'invalid' | 'duplicate' | 'unauthorized' | 'not-found' | 'database' | 'delisted'; message: string };

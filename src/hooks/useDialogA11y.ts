@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, type RefObject } from 'react';
 
 const FOCUSABLE_SELECTOR = [
   'a[href]',
@@ -11,8 +11,13 @@ const FOCUSABLE_SELECTOR = [
   '[tabindex]:not([tabindex="-1"])',
 ].join(',');
 
-export function useDialogA11y(isOpen: boolean, onClose: () => void) {
+export function useDialogA11y(isOpen: boolean, onClose: () => void, initialFocusRef?: RefObject<HTMLElement | null>) {
   const dialogRef = useRef<HTMLDivElement>(null);
+  const onCloseRef = useRef(onClose);
+  const initialFocusRefRef = useRef(initialFocusRef);
+
+  useEffect(() => { onCloseRef.current = onClose; }, [onClose]);
+  useEffect(() => { initialFocusRefRef.current = initialFocusRef; }, [initialFocusRef]);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -22,15 +27,14 @@ export function useDialogA11y(isOpen: boolean, onClose: () => void) {
     document.body.style.overflow = 'hidden';
 
     const frame = window.requestAnimationFrame(() => {
-      const autofocusTarget = dialogRef.current?.querySelector<HTMLElement>('[autofocus]');
       const firstFocusable = dialogRef.current?.querySelector<HTMLElement>(FOCUSABLE_SELECTOR);
-      (autofocusTarget ?? firstFocusable ?? dialogRef.current)?.focus();
+      (initialFocusRefRef.current?.current ?? firstFocusable ?? dialogRef.current)?.focus();
     });
 
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
         event.preventDefault();
-        onClose();
+        onCloseRef.current();
         return;
       }
 
@@ -60,7 +64,7 @@ export function useDialogA11y(isOpen: boolean, onClose: () => void) {
       document.body.style.overflow = previousOverflow;
       previousFocus?.focus();
     };
-  }, [isOpen, onClose]);
+  }, [isOpen]);
 
   return dialogRef;
 }

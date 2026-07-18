@@ -65,6 +65,87 @@ export interface Database {
         Update: { symbol?: string };
         Relationships: [];
       };
+      portfolios: {
+        Row: { id: string; user_id: string; name: string; base_currency: Currency; created_at: string; updated_at: string };
+        Insert: { id?: string; user_id: string; name?: string; base_currency?: Currency; created_at?: string; updated_at?: string };
+        Update: { name?: string; base_currency?: Currency; updated_at?: string };
+        Relationships: [];
+      };
+      portfolio_transactions: {
+        Row: {
+          id: string; portfolio_id: string; transaction_type: 'acquisition' | 'disposal' | 'dividend' | 'deposit' | 'withdrawal' | 'fee' | 'adjustment';
+          symbol: string | null; quantity: string | null; price: string | null; amount: string | null; occurred_at: string;
+          original_amount: string | null; original_currency: Currency; fx_rate_at_transaction: string | null; normalized_amount_usd: string | null;
+          note: string | null; idempotency_key: string; created_at: string; updated_at: string;
+        };
+        Insert: {
+          id?: string; portfolio_id: string; transaction_type: 'acquisition' | 'disposal' | 'dividend' | 'deposit' | 'withdrawal' | 'fee' | 'adjustment';
+          symbol?: string | null; quantity?: string | null; price?: string | null; amount?: string | null; occurred_at: string;
+          original_amount?: string | null; original_currency?: Currency; fx_rate_at_transaction?: string | null; normalized_amount_usd?: string | null;
+          note?: string | null; idempotency_key: string; created_at?: string; updated_at?: string;
+        };
+        Update: {
+          transaction_type?: 'acquisition' | 'disposal' | 'dividend' | 'deposit' | 'withdrawal' | 'fee' | 'adjustment';
+          symbol?: string | null; quantity?: string | null; price?: string | null; amount?: string | null; occurred_at?: string;
+          original_amount?: string | null; original_currency?: Currency; fx_rate_at_transaction?: string | null; normalized_amount_usd?: string | null;
+          note?: string | null; updated_at?: string;
+        };
+        Relationships: [];
+      };
+      portfolio_option_positions: {
+        Row: {
+          id: string; portfolio_id: string; underlying_symbol: string; option_kind: 'call' | 'put'; contracts: number;
+          premium_per_share: string; strike_price: string; opened_at: string; expiration_date: string;
+          implied_volatility: string | null; delta: string | null; theta: string | null; note: string | null;
+          status: 'open' | 'closed' | 'cancelled'; closed_at: string | null; idempotency_key: string; created_at: string; updated_at: string;
+        };
+        Insert: {
+          id?: string; portfolio_id: string; underlying_symbol: string; option_kind: 'call' | 'put'; contracts: number;
+          premium_per_share: string; strike_price: string; opened_at: string; expiration_date: string;
+          implied_volatility?: string | null; delta?: string | null; theta?: string | null; note?: string | null;
+          status?: 'open' | 'closed' | 'cancelled'; closed_at?: string | null; idempotency_key: string; created_at?: string; updated_at?: string;
+        };
+        Update: {
+          underlying_symbol?: string; option_kind?: 'call' | 'put'; contracts?: number; premium_per_share?: string; strike_price?: string;
+          opened_at?: string; expiration_date?: string; implied_volatility?: string | null; delta?: string | null; theta?: string | null;
+          note?: string | null; status?: 'open' | 'closed' | 'cancelled'; closed_at?: string | null; updated_at?: string;
+        };
+        Relationships: [];
+      };
+      market_instruments: {
+        Row: {
+          id: string; symbol: string; name: string; exchange: string | null; asset_type: 'Stock' | 'ETF';
+          currency: string; country: string; status: 'active' | 'delisted'; ipo_date: string | null;
+          delisting_date: string | null; provider: string; provider_symbol: string; searchable_text: string;
+          last_synced_at: string; created_at: string; updated_at: string;
+        };
+        Insert: {
+          id?: string; symbol: string; name: string; exchange?: string | null; asset_type: 'Stock' | 'ETF';
+          currency?: string; country?: string; status: 'active' | 'delisted'; ipo_date?: string | null;
+          delisting_date?: string | null; provider: string; provider_symbol: string; last_synced_at?: string;
+          created_at?: string; updated_at?: string;
+        };
+        Update: Partial<Database['public']['Tables']['market_instruments']['Insert']>;
+        Relationships: [];
+      };
+      market_instrument_sync_runs: {
+        Row: { id: string; provider: string; idempotency_key: string; status: 'staging' | 'completed' | 'failed'; inserted_count: number; updated_count: number; skipped_count: number; failed_count: number; error: Json | null; started_at: string; completed_at: string | null };
+        Insert: { id?: string; provider: string; idempotency_key: string; status?: 'staging' | 'completed' | 'failed'; inserted_count?: number; updated_count?: number; skipped_count?: number; failed_count?: number; error?: Json | null; started_at?: string; completed_at?: string | null };
+        Update: Partial<Database['public']['Tables']['market_instrument_sync_runs']['Insert']>;
+        Relationships: [];
+      };
+      market_instrument_sync_stage: {
+        Row: { run_id: string; provider_symbol: string; symbol: string; name: string; exchange: string | null; asset_type: 'Stock' | 'ETF'; currency: string; country: string; status: 'active' | 'delisted'; ipo_date: string | null; delisting_date: string | null };
+        Insert: Database['public']['Tables']['market_instrument_sync_stage']['Row'];
+        Update: Partial<Database['public']['Tables']['market_instrument_sync_stage']['Row']>;
+        Relationships: [];
+      };
+      market_fx_rates: {
+        Row: { base_currency: Currency; quote_currency: Currency; rate: string; source: string; provider_updated_at: string; fetched_at: string; created_at: string; updated_at: string };
+        Insert: { base_currency: Currency; quote_currency: Currency; rate: string; source: string; provider_updated_at: string; fetched_at: string; created_at?: string; updated_at?: string };
+        Update: Partial<Database['public']['Tables']['market_fx_rates']['Insert']>;
+        Relationships: [];
+      };
     };
     Views: Record<string, never>;
     Functions: {
@@ -76,6 +157,35 @@ export interface Database {
         Args: Record<PropertyKey, never>;
         Returns: string;
       };
+      get_or_create_default_portfolio: { Args: Record<PropertyKey, never>; Returns: string };
+      create_portfolio_transaction: {
+        Args: { input_type: string; input_symbol: string | null; input_quantity: string | null; input_price: string | null; input_amount: string | null; input_occurred_at: string; input_note: string | null; input_idempotency_key: string; input_original_currency: Currency; input_fx_rate_at_transaction: string | null };
+        Returns: string;
+      };
+      update_portfolio_transaction: {
+        Args: { transaction_id: string; input_type: string; input_symbol: string | null; input_quantity: string | null; input_price: string | null; input_amount: string | null; input_occurred_at: string; input_note: string | null; input_original_currency: Currency; input_fx_rate_at_transaction: string | null };
+        Returns: undefined;
+      };
+      delete_portfolio_transaction: { Args: { transaction_id: string }; Returns: undefined };
+      set_portfolio_base_currency: { Args: { input_currency: Currency }; Returns: undefined };
+      create_option_position: {
+        Args: { input_underlying_symbol: string; input_option_kind: string; input_contracts: number; input_premium_per_share: string; input_strike_price: string; input_opened_at: string; input_expiration_date: string; input_implied_volatility: string | null; input_delta: string | null; input_theta: string | null; input_note: string | null; input_status: string; input_idempotency_key: string };
+        Returns: string;
+      };
+      update_option_position: {
+        Args: { position_id: string; input_underlying_symbol: string; input_option_kind: string; input_contracts: number; input_premium_per_share: string; input_strike_price: string; input_opened_at: string; input_expiration_date: string; input_implied_volatility: string | null; input_delta: string | null; input_theta: string | null; input_note: string | null; input_status: string };
+        Returns: undefined;
+      };
+      close_option_position: { Args: { position_id: string; input_closed_at: string }; Returns: undefined };
+      delete_option_position: { Args: { position_id: string }; Returns: undefined };
+      search_market_instruments: {
+        Args: { input_query: string; input_asset_type?: string | null; input_include_delisted?: boolean; input_limit?: number };
+        Returns: Array<{ symbol: string; name: string; exchange: string | null; asset_type: string; currency: string; status: string; match_score: number }>;
+      };
+      begin_market_instrument_sync: { Args: { input_provider: string; input_idempotency_key: string }; Returns: string };
+      stage_market_instruments: { Args: { input_run_id: string; input_rows: Json }; Returns: number };
+      fail_market_instrument_sync: { Args: { input_run_id: string; input_error: Json }; Returns: undefined };
+      finalize_market_instrument_sync: { Args: { input_run_id: string; input_failed_count?: number }; Returns: Array<{ inserted: number; updated: number; skipped: number; failed: number }> };
     };
     Enums: Record<string, never>;
     CompositeTypes: Record<string, never>;

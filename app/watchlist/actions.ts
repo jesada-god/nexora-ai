@@ -6,6 +6,7 @@ import { createClient } from '@/src/lib/supabase/server';
 import { symbolSchema } from '@/src/lib/market-data/validation';
 import { WatchlistRepository } from '@/src/lib/watchlist/repository';
 import type { WatchlistActionResult } from '@/src/lib/watchlist/types';
+import { getInstrumentStatus } from '@/src/lib/instruments/status';
 
 const nameSchema = z.string().trim().min(1).max(80);
 
@@ -29,6 +30,10 @@ export async function addWatchlistItemAction(rawSymbol: string): Promise<Watchli
   const repo = await repository();
   if (!repo) return { ok: false, code: 'unauthorized', message: 'กรุณาเข้าสู่ระบบอีกครั้ง' };
   try {
+    const client = await createClient();
+    if (client && await getInstrumentStatus(client, parsed.data) === 'delisted') {
+      return { ok: false, code: 'delisted', message: 'Symbol นี้ถูก delisted แล้ว จึงไม่สามารถเพิ่มเป็นรายการใหม่ได้' };
+    }
     const item = await repo.add(parsed.data);
     revalidatePath('/watchlist');
     return { ok: true, item };

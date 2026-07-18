@@ -11,11 +11,12 @@ interface ModalProps {
   title: string
   children: React.ReactNode
   className?: string
+  initialFocusRef?: React.RefObject<HTMLElement | null>
 }
 
-export function Modal({ isOpen, onClose, title, children, className }: ModalProps) {
+export function Modal({ isOpen, onClose, title, children, className, initialFocusRef }: ModalProps) {
   const titleId = useId()
-  const dialogRef = useDialogA11y(isOpen, onClose)
+  const dialogRef = useDialogA11y(isOpen, onClose, initialFocusRef)
 
   if (!isOpen) return null
 

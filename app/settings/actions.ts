@@ -33,5 +33,7 @@ export async function saveSettingsAction(formData: FormData): Promise<never> {
     updated_at: new Date().toISOString(),
   }, { onConflict: 'user_id' });
   if (error) redirect('/settings?error=ไม่สามารถบันทึกการตั้งค่าได้');
+  const { error: portfolioError } = await supabase.rpc('set_portfolio_base_currency', { input_currency: parsed.data.baseCurrency });
+  if (portfolioError) redirect('/settings?error=ไม่สามารถบันทึกสกุลเงินของพอร์ตได้');
   redirect('/settings?message=บันทึกการตั้งค่าแล้ว');
 }
