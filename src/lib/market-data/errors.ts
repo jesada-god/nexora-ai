@@ -11,6 +11,7 @@ const STATUS_BY_CODE: Record<MarketDataErrorCode, number> = {
   'provider-unauthorized': 502,
   'upstream-unavailable': 502,
   'invalid-provider-response': 502,
+  'insufficient-data': 422,
   'internal-error': 500,
 };
 
@@ -19,6 +20,7 @@ const RETRYABLE_CODES = new Set<MarketDataErrorCode>([
   'rate-limited',
   'timeout',
   'upstream-unavailable',
+  'insufficient-data',
   'internal-error',
 ]);
 
@@ -31,6 +33,7 @@ export class MarketDataError extends Error {
     message: string,
     readonly retryAfterSeconds?: number,
     readonly issues?: MarketDataApiError['issues'],
+    readonly context?: Pick<MarketDataApiError, 'reason' | 'lastAvailableAt' | 'primaryReason' | 'fallbackReason'>,
   ) {
     super(message);
     this.name = 'MarketDataError';
@@ -44,6 +47,11 @@ export class MarketDataError extends Error {
       message: this.message,
       retryable: this.retryable,
       ...(this.retryAfterSeconds ? { retryAfterSeconds: this.retryAfterSeconds } : {}),
+      ...(this.retryAfterSeconds ? { retryAfter: this.retryAfterSeconds } : {}),
+      ...(this.context?.reason ? { reason: this.context.reason } : {}),
+      ...(this.context && 'lastAvailableAt' in this.context ? { lastAvailableAt: this.context.lastAvailableAt } : {}),
+      ...(this.context?.primaryReason ? { primaryReason: this.context.primaryReason } : {}),
+      ...(this.context?.fallbackReason ? { fallbackReason: this.context.fallbackReason } : {}),
       ...(this.issues?.length ? { issues: this.issues } : {}),
     };
   }

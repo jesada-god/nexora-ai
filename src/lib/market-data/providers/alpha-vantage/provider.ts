@@ -25,7 +25,7 @@ const TIMEOUT_MS = 8_000;
 const REVALIDATE_SECONDS = {
   search: 60 * 60,
   quote: 60,
-  history: 15 * 60,
+  history: 6 * 60 * 60,
   profile: 24 * 60 * 60,
   overview: 5 * 60,
 } as const;

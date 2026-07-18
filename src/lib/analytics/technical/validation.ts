@@ -1,0 +1,21 @@
+import { z } from 'zod';
+
+export const technicalParametersSchema = z.object({
+  priceField: z.enum(['open', 'high', 'low', 'close']).default('close'),
+  smaPeriod: z.number().int().min(2).max(250).default(20),
+  emaPeriod: z.number().int().min(2).max(250).default(20),
+  rsiPeriod: z.number().int().min(2).max(100).default(14),
+  macdFastPeriod: z.number().int().min(2).max(100).default(12),
+  macdSlowPeriod: z.number().int().min(3).max(250).default(26),
+  macdSignalPeriod: z.number().int().min(2).max(100).default(9),
+  bollingerPeriod: z.number().int().min(2).max(250).default(20),
+  bollingerStdDev: z.number().finite().min(0.1).max(10).default(2),
+  atrPeriod: z.number().int().min(2).max(100).default(14),
+  averageVolumePeriod: z.number().int().min(2).max(250).default(20),
+}).refine((value) => value.macdFastPeriod < value.macdSlowPeriod, {
+  message: 'MACD fast period must be less than slow period',
+  path: ['macdFastPeriod'],
+});
+
+export const DEFAULT_TECHNICAL_PARAMETERS = technicalParametersSchema.parse({});
+

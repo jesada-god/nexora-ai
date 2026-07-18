@@ -3,6 +3,9 @@ import { serverEnv } from '@/src/config/env/server';
 import { MarketDataError } from './errors';
 import type { MarketDataProvider } from './types';
 import { AlphaVantageProvider } from './providers/alpha-vantage/provider';
+import { StooqHistoricalProvider } from './providers/stooq/provider';
+import { NasdaqHistoricalProvider } from './providers/nasdaq/provider';
+import { HistoricalMarketDataService, type HistoricalProvider } from './historical-service';
 import { SharedRequestCache } from '@/src/lib/shared-request-cache';
 import type { CompanyProfile, HistoricalPrices, HistoricalRange, MarketOverview, ProviderResult, Quote, SymbolSearchResult } from './types';
 
@@ -10,6 +13,8 @@ export const MARKET_DATA_PROVIDER_ID = 'alpha-vantage';
 const cache = new SharedRequestCache();
 let providerKey: string | undefined;
 let providerInstance: MarketDataProvider | undefined;
+let historicalProviderKey: string | undefined;
+let historicalService: HistoricalMarketDataService | undefined;
 
 function cachedResult<T>(result: ProviderResult<T>, stale: boolean): ProviderResult<T> {
   return stale ? { ...result, freshness: { ...result.freshness, status: 'cached' } } : result;
@@ -41,6 +46,28 @@ export function getMarketDataProvider(): MarketDataProvider {
     providerInstance = new CachedMarketDataProvider(new AlphaVantageProvider(providerKey));
   }
   return providerInstance;
+}
+
+class UnconfiguredHistoricalProvider implements HistoricalProvider {
+  readonly id = MARKET_DATA_PROVIDER_ID;
+  async getHistoricalPrices(): Promise<never> {
+    throw new MarketDataError('provider-not-configured', 'Primary market data provider is not configured');
+  }
+}
+
+export function getHistoricalMarketDataService(): HistoricalMarketDataService {
+  const key = serverEnv.ALPHA_VANTAGE_API_KEY;
+  if (!historicalService || historicalProviderKey !== key) {
+    historicalProviderKey = key;
+    const primary = key ? new AlphaVantageProvider(key) : new UnconfiguredHistoricalProvider();
+    historicalService = new HistoricalMarketDataService(
+      primary,
+      new StooqHistoricalProvider(),
+      Date.now,
+      new NasdaqHistoricalProvider(),
+    );
+  }
+  return historicalService;
 }
 
 export type {

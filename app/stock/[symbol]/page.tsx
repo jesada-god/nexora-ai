@@ -5,6 +5,7 @@ import { createClient } from '@/src/lib/supabase/server';
 import { WatchlistRepository } from '@/src/lib/watchlist/repository';
 import { StockDetailClient } from '@/src/components/stock/StockDetailClient';
 import type { CompanyProfile, DataFreshness, MarketOverview, Quote } from '@/src/lib/market-data/types';
+import { technicalIndicatorsEnabled } from '@/src/config/features';
 
 const unavailable: DataFreshness = { status: 'unavailable', asOf: null, maxAgeSeconds: null };
 export default async function StockDetailPage({ params }: { params: Promise<{ symbol: string }> }) {
@@ -19,5 +20,5 @@ export default async function StockDetailPage({ params }: { params: Promise<{ sy
   }
   let watched = false; const client = await createClient();
   if (client) { try { watched = (await new WatchlistRepository(client).getDefault()).items.some((item) => item.symbol === symbol); } catch { /* optional CTA state */ } }
-  return <StockDetailClient symbol={symbol} quote={quote} profile={profile} overview={overview} freshness={freshness} providerConfigured={Boolean(provider)} initialWatched={watched} />;
+  return <StockDetailClient symbol={symbol} quote={quote} profile={profile} overview={overview} freshness={freshness} providerConfigured={Boolean(provider)} initialWatched={watched} technicalIndicatorsEnabled={technicalIndicatorsEnabled()} />;
 }

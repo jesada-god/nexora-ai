@@ -4,9 +4,11 @@ const finiteNumber = z.number().finite();
 const nullableNumber = finiteNumber.nullable();
 
 export const freshnessSchema = z.object({
-  status: z.enum(['realtime', 'delayed', 'end-of-day', 'cached', 'unknown', 'unavailable']),
+  status: z.enum(['realtime', 'delayed', 'end-of-day', 'cached', 'stale', 'unknown', 'unavailable']),
   asOf: z.iso.datetime().nullable(),
   maxAgeSeconds: z.number().int().nonnegative().nullable(),
+  cachedAt: z.iso.datetime().optional(),
+  staleWhileRevalidateSeconds: z.number().int().nonnegative().optional(),
 });
 
 export type DataFreshness = z.infer<typeof freshnessSchema>;
@@ -52,6 +54,13 @@ export const historicalPricesSchema = z.object({
   range: z.enum(['1m', '3m', '6m', '1y', '5y', 'max']),
   interval: z.literal('1d'),
   prices: z.array(historicalPriceSchema),
+  providerUsed: z.string().optional(),
+  fallbackReason: z.string().nullable().optional(),
+  cachedAt: z.iso.datetime().optional(),
+  asOf: z.iso.datetime().nullable().optional(),
+  freshness: z.enum(['fresh', 'cached', 'stale']).optional(),
+  methodology: z.string().optional(),
+  limitations: z.array(z.string()).optional(),
 });
 
 export const companyProfileSchema = z.object({
@@ -117,6 +126,7 @@ export const marketDataErrorCodeSchema = z.enum([
   'provider-unauthorized',
   'upstream-unavailable',
   'invalid-provider-response',
+  'insufficient-data',
   'internal-error',
 ]);
 
@@ -133,10 +143,26 @@ export const apiErrorSchema = z.object({
   message: z.string(),
   retryable: z.boolean(),
   retryAfterSeconds: z.number().int().positive().optional(),
+  retryAfter: z.number().int().positive().optional(),
+  reason: z.string().optional(),
+  lastAvailableAt: z.iso.datetime().nullable().optional(),
+  primaryReason: z.string().optional(),
+  fallbackReason: z.string().optional(),
   issues: z.array(z.object({ path: z.string(), message: z.string() })).optional(),
 });
 
 export type MarketDataApiError = z.infer<typeof apiErrorSchema>;
+
+export interface HistoricalUnavailableData {
+  status: 'unavailable';
+  reason: string;
+  primaryReason: string;
+  fallbackReason: string;
+  retryable: boolean;
+  retryAfter: string | null;
+  retryAfterSeconds: number;
+  lastAvailableAt: string | null;
+}
 
 export interface MarketDataEnvelope<T> {
   data: T | null;

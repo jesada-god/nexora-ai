@@ -29,6 +29,19 @@ describe('chart history request coordination', () => {
     await session.begin('RKLB', '3m', true).promise; await vi.advanceTimersByTimeAsync(60_000); expect(fetcher).toHaveBeenCalledTimes(1); vi.useRealTimers();
   });
 
+  it('keeps acceptable client cache as stale when the server is unavailable', async () => {
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(jsonResult(response()))
+      .mockResolvedValueOnce(jsonResult(response('rate-limited')));
+    const client = new HistoryRequestClient(fetcher);
+    const firstController = new AbortController();
+    await client.request('RKLB', '3m', { signal: firstController.signal });
+    const stale = await client.request('RKLB', '3m', { force: true, signal: new AbortController().signal });
+    expect(stale.data).not.toBeNull();
+    expect(stale.meta.freshness.status).toBe('stale');
+    expect(stale.meta.timestamp).toBe('2026-07-18T00:00:00.000Z');
+  });
+
   it('cooldown expiry only enables Retry and does not fetch by itself', async () => {
     const fetcher = vi.fn(async () => jsonResult(response())); const session = new HistoryRequestSession(new HistoryRequestClient(fetcher)); const deadline = 30_000;
     expect(canRetryHistory(deadline, 29_999, false)).toBe(false); expect(canRetryHistory(deadline, 30_000, false)).toBe(true); expect(fetcher).not.toHaveBeenCalled();

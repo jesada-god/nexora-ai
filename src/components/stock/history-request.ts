@@ -1,6 +1,6 @@
-import type { HistoricalPrices, HistoricalRange, MarketDataEnvelope } from '@/src/lib/market-data/types';
+import type { HistoricalPrices, HistoricalRange, HistoricalUnavailableData, MarketDataEnvelope } from '@/src/lib/market-data/types';
 
-export type HistoryResponse = MarketDataEnvelope<HistoricalPrices>;
+export type HistoryResponse = MarketDataEnvelope<HistoricalPrices | HistoricalUnavailableData>;
 type HistoryFetcher = (url: string, init: { signal: AbortSignal }) => Promise<{ json(): Promise<HistoryResponse> }>;
 type CachedHistory = { response: HistoryResponse; savedAt: number };
 type InflightEntry = { controller: AbortController; promise: Promise<HistoryResponse>; consumers: Set<symbol> };
@@ -22,8 +22,8 @@ export class HistoryRequestClient {
       const controller = new AbortController();
       const promise = this.fetcher(`/api/market/history/${encodeURIComponent(symbol)}?range=${range}`, { signal: controller.signal }).then(async (response) => {
         const body = await response.json();
-        if (body.data) this.data.set(key, { response: body, savedAt: this.now() });
-        else if (saved?.response.data) return { ...saved.response, meta: { ...saved.response.meta, freshness: { ...saved.response.meta.freshness, status: 'cached' as const } } };
+        if (body.data && 'prices' in body.data) this.data.set(key, { response: body, savedAt: this.now() });
+        else if (saved?.response.data) return { ...saved.response, meta: { ...saved.response.meta, freshness: { ...saved.response.meta.freshness, status: 'stale' as const } } };
         return body;
       }).finally(() => this.inflight.delete(key));
       entry = { controller, promise, consumers: new Set() }; this.inflight.set(key, entry);
