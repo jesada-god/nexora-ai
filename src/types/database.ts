@@ -32,6 +32,11 @@ export interface Database {
           language: AppLanguage;
           price_alerts_enabled: boolean;
           daily_summary_enabled: boolean;
+          push_enabled: boolean;
+          quiet_hours_enabled: boolean;
+          quiet_hours_start: string;
+          quiet_hours_end: string;
+          timezone: string;
           created_at: string;
           updated_at: string;
         };
@@ -41,6 +46,11 @@ export interface Database {
           language?: AppLanguage;
           price_alerts_enabled?: boolean;
           daily_summary_enabled?: boolean;
+          push_enabled?: boolean;
+          quiet_hours_enabled?: boolean;
+          quiet_hours_start?: string;
+          quiet_hours_end?: string;
+          timezone?: string;
           created_at?: string;
           updated_at?: string;
         };
@@ -49,6 +59,11 @@ export interface Database {
           language?: AppLanguage;
           price_alerts_enabled?: boolean;
           daily_summary_enabled?: boolean;
+          push_enabled?: boolean;
+          quiet_hours_enabled?: boolean;
+          quiet_hours_start?: string;
+          quiet_hours_end?: string;
+          timezone?: string;
           updated_at?: string;
         };
         Relationships: [];
@@ -153,9 +168,27 @@ export interface Database {
         Relationships: [];
       };
       notifications: {
-        Row: { id: string; user_id: string; price_alert_id: string | null; type: 'price_alert' | 'system'; title: string; message: string; metadata: Json; read_at: string | null; created_at: string };
-        Insert: { id?: string; user_id: string; price_alert_id?: string | null; type?: 'price_alert' | 'system'; title: string; message: string; metadata?: Json; read_at?: string | null; created_at?: string };
+        Row: { id: string; user_id: string; price_alert_id: string | null; type: 'price_alert' | 'system'; title: string; message: string; metadata: Json; idempotency_key: string | null; read_at: string | null; created_at: string };
+        Insert: { id?: string; user_id: string; price_alert_id?: string | null; type?: 'price_alert' | 'system'; title: string; message: string; metadata?: Json; idempotency_key?: string | null; read_at?: string | null; created_at?: string };
         Update: { read_at?: string | null };
+        Relationships: [];
+      };
+      push_subscriptions: {
+        Row: { id: string; user_id: string; endpoint: string; p256dh: string; auth: string; expiration_time: number | null; user_agent: string | null; last_seen_at: string; failure_count: number; disabled_at: string | null; created_at: string; updated_at: string };
+        Insert: { id?: string; user_id: string; endpoint: string; p256dh: string; auth: string; expiration_time?: number | null; user_agent?: string | null; last_seen_at?: string; failure_count?: number; disabled_at?: string | null; created_at?: string; updated_at?: string };
+        Update: Partial<Database['public']['Tables']['push_subscriptions']['Insert']>;
+        Relationships: [];
+      };
+      push_deliveries: {
+        Row: { id: string; notification_id: string; subscription_id: string; status: 'pending' | 'retrying' | 'sent' | 'failed' | 'skipped'; attempt_count: number; next_attempt_at: string; last_error_code: string | null; sent_at: string | null; created_at: string; updated_at: string };
+        Insert: { id?: string; notification_id: string; subscription_id: string; status?: 'pending' | 'retrying' | 'sent' | 'failed' | 'skipped'; attempt_count?: number; next_attempt_at?: string; last_error_code?: string | null; sent_at?: string | null; created_at?: string; updated_at?: string };
+        Update: Partial<Database['public']['Tables']['push_deliveries']['Insert']>;
+        Relationships: [];
+      };
+      alert_evaluation_runs: {
+        Row: { id: string; schedule_window: string; status: 'running' | 'completed' | 'partial' | 'failed'; evaluated_count: number; triggered_count: number; unavailable_count: number; push_sent_count: number; push_failed_count: number; error_code: string | null; started_at: string; completed_at: string | null };
+        Insert: { id?: string; schedule_window: string; status?: 'running' | 'completed' | 'partial' | 'failed'; evaluated_count?: number; triggered_count?: number; unavailable_count?: number; push_sent_count?: number; push_failed_count?: number; error_code?: string | null; started_at?: string; completed_at?: string | null };
+        Update: Partial<Database['public']['Tables']['alert_evaluation_runs']['Insert']>;
         Relationships: [];
       };
     };
@@ -199,6 +232,7 @@ export interface Database {
       fail_market_instrument_sync: { Args: { input_run_id: string; input_error: Json }; Returns: undefined };
       finalize_market_instrument_sync: { Args: { input_run_id: string; input_failed_count?: number }; Returns: Array<{ inserted: number; updated: number; skipped: number; failed: number }> };
       trigger_price_alert: { Args: { alert_id: string; observed_price: number; observed_change_percent: number; observed_at: string; notification_title: string; notification_message: string }; Returns: string | null };
+      trigger_price_alert_service: { Args: { alert_id: string; observed_price: number; observed_change_percent: number; observed_at: string; notification_title: string; notification_message: string; input_idempotency_key: string }; Returns: string | null };
     };
     Enums: Record<string, never>;
     CompositeTypes: Record<string, never>;

@@ -17,6 +17,10 @@ const serverEnvSchema = z.object({
   ALPHA_VANTAGE_API_KEY: optionalSecret,
   NEWS_API_KEY: optionalSecret,
   SUPABASE_SERVICE_ROLE_KEY: optionalSecret,
+  CRON_SECRET: optionalSecret,
+  WEB_PUSH_VAPID_PUBLIC_KEY: optionalSecret,
+  WEB_PUSH_VAPID_PRIVATE_KEY: optionalSecret,
+  WEB_PUSH_SUBJECT: z.preprocess((value) => value === '' ? undefined : value, z.string().min(1).optional()),
 });
 
 const parsedServerEnv = serverEnvSchema.safeParse({
@@ -25,12 +29,16 @@ const parsedServerEnv = serverEnvSchema.safeParse({
   ALPHA_VANTAGE_API_KEY: process.env.ALPHA_VANTAGE_API_KEY,
   NEWS_API_KEY: process.env.NEWS_API_KEY,
   SUPABASE_SERVICE_ROLE_KEY: process.env.SUPABASE_SERVICE_ROLE_KEY,
+  CRON_SECRET: process.env.CRON_SECRET,
+  WEB_PUSH_VAPID_PUBLIC_KEY: process.env.WEB_PUSH_VAPID_PUBLIC_KEY,
+  WEB_PUSH_VAPID_PRIVATE_KEY: process.env.WEB_PUSH_VAPID_PRIVATE_KEY,
+  WEB_PUSH_SUBJECT: process.env.WEB_PUSH_SUBJECT,
 });
 
 // Missing or invalid optional integrations must not crash the application.
 export const serverEnv = parsedServerEnv.success
   ? parsedServerEnv.data
-  : { APP_URL: undefined, GEMINI_API_KEY: undefined, ALPHA_VANTAGE_API_KEY: undefined, NEWS_API_KEY: undefined, SUPABASE_SERVICE_ROLE_KEY: undefined };
+  : { APP_URL: undefined, GEMINI_API_KEY: undefined, ALPHA_VANTAGE_API_KEY: undefined, NEWS_API_KEY: undefined, SUPABASE_SERVICE_ROLE_KEY: undefined, CRON_SECRET: undefined, WEB_PUSH_VAPID_PUBLIC_KEY: undefined, WEB_PUSH_VAPID_PRIVATE_KEY: undefined, WEB_PUSH_SUBJECT: undefined };
 
 export const serverEnvIssues = parsedServerEnv.success
   ? []
