@@ -110,6 +110,7 @@ export interface MarketDataProvider {
 export const marketDataErrorCodeSchema = z.enum([
   'provider-not-configured',
   'invalid-request',
+  'invalid-symbol',
   'not-found',
   'rate-limited',
   'timeout',

@@ -1,7 +1,6 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import { Watchlist, Notification, PortfolioItem } from '../types';
-import { mockPortfolioAssets } from '../mocks/marketData';
 import { appConfig } from '../config/app';
 
 interface AppState {
@@ -93,8 +92,8 @@ export const useStore = create<AppState>()(
         notifications: [{ ...notif, id: Date.now().toString(), timestamp: new Date().toISOString() }, ...state.notifications]
       })),
 
-      portfolio: mockPortfolioAssets,
-      cashBalance: 150000,
+      portfolio: [],
+      cashBalance: 0,
       addCashRecord: (amount, curr) => set((state) => ({
          cashBalance: state.cashBalance + (curr === 'USD' ? amount * 35 : amount)
       }))

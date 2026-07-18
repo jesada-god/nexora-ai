@@ -117,7 +117,7 @@ export class AlphaVantageProvider implements MarketDataProvider {
       payload['Global Quote'] && typeof payload['Global Quote'] === 'object' &&
       Object.keys(payload['Global Quote']).length === 0
     ) {
-      throw new MarketDataError('not-found', `No quote found for ${symbol}`);
+      throw new MarketDataError('invalid-symbol', `No quote found for ${symbol}`);
     }
     const data = this.normalize(() => normalizeQuoteResponse(payload));
     return {
@@ -151,7 +151,7 @@ export class AlphaVantageProvider implements MarketDataProvider {
   async getCompanyProfile(symbol: string): Promise<ProviderResult<CompanyProfile>> {
     const payload = await this.request({ function: 'OVERVIEW', symbol }, REVALIDATE_SECONDS.profile);
     if (payload && typeof payload === 'object' && Object.keys(payload).length === 0) {
-      throw new MarketDataError('not-found', `No company profile found for ${symbol}`);
+      throw new MarketDataError('invalid-symbol', `No company profile found for ${symbol}`);
     }
     const data = this.normalize(() => normalizeProfileResponse(payload));
     return {

@@ -17,6 +17,23 @@ describe('market data provider error mapping', () => {
     expect(error.code).toBe('rate-limited');
   });
 
+  it('maps Alpha Vantage Information quota responses to 429 even when they mention an API key', () => {
+    const error = mapProviderFailure({ payload: { Information: 'Thank you for using Alpha Vantage! You have reached the 25 requests per day limit for your API key.' } });
+    expect(error.code).toBe('rate-limited');
+    expect(error.status).toBe(429);
+  });
+
+  it('keeps an invalid key distinct from quota exhaustion', () => {
+    const error = mapProviderFailure({ payload: { Information: 'The API key is invalid. Please visit Alpha Vantage.' } });
+    expect(error.code).toBe('provider-unauthorized');
+    expect(error.status).toBe(502);
+  });
+
+  it('maps invalid symbols separately', () => {
+    const error = mapProviderFailure({ payload: { 'Error Message': 'Invalid API call. Please retry or visit the documentation.' } });
+    expect(error.code).toBe('invalid-symbol'); expect(error.status).toBe(404);
+  });
+
   it('maps aborted requests to timeouts', () => {
     const cause = new Error('timed out');
     cause.name = 'TimeoutError';

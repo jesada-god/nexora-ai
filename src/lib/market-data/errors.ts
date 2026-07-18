@@ -4,6 +4,7 @@ import type { MarketDataApiError, MarketDataErrorCode } from './types';
 const STATUS_BY_CODE: Record<MarketDataErrorCode, number> = {
   'provider-not-configured': 503,
   'invalid-request': 400,
+  'invalid-symbol': 404,
   'not-found': 404,
   'rate-limited': 429,
   timeout: 504,
@@ -71,15 +72,20 @@ export function mapProviderFailure(input: ProviderFailureInput): MarketDataError
   );
 
   if (isAbort) return new MarketDataError('timeout', 'Market data provider timed out');
-  if (input.status === 401 || input.status === 403 || /api key|apikey|invalid key/i.test(message ?? '')) {
-    return new MarketDataError('provider-unauthorized', 'Market data provider rejected the API key');
-  }
-  if (input.status === 429 || /frequency|rate limit|call volume|requests per/i.test(message ?? '')) {
+  // Alpha Vantage quota messages often mention the API key. Quota signals must win
+  // over the more general key matcher or exhausted free-tier keys become 502s.
+  if (input.status === 429 || /frequency|rate limit|call volume|requests per|calls per|premium endpoint|daily.*limit/i.test(message ?? '')) {
     return new MarketDataError(
       'rate-limited',
       'Market data provider rate limit exceeded',
       input.retryAfterSeconds,
     );
+  }
+  if (input.status === 401 || input.status === 403 || /invalid api key|invalid apikey|api key is invalid|apikey is invalid/i.test(message ?? '')) {
+    return new MarketDataError('provider-unauthorized', 'Market data provider rejected the API key');
+  }
+  if (/invalid api call|invalid symbol|symbol.*invalid/i.test(message ?? '')) {
+    return new MarketDataError('invalid-symbol', 'The market symbol is invalid or unsupported');
   }
   if (input.status && input.status >= 500) {
     return new MarketDataError('upstream-unavailable', 'Market data provider is unavailable');
