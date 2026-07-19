@@ -21,13 +21,26 @@ interface InflightEntry {
   consumers: Set<symbol>;
 }
 
+async function sha256(value: string): Promise<string> {
+  const bytes = new TextEncoder().encode(value);
+  const digest = await crypto.subtle.digest('SHA-256', bytes);
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
 export class CompanyProfileTranslationClient {
   private readonly inflight = new Map<string, InflightEntry>();
+  private readonly completed = new Map<string, string>();
 
   constructor(private readonly fetcher: TranslationFetcher) {}
 
-  request(input: CompanyProfileTranslationRequest, signal: AbortSignal): Promise<string> {
-    const key = `${input.symbol}:${input.targetLanguage}:${input.sourceText}`;
+  async request(input: CompanyProfileTranslationRequest, signal: AbortSignal): Promise<string> {
+    const sourceHash = await sha256(input.sourceText);
+    const key = `${input.symbol}:${input.targetLanguage}:${sourceHash}`;
+    if (signal.aborted) throw new DOMException('Request aborted', 'AbortError');
+
+    const completed = this.completed.get(key);
+    if (completed) return completed;
+
     let entry = this.inflight.get(key);
     if (!entry) {
       const controller = new AbortController();
@@ -46,6 +59,9 @@ export class CompanyProfileTranslationClient {
           throw new Error(parsed.data.error?.message ?? 'Translation is unavailable');
         }
         return parsed.data.data.translatedText;
+      }).then((text) => {
+        this.completed.set(key, text);
+        return text;
       }).finally(() => this.inflight.delete(key));
       entry = { controller, promise, consumers: new Set() };
       this.inflight.set(key, entry);

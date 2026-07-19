@@ -69,6 +69,26 @@ describe('Stock Detail unavailable UX', () => {
     expect(html).toContain('ยังไม่มีรายละเอียดบริษัทสำหรับแปล');
   });
 
+  it('disables Profile Retry while the provider cooldown is active', () => {
+    const html = renderToStaticMarkup(
+      <CompanyProfileCard
+        symbol="RKLB"
+        profile={null}
+        freshness={unavailableFreshness}
+        provider={null}
+        error={rateLimitedProfile}
+        loading={false}
+        retryAt={Date.now() + 30_000}
+        onRetry={vi.fn()}
+        language="en"
+      />,
+    );
+
+    expect(html).toMatch(
+      /<button type="button" disabled=""[^>]*>Wait for the retry period, then try again<\/button>/,
+    );
+  });
+
   it('shows a cached Profile after a provider rate limit with status and timestamp', () => {
     const cachedProfile: CompanyProfile = {
       symbol: 'RKLB',
@@ -107,6 +127,48 @@ describe('Stock Detail unavailable UX', () => {
     expect(html).toContain('Rocket Lab provides launch services.');
     expect(html).toContain('Stale · alpha-vantage');
     expect(html).toMatch(/7\/19\/2026/);
+    expect(html).not.toContain('Company profile is temporarily unavailable');
+  });
+
+  it('shows secondary Profile data normally with a fallback-source badge', () => {
+    const fallbackProfile: CompanyProfile = {
+      symbol: 'RKLB',
+      name: 'Rocket Lab USA, Inc.',
+      description: 'Rocket Lab provides launch services.',
+      exchange: 'NASDAQ',
+      currency: 'USD',
+      country: 'US',
+      sector: 'Industrials',
+      industry: 'Aerospace & Defense',
+      website: null,
+      marketCapitalization: null,
+      employees: null,
+      fiscalYearEnd: null,
+      latestQuarter: null,
+    };
+    const html = renderToStaticMarkup(
+      <CompanyProfileCard
+        symbol="RKLB"
+        profile={fallbackProfile}
+        freshness={{
+          status: 'cached',
+          asOf: null,
+          cachedAt: '2026-07-20T00:00:00.000Z',
+          maxAgeSeconds: 86_400,
+        }}
+        provider="financial-modeling-prep"
+        fallbackUsed
+        error={null}
+        loading={false}
+        retryAt={0}
+        onRetry={vi.fn()}
+        language="en"
+      />,
+    );
+
+    expect(html).toContain('Rocket Lab provides launch services.');
+    expect(html).toContain('Fallback source');
+    expect(html).toContain('financial-modeling-prep');
     expect(html).not.toContain('Company profile is temporarily unavailable');
   });
 

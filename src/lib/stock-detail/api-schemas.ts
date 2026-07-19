@@ -17,7 +17,14 @@ function marketEnvelopeSchema<T extends z.ZodType>(dataSchema: T) {
 }
 
 export const quoteEnvelopeSchema = marketEnvelopeSchema(quoteSchema);
-export const profileEnvelopeSchema = marketEnvelopeSchema(companyProfileSchema);
+export const profileEnvelopeSchema = marketEnvelopeSchema(companyProfileSchema).extend({
+  status: z.enum(['fresh', 'cached', 'stale', 'unavailable']),
+  providerUsed: z.string().nullable(),
+  fallbackUsed: z.boolean(),
+  cachedAt: z.iso.datetime().nullable(),
+  retryAfterSeconds: z.number().int().nonnegative(),
+  reasonCode: z.string().nullable(),
+});
 export const historyEnvelopeSchema = marketEnvelopeSchema(historicalPricesSchema);
 
 export const companyProfileTranslationRequestSchema = z.object({
@@ -40,6 +47,7 @@ export const companyProfileTranslationResponseSchema = z.object({
     code: z.enum([
       'invalid-request',
       'provider-not-configured',
+      'model-unavailable',
       'rate-limited',
       'upstream-unavailable',
       'invalid-provider-response',

@@ -163,7 +163,10 @@ export class AlphaVantageProvider implements MarketDataProvider {
   async getCompanyProfile(symbol: string): Promise<ProviderResult<CompanyProfile>> {
     const payload = await this.request({ function: 'OVERVIEW', symbol }, REVALIDATE_SECONDS.profile);
     if (payload && typeof payload === 'object' && Object.keys(payload).length === 0) {
-      throw new MarketDataError('invalid-symbol', `No company profile found for ${symbol}`);
+      throw new MarketDataError(
+        'invalid-provider-response',
+        `Company profile response was empty for ${symbol}`,
+      );
     }
     const data = this.normalize(() => normalizeProfileResponse(payload));
     return {

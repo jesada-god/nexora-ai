@@ -8,6 +8,11 @@ import { NasdaqHistoricalProvider } from './providers/nasdaq/provider';
 import { HistoricalMarketDataService, type HistoricalProvider } from './historical-service';
 import { SharedRequestCache } from '@/src/lib/shared-request-cache';
 import type { CompanyProfile, HistoricalPrices, HistoricalRange, MarketOverview, ProviderResult, Quote, SymbolSearchResult } from './types';
+import {
+  CompanyProfileService,
+  type CompanyProfileProvider,
+} from './profile-service';
+import { FinancialModelingPrepProfileProvider } from './providers/financial-modeling-prep/provider';
 
 export const MARKET_DATA_PROVIDER_ID = 'alpha-vantage';
 const cache = new SharedRequestCache();
@@ -15,6 +20,8 @@ let providerKey: string | undefined;
 let providerInstance: MarketDataProvider | undefined;
 let historicalProviderKey: string | undefined;
 let historicalService: HistoricalMarketDataService | undefined;
+let profileProviderKey: string | undefined;
+let profileService: CompanyProfileService | undefined;
 
 function cachedResult<T>(
   result: ProviderResult<T>,
@@ -33,43 +40,14 @@ function cachedResult<T>(
   };
 }
 
-function profileErrorFields(cause: unknown): {
-  errorCode: string | null;
-  retryable: boolean;
-} {
-  if (cause instanceof MarketDataError) {
-    return { errorCode: cause.code, retryable: cause.retryable };
-  }
-  return cause
-    ? { errorCode: 'internal-error', retryable: true }
-    : { errorCode: null, retryable: false };
-}
-
-function logProfileCache(input: {
-  symbol: string;
-  state: 'fresh' | 'cache' | 'stale' | 'error';
-  cause?: unknown;
-  storedAt?: number;
-}): void {
-  const error = profileErrorFields(input.cause);
-  const entry = {
-    event: 'market_profile_cache',
-    symbol: input.symbol,
-    provider: MARKET_DATA_PROVIDER_ID,
-    cache: input.state === 'cache' || input.state === 'stale' ? 'hit' : 'miss',
-    cacheState: input.state,
-    errorCode: error.errorCode,
-    retryable: error.retryable,
-    timestamp: new Date().toISOString(),
-    cachedAt: input.storedAt ? new Date(input.storedAt).toISOString() : null,
-  };
-  if (input.cause) console.warn(JSON.stringify(entry));
-  else console.info(JSON.stringify(entry));
-}
-
 class CachedMarketDataProvider implements MarketDataProvider {
   readonly id: string;
-  constructor(private readonly source: MarketDataProvider) { this.id = source.id; }
+  constructor(
+    private readonly source: MarketDataProvider,
+    private readonly profiles: CompanyProfileService,
+  ) {
+    this.id = source.id;
+  }
   private async get<T>(key: string, operation: () => Promise<ProviderResult<T>>, freshMs: number, staleMs: number) {
     const result = await cache.resolve(key, operation, { freshMs, staleMs, errorMs: 30_000 });
     return cachedResult(result.value, result.state, result.storedAt);
@@ -77,24 +55,8 @@ class CachedMarketDataProvider implements MarketDataProvider {
   search(query: string): Promise<ProviderResult<SymbolSearchResult[]>> { return this.get(`search:${query}`, () => this.source.search(query), 3_600_000, 3_600_000); }
   getQuote(symbol: string): Promise<ProviderResult<Quote>> { return this.get(`quote:${symbol}`, () => this.source.getQuote(symbol), 60_000, 15 * 60_000); }
   getHistoricalPrices(symbol: string, range: HistoricalRange): Promise<ProviderResult<HistoricalPrices>> { return this.get(`history:${symbol}:${range}`, () => this.source.getHistoricalPrices(symbol, range), 15 * 60_000, 24 * 60 * 60_000); }
-  async getCompanyProfile(symbol: string): Promise<ProviderResult<CompanyProfile>> {
-    try {
-      const result = await cache.resolve(
-        `profile:${symbol}`,
-        () => this.source.getCompanyProfile(symbol),
-        { freshMs: 24 * 60 * 60_000, staleMs: 7 * 24 * 60 * 60_000, errorMs: 30_000 },
-      );
-      logProfileCache({
-        symbol,
-        state: result.state,
-        cause: result.error,
-        storedAt: result.storedAt,
-      });
-      return cachedResult(result.value, result.state, result.storedAt);
-    } catch (cause) {
-      logProfileCache({ symbol, state: 'error', cause });
-      throw cause;
-    }
+  getCompanyProfile(symbol: string): Promise<ProviderResult<CompanyProfile>> {
+    return this.profiles.getCompanyProfile(symbol);
   }
   getMarketOverview(): Promise<ProviderResult<MarketOverview>> { return this.get('overview', () => this.source.getMarketOverview(), 5 * 60_000, 30 * 60_000); }
 }
@@ -108,9 +70,41 @@ export function getMarketDataProvider(): MarketDataProvider {
   }
   if (!providerInstance || providerKey !== serverEnv.ALPHA_VANTAGE_API_KEY) {
     providerKey = serverEnv.ALPHA_VANTAGE_API_KEY;
-    providerInstance = new CachedMarketDataProvider(new AlphaVantageProvider(providerKey));
+    providerInstance = new CachedMarketDataProvider(
+      new AlphaVantageProvider(providerKey),
+      getCompanyProfileService(),
+    );
   }
   return providerInstance;
+}
+
+class UnconfiguredCompanyProfileProvider implements CompanyProfileProvider {
+  readonly id = MARKET_DATA_PROVIDER_ID;
+
+  async getCompanyProfile(): Promise<never> {
+    throw new MarketDataError(
+      'provider-not-configured',
+      'Primary company profile provider is not configured',
+    );
+  }
+}
+
+export function getCompanyProfileService(): CompanyProfileService {
+  const alphaKey = serverEnv.ALPHA_VANTAGE_API_KEY;
+  const secondaryKey = serverEnv.FMP_API_KEY;
+  const configurationKey = `${alphaKey ?? ''}\u0000${secondaryKey ?? ''}`;
+  if (!profileService || profileProviderKey !== configurationKey) {
+    profileProviderKey = configurationKey;
+    profileService = new CompanyProfileService(
+      alphaKey
+        ? new AlphaVantageProvider(alphaKey)
+        : new UnconfiguredCompanyProfileProvider(),
+      secondaryKey
+        ? new FinancialModelingPrepProfileProvider(secondaryKey)
+        : null,
+    );
+  }
+  return profileService;
 }
 
 class UnconfiguredHistoricalProvider implements HistoricalProvider {

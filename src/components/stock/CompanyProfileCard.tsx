@@ -67,6 +67,7 @@ export function CompanyProfileCard({
   profile,
   freshness,
   provider,
+  fallbackUsed = false,
   error,
   loading,
   retryAt,
@@ -78,6 +79,7 @@ export function CompanyProfileCard({
   profile: CompanyProfile | null;
   freshness: DataFreshness;
   provider: string | null;
+  fallbackUsed?: boolean;
   error: MarketDataApiError | null;
   loading: boolean;
   retryAt: number;
@@ -165,12 +167,19 @@ export function CompanyProfileCard({
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="min-w-0">
           <h2 className="font-bold text-white">{labels.title}</h2>
-          <p className="mt-1 break-words text-[10px] text-slate-500">
-            {status} · {provider ?? labels.unknownProvider}
-            {profileTimestamp
-              ? ` · ${new Date(profileTimestamp).toLocaleString(activeLanguage === 'th' ? 'th-TH' : 'en-US')}`
-              : ''}
-          </p>
+          <div className="mt-1 flex flex-wrap items-center gap-2 text-[10px] text-slate-500">
+            <span className="break-words">
+              {status} · {provider ?? labels.unknownProvider}
+              {profileTimestamp
+                ? ` · ${new Date(profileTimestamp).toLocaleString(activeLanguage === 'th' ? 'th-TH' : 'en-US')}`
+                : ''}
+            </span>
+            {fallbackUsed && (
+              <span className="rounded-full bg-amber-500/10 px-2 py-0.5 text-amber-300">
+                {labels.fallbackSource}
+              </span>
+            )}
+          </div>
         </div>
         <div className="flex shrink-0 rounded-lg border border-slate-700 p-1" aria-label="Company Profile language">
           <button

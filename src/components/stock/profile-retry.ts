@@ -7,6 +7,13 @@ type ProfileFetcher = (
   init: { headers: { Accept: 'application/json' } },
 ) => Promise<Response>;
 
+interface InflightProfileRequest {
+  fetcher: ProfileFetcher;
+  promise: Promise<StockDetailResource<CompanyProfile>>;
+}
+
+const inflight = new Map<string, InflightProfileRequest>();
+
 const unavailableFreshness = {
   status: 'unavailable' as const,
   asOf: null,
@@ -21,9 +28,9 @@ function internalError(message: string): MarketDataApiError {
   };
 }
 
-export async function requestCompanyProfile(
+async function loadCompanyProfile(
   symbol: string,
-  fetcher: ProfileFetcher = fetch,
+  fetcher: ProfileFetcher,
 ): Promise<StockDetailResource<CompanyProfile>> {
   const response = await fetcher(`/api/market/profile/${encodeURIComponent(symbol)}`, {
     headers: { Accept: 'application/json' },
@@ -37,6 +44,9 @@ export async function requestCompanyProfile(
       provider: null,
       reason: `${error.code}: ${error.message}`,
       error,
+      fallbackUsed: false,
+      retryAfterSeconds: 0,
+      reasonCode: 'INVALID_ENVELOPE',
     };
   }
 
@@ -49,14 +59,35 @@ export async function requestCompanyProfile(
       provider: envelope.meta.provider,
       reason: `${error.code}: ${error.message}`,
       error,
+      fallbackUsed: envelope.fallbackUsed,
+      retryAfterSeconds: envelope.retryAfterSeconds,
+      reasonCode: envelope.reasonCode,
     };
   }
 
   return {
     data: envelope.data,
     freshness: envelope.meta.freshness,
-    provider: envelope.meta.provider,
+    provider: envelope.providerUsed ?? envelope.meta.provider,
     reason: null,
     error: null,
+    fallbackUsed: envelope.fallbackUsed,
+    retryAfterSeconds: envelope.retryAfterSeconds,
+    reasonCode: envelope.reasonCode,
   };
+}
+
+export function requestCompanyProfile(
+  symbol: string,
+  fetcher: ProfileFetcher = fetch,
+): Promise<StockDetailResource<CompanyProfile>> {
+  const current = inflight.get(symbol);
+  if (current && current.fetcher === fetcher) return current.promise;
+
+  const request = loadCompanyProfile(symbol, fetcher).finally(() => {
+    const active = inflight.get(symbol);
+    if (active?.promise === request) inflight.delete(symbol);
+  });
+  inflight.set(symbol, { fetcher, promise: request });
+  return request;
 }

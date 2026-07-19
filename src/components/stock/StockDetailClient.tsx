@@ -1,7 +1,7 @@
 'use client';
 
 import dynamic from 'next/dynamic';
-import { useState, useTransition } from 'react';
+import { useEffect, useState, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
 import { Activity, ArrowLeft, Bell, Share2, Star } from 'lucide-react';
 import { addWatchlistItemAction, removeWatchlistItemAction } from '@/app/watchlist/actions';
@@ -120,11 +120,26 @@ export function StockDetailClient({
   const [quoteRetryAt, setQuoteRetryAt] = useState(0);
   const [profileResource, setProfileResource] = useState(initialProfileResource);
   const [profileLoading, setProfileLoading] = useState(false);
-  const [profileRetryAt, setProfileRetryAt] = useState(0);
+  const [profileRetryAt, setProfileRetryAt] = useState(() => {
+    const seconds = initialProfileResource.retryAfterSeconds
+      ?? initialProfileResource.error?.retryAfterSeconds
+      ?? 0;
+    return seconds > 0 ? Date.parse(evaluatedAt) + seconds * 1_000 : 0;
+  });
   const [profileLanguage, setProfileLanguage] = useState<CompanyProfileLanguage>(
     initialProfileResource.data?.description ? 'th' : 'en',
   );
   const isOnline = useOnlineStatus();
+
+  useEffect(() => {
+    if (profileRetryAt <= 0) return;
+    const timeout = window.setTimeout(
+      () => setProfileRetryAt(0),
+      Math.max(0, profileRetryAt - Date.now()),
+    );
+    return () => window.clearTimeout(timeout);
+  }, [profileRetryAt]);
+
   const profile = profileResource.data;
   const overview = overviewResource.data;
   const quote = quoteResource.data;
@@ -248,10 +263,11 @@ export function StockDetailClient({
     try {
       const next = await requestCompanyProfile(symbol);
       setProfileResource(next);
-      const retryAfterSeconds = next.error?.retryAfterSeconds ?? 0;
+      const retryAfterSeconds = next.retryAfterSeconds
+        ?? next.error?.retryAfterSeconds
+        ?? 0;
       if (retryAfterSeconds > 0) {
         setProfileRetryAt(Date.now() + retryAfterSeconds * 1_000);
-        window.setTimeout(() => setProfileRetryAt(0), retryAfterSeconds * 1_000);
       } else {
         setProfileRetryAt(0);
       }
@@ -459,6 +475,7 @@ function Overview({
         profile={profile}
         freshness={profileResource.freshness}
         provider={profileResource.provider}
+        fallbackUsed={profileResource.fallbackUsed}
         error={profileResource.error}
         loading={profileLoading}
         retryAt={profileRetryAt}

@@ -56,12 +56,20 @@ function resource<T>(
   defaultProvider: string,
 ): StockDetailResource<T> {
   if (result.status === 'rejected') return unavailable<T>(result.reason);
+  const profileMetadata = result.value as ProviderResult<T> & {
+    fallbackUsed?: boolean;
+    retryAfterSeconds?: number;
+    reasonCode?: string | null;
+  };
   return {
     data: result.value.data,
     freshness: result.value.freshness,
     provider: result.value.provider ?? defaultProvider,
     reason: null,
     error: null,
+    fallbackUsed: profileMetadata.fallbackUsed,
+    retryAfterSeconds: profileMetadata.retryAfterSeconds,
+    reasonCode: profileMetadata.reasonCode,
   };
 }
 

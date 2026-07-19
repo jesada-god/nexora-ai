@@ -3,7 +3,14 @@ import { NextResponse } from 'next/server';
 import { ZodError } from 'zod';
 import { MARKET_DATA_PROVIDER_ID } from './index';
 import { fromZodError, MarketDataError } from './errors';
-import type { HistoricalPrices, HistoricalUnavailableData, MarketDataEnvelope, ProviderResult } from './types';
+import type {
+  CompanyProfile,
+  HistoricalPrices,
+  HistoricalUnavailableData,
+  MarketDataEnvelope,
+  ProviderResult,
+} from './types';
+import type { CompanyProfileResult } from './profile-service';
 
 const unavailableFreshness = {
   status: 'unavailable' as const,
@@ -51,6 +58,78 @@ export async function marketDataResponse<T>(
     response.headers.set('Cache-Control', 'no-store');
     if (error.retryAfterSeconds) {
       response.headers.set('Retry-After', String(error.retryAfterSeconds));
+    }
+    return response;
+  }
+}
+
+export async function companyProfileMarketDataResponse(
+  operation: () => Promise<CompanyProfileResult>,
+): Promise<NextResponse> {
+  try {
+    const result = await operation();
+    const response = NextResponse.json({
+      data: result.data satisfies CompanyProfile,
+      status: result.profileStatus,
+      providerUsed: result.providerUsed,
+      fallbackUsed: result.fallbackUsed,
+      cachedAt: result.cachedAt,
+      retryAfterSeconds: result.retryAfterSeconds,
+      reasonCode: result.reasonCode,
+      meta: {
+        provider: result.providerUsed,
+        timestamp: new Date().toISOString(),
+        freshness: result.freshness,
+      },
+    });
+    if (result.freshness.maxAgeSeconds !== null) {
+      const staleWhileRevalidate = result.freshness.staleWhileRevalidateSeconds
+        ?? result.freshness.maxAgeSeconds * 2;
+      response.headers.set(
+        'Cache-Control',
+        `public, s-maxage=${result.freshness.maxAgeSeconds}, stale-while-revalidate=${staleWhileRevalidate}`,
+      );
+    }
+    if (result.retryAfterSeconds > 0) {
+      response.headers.set('Retry-After', String(result.retryAfterSeconds));
+    }
+    return response;
+  } catch (cause) {
+    const error = cause instanceof ZodError
+      ? fromZodError(cause)
+      : cause instanceof MarketDataError
+        ? cause
+        : new MarketDataError(
+          'internal-error',
+          'Unexpected company profile error',
+        );
+    const preservesOwnStatus = new Set([
+      'invalid-request',
+      'invalid-symbol',
+      'not-found',
+    ]).has(error.code);
+    const status = error.code === 'rate-limited'
+      ? 429
+      : preservesOwnStatus ? error.status : 503;
+    const retryAfterSeconds = error.retryAfterSeconds ?? 0;
+    const response = NextResponse.json({
+      data: null,
+      status: 'unavailable',
+      providerUsed: null,
+      fallbackUsed: Boolean(error.context?.fallbackReason),
+      cachedAt: null,
+      retryAfterSeconds,
+      reasonCode: error.context?.reason ?? error.code,
+      error: error.toApiError(),
+      meta: {
+        provider: null,
+        timestamp: new Date().toISOString(),
+        freshness: unavailableFreshness,
+      },
+    }, { status });
+    response.headers.set('Cache-Control', 'no-store');
+    if (retryAfterSeconds > 0) {
+      response.headers.set('Retry-After', String(retryAfterSeconds));
     }
     return response;
   }

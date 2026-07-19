@@ -20,6 +20,24 @@ function response(text: string) {
   });
 }
 
+function errorResponse(message = 'Translation failed') {
+  return new Response(JSON.stringify({
+    data: null,
+    error: {
+      code: 'upstream-unavailable',
+      message,
+      retryable: true,
+    },
+    meta: {
+      cached: false,
+      timestamp: '2026-07-20T00:00:00.000Z',
+    },
+  }), {
+    status: 502,
+    headers: { 'Content-Type': 'application/json' },
+  });
+}
+
 const input = {
   symbol: 'RKLB',
   sourceText: 'Rocket Lab provides launch services.',
@@ -37,9 +55,35 @@ describe('Company Profile translation client', () => {
     const first = client.request(input, firstController.signal);
     firstController.abort();
     const second = client.request(input, new AbortController().signal);
-    resolve(response('Rocket Lab ให้บริการด้านการปล่อยจรวด'));
     await expect(first).rejects.toMatchObject({ name: 'AbortError' });
+    await vi.waitFor(() => expect(fetcher).toHaveBeenCalledTimes(1));
+    resolve(response('Rocket Lab ให้บริการด้านการปล่อยจรวด'));
     await expect(second).resolves.toBe('Rocket Lab ให้บริการด้านการปล่อยจรวด');
     expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+
+  it('caches only a successful translation for the symbol, language, and source hash', async () => {
+    const fetcher = vi.fn(async () => response('Rocket Lab ให้บริการปล่อยจรวด'));
+    const client = new CompanyProfileTranslationClient(fetcher);
+
+    await expect(client.request(input, new AbortController().signal)).resolves.toContain('Rocket Lab');
+    await expect(client.request({ ...input }, new AbortController().signal)).resolves.toContain('Rocket Lab');
+
+    expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not auto-retry a failure and sends one new request on manual retry', async () => {
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(errorResponse())
+      .mockResolvedValueOnce(response('Rocket Lab ให้บริการปล่อยจรวด'));
+    const client = new CompanyProfileTranslationClient(fetcher);
+
+    await expect(client.request(input, new AbortController().signal)).rejects.toThrow(
+      'Translation failed',
+    );
+    expect(fetcher).toHaveBeenCalledTimes(1);
+
+    await expect(client.request(input, new AbortController().signal)).resolves.toContain('Rocket Lab');
+    expect(fetcher).toHaveBeenCalledTimes(2);
   });
 });

@@ -14,6 +14,9 @@ export interface StockDetailResource<T> {
   provider: string | null;
   reason: string | null;
   error: MarketDataApiError | null;
+  fallbackUsed?: boolean;
+  retryAfterSeconds?: number;
+  reasonCode?: string | null;
 }
 
 export interface StockDetailQuoteResource extends StockDetailResource<Quote> {
