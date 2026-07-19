@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useId, useRef, useState } from 'react';
-import { ArrowLeft, CalendarDays, Copy, HelpCircle, Plus, Save, Search, Trash2 } from 'lucide-react';
+import { ArrowLeft, CalendarDays, Check, Copy, HelpCircle, LoaderCircle, Plus, Save, Search, Trash2 } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 import { CartesianGrid, Line, LineChart, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import Header from '@/src/components/layout/Header';
@@ -9,12 +9,14 @@ import { Button } from '@/src/components/ui/Button';
 import { Input } from '@/src/components/ui/Input';
 import { Modal } from '@/src/components/ui/Modal';
 import { Tabs } from '@/src/components/ui/Tabs';
+import { useToast } from '@/src/components/ui/Toast';
 import type { MarketDataEnvelope, Quote, SymbolSearchResult } from '@/src/lib/market-data/types';
 import { detectStrategy, valuePortfolio } from '@/src/lib/options-simulator/portfolio';
 import { priceOption } from '@/src/lib/options-simulator/pricing';
 import type { MonteCarloResult, OptionLeg, PortfolioValuation, ScenarioInput, SimulationType, SimulationWorkspace } from '@/src/lib/options-simulator/types';
-import { validationMessages } from '@/src/lib/options-simulator/validation';
-import { addCalendarDays, aggregatePortfolioSensitivity, BASIC_PATH_OPTIONS, calendarDaysBetween, clampTargetDate, engineVolatilityToPercent, formatPremiumDigits, isBasicPathOption, normalizePercentDraft, parseFiniteDraft, parsePercentDraft, parsePremiumPaste, percentVolatilityToEngine, premiumDigitsFromValue, premiumFromDigitString, targetDateError } from './simulator-ux';
+import { calculationValidationMessages } from '@/src/lib/options-simulator/validation';
+import { runExclusiveSave, type SaveFeedbackStatus } from './save-feedback';
+import { addCalendarDays, aggregatePortfolioSensitivity, BASIC_PATH_OPTIONS, calendarDaysBetween, clampTargetDate, displayValidationMessage, engineVolatilityToPercent, formatPremiumDigits, isBasicPathOption, normalizePercentDraft, parseFiniteDraft, parsePercentDraft, parsePremiumPaste, percentVolatilityToEngine, premiumDigitsFromValue, premiumFromDigitString, targetDateError, validationMessageParts, validationPathUnit } from './simulator-ux';
 
 type Saved = SimulationWorkspace & { id: string; createdAt: string; updatedAt: string; version: number };
 const box = 'rounded-2xl border border-slate-800 bg-[#151B28] p-4 shadow-xl md:p-6';
@@ -26,7 +28,17 @@ const day = (offset = 0) => {
   return [value.getFullYear(), String(value.getMonth() + 1).padStart(2, '0'), String(value.getDate()).padStart(2, '0')].join('-');
 };
 const uid = () => crypto.randomUUID();
-const displayValidationMessage = (message: string) => message.replace(/^[^:]+:\s*/, '');
+
+function focusFirstValidationField(messages: string[]) {
+  const path = validationMessageParts(messages[0] ?? '').path;
+  if (!path) return;
+  window.requestAnimationFrame(() => {
+    const field = [...document.querySelectorAll<HTMLElement>('[data-validation-path]')]
+      .find((element) => element.dataset.validationPath === path);
+    field?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    field?.focus({ preventScroll: true });
+  });
+}
 
 function newLeg(): OptionLeg {
   return { id: uid(), kind: 'call', side: 'buy', quantity: 1, strike: 0, expiration: day(30), entryPremium: 0,
@@ -45,12 +57,18 @@ function fresh(type: SimulationType): SimulationWorkspace {
 function normalizeUiWorkspace(value: SimulationWorkspace): SimulationWorkspace {
   const defaultMonteCarlo = fresh(value.simulationType ?? 'what-if').monteCarlo;
   const legacyMonteCarlo = value.monteCarlo ?? defaultMonteCarlo;
+  const scenarios = value.scenarios?.length ? value.scenarios : [newScenario()];
   return {
     ...value,
     stockQuantity: Number.isFinite(value.stockQuantity) ? value.stockQuantity : 0,
     cashPosition: Number.isFinite(value.cashPosition) ? value.cashPosition : 0,
     legs: (value.legs?.length ? value.legs : [newLeg()]).map((leg) => ({ ...leg, fees: Number.isFinite(leg.fees) ? leg.fees : 0, style: leg.style ?? 'european' })),
-    scenarios: value.scenarios?.length ? value.scenarios : [newScenario()],
+    scenarios: scenarios.map((scenario) => ({
+      ...scenario,
+      volatilityShift: Number.isFinite(scenario.volatilityShift) ? scenario.volatilityShift : 0,
+      rate: Number.isFinite(scenario.rate) ? scenario.rate : 0,
+      dividendYield: Number.isFinite(scenario.dividendYield) ? scenario.dividendYield : 0,
+    })),
     monteCarlo: { ...defaultMonteCarlo, ...legacyMonteCarlo, paths: isBasicPathOption(legacyMonteCarlo.paths) ? legacyMonteCarlo.paths : 10_000 },
   };
 }
@@ -96,12 +114,14 @@ function aggregateSensitivity(workspace: SimulationWorkspace) {
 
 export default function SimulatorWorkspace({ initialType }: { initialType: SimulationType }) {
   const router = useRouter();
+  const { addToast } = useToast();
   const [workspace, setWorkspace] = useState(() => fresh(initialType));
   const [tab, setTab] = useState(initialType === 'monte-carlo' ? 'Monte Carlo Simulation' : 'What-If Analysis');
   const [query, setQuery] = useState('');
   const [matches, setMatches] = useState<SymbolSearchResult[]>([]);
   const [pending, setPending] = useState<SymbolSearchResult | null>(null);
-  const [errors, setErrors] = useState<string[]>([]);
+  const [validationErrors, setValidationErrors] = useState<string[]>([]);
+  const [operationError, setOperationError] = useState<string | null>(null);
   const [valuation, setValuation] = useState<PortfolioValuation | null>(null);
   const [mc, setMc] = useState<MonteCarloResult | null>(null);
   const [running, setRunning] = useState(false);
@@ -109,7 +129,8 @@ export default function SimulatorWorkspace({ initialType }: { initialType: Simul
   const [saved, setSaved] = useState<Saved[]>([]);
   const [savedState, setSavedState] = useState<'loading' | 'ready' | 'error'>('loading');
   const [savedQuery, setSavedQuery] = useState('');
-  const [saveStatus, setSaveStatus] = useState('Unsaved');
+  const [saveStatus, setSaveStatus] = useState<SaveFeedbackStatus | 'Offline draft'>('Unsaved');
+  const [savingMode, setSavingMode] = useState<'save' | 'copy' | null>(null);
   const [selectedLegId, setSelectedLegId] = useState('portfolio');
   const [resultsOutdated, setResultsOutdated] = useState(false);
   const [inputsOutdated, setInputsOutdated] = useState(false);
@@ -118,6 +139,7 @@ export default function SimulatorWorkspace({ initialType }: { initialType: Simul
   const workerRunId = useRef(0);
   const hasResults = useRef(false);
   const saveInFlight = useRef(false);
+  const lastSaveMode = useRef<'save' | 'copy'>('save');
   const hydrated = useRef(false);
 
   const cancelWorker = useCallback(() => {
@@ -129,6 +151,8 @@ export default function SimulatorWorkspace({ initialType }: { initialType: Simul
   const change = useCallback((patch: Partial<SimulationWorkspace>) => {
     if (worker.current) cancelWorker();
     setWorkspace((current) => ({ ...current, ...patch }));
+    setValidationErrors([]);
+    setOperationError(null);
     setSaveStatus('Unsaved');
     if (hasResults.current) setResultsOutdated(true);
   }, [cancelWorker]);
@@ -151,14 +175,14 @@ export default function SimulatorWorkspace({ initialType }: { initialType: Simul
       const draft = localStorage.getItem('nexora-options-simulator-draft-v1');
       if (draft) try {
         const parsed = normalizeUiWorkspace(JSON.parse(draft) as SimulationWorkspace);
-        if (!validationMessages(parsed).length) setWorkspace(parsed);
+        if (!calculationValidationMessages(parsed).length) setWorkspace(parsed);
       } catch { /* invalid drafts are ignored */ }
       hydrated.current = true;
     }, 0);
     return () => window.clearTimeout(timer);
   }, []);
   useEffect(() => {
-    if (!hydrated.current || saveStatus === 'Saved') return;
+    if (!hydrated.current || saveStatus !== 'Unsaved') return;
     const timer = setTimeout(() => { localStorage.setItem('nexora-options-simulator-draft-v1', JSON.stringify(workspace)); if (!navigator.onLine) setSaveStatus('Offline draft'); }, 800);
     return () => clearTimeout(timer);
   }, [workspace, saveStatus]);
@@ -217,14 +241,25 @@ export default function SimulatorWorkspace({ initialType }: { initialType: Simul
     change({ monteCarlo: { ...workspace.monteCarlo, ...patch } });
   }
   function validate(): boolean {
-    const issues = validationMessages(workspace);
-    if (tab === 'What-If Analysis' || tab === 'Monte Carlo Simulation') {
-      const expiration = analysisWorkspace().legs.map((leg) => leg.expiration).sort()[0];
-      const dateIssue = targetDateError(workspace.scenarios[0].valuationDate, workspace.valuationDate, expiration);
-      if (dateIssue) issues.push(`scenarios.0.valuationDate: ${dateIssue}`);
-    }
+    const selectedLegIndex = workspace.legs.findIndex((leg) => leg.id === selectedLegId);
+    const issues = calculationValidationMessages(analysisWorkspace()).map((message) => (
+      selectedLegIndex >= 0 ? message.replace(/^legs\.0(?=[:.])/, `legs.${selectedLegIndex}`) : message
+    ));
     if (tab === 'Monte Carlo Simulation' && !isBasicPathOption(workspace.monteCarlo.paths)) issues.push('monteCarlo.paths: Paths ต้องเป็น 1,000, 5,000, 10,000, 25,000 หรือ 50,000');
-    setErrors(issues); return issues.length === 0;
+    setValidationErrors(issues);
+    if (issues.length > 0) {
+      const firstPath = validationMessageParts(issues[0]).path;
+      if (firstPath?.startsWith('legs.')) setTab('Inputs');
+      if (process.env.NODE_ENV === 'development') {
+        console.debug('[Options Simulator validation]', issues.map((message) => {
+          const path = validationMessageParts(message).path ?? 'simulation';
+          return { path, unit: validationPathUnit(path) };
+        }));
+      }
+      focusFirstValidationField(issues);
+      return false;
+    }
+    return true;
   }
   function analysisWorkspace(): SimulationWorkspace {
     return selectedLegId === 'portfolio' || !workspace.legs.some((leg) => leg.id === selectedLegId) ? workspace : { ...workspace, legs: workspace.legs.filter((leg) => leg.id === selectedLegId) };
@@ -236,7 +271,7 @@ export default function SimulatorWorkspace({ initialType }: { initialType: Simul
     hasResults.current = true; setResultsOutdated(false); setInputsOutdated(false); setScenarioDirty(false); setValuation(result); setWorkspace((current) => ({ ...current, resultSnapshot: { ...current.resultSnapshot, whatIf: result } })); setSaveStatus('Unsaved');
   }
   function runMonteCarlo() {
-    cancelWorker(); const runId = ++workerRunId.current; setRunning(true); setProgress(0); setErrors([]);
+    cancelWorker(); const runId = ++workerRunId.current; setRunning(true); setProgress(0); setValidationErrors([]); setOperationError(null);
     const instance = new Worker(new URL('../../workers/optionsMonteCarlo.worker.ts', import.meta.url)); worker.current = instance;
     instance.onmessage = (event: MessageEvent<{ result?: MonteCarloResult; error?: string; progress?: { completed: number; total: number } }>) => {
       if (runId !== workerRunId.current || worker.current !== instance) return;
@@ -244,9 +279,9 @@ export default function SimulatorWorkspace({ initialType }: { initialType: Simul
       instance.terminate(); worker.current = null; setRunning(false);
       if (event.data.result) {
         hasResults.current = true; setResultsOutdated(false); setInputsOutdated(false); setScenarioDirty(false); setMc(event.data.result); setWorkspace((current) => ({ ...current, monteCarlo: settings, resultSnapshot: { ...current.resultSnapshot, monteCarlo: event.data.result } })); setSaveStatus('Unsaved');
-      } else setErrors([event.data.error ?? 'ไม่สามารถจำลองได้ กรุณาลองใหม่']);
+      } else setOperationError(event.data.error ?? 'ไม่สามารถจำลองได้ กรุณาลองใหม่');
     };
-    instance.onerror = () => { if (runId !== workerRunId.current) return; instance.terminate(); worker.current = null; setRunning(false); setErrors(['ไม่สามารถจำลอง Monte Carlo ได้ กรุณาลองใหม่']); };
+    instance.onerror = () => { if (runId !== workerRunId.current) return; instance.terminate(); worker.current = null; setRunning(false); setOperationError('ไม่สามารถจำลอง Monte Carlo ได้ กรุณาลองใหม่'); };
     const scoped = analysisWorkspace();
     const targetDte = Math.max(1, calendarDaysBetween(workspace.valuationDate, workspace.scenarios[0].valuationDate));
     const settings = { ...workspace.monteCarlo, horizonDays: targetDte, steps: Math.min(workspace.monteCarlo.steps, targetDte) };
@@ -266,21 +301,39 @@ export default function SimulatorWorkspace({ initialType }: { initialType: Simul
         valuationDate: clampTargetDate(addCalendarDays(current.valuationDate, 1), current.valuationDate, expiration), volatilityShift: 0 } : item),
       monteCarlo: { ...current.monteCarlo, volatility: nextLeg?.impliedVolatility ?? current.legs[0]?.impliedVolatility ?? current.monteCarlo.volatility },
     }));
-    setScenarioDirty(false); setErrors([]); setSaveStatus('Unsaved');
+    setScenarioDirty(false); setValidationErrors([]); setSaveStatus('Unsaved');
     if (hasResults.current) setResultsOutdated(true);
   }
   async function save(copy = false) {
-    if (saveInFlight.current || !validate()) return; saveInFlight.current = true; setSaveStatus('Saving');
+    if (!validate()) return;
+    const mode = copy ? 'copy' : 'save';
+    lastSaveMode.current = mode;
     const updating = workspace.id && workspace.updatedAt && !copy;
-    try {
+    const attempt = await runExclusiveSave(saveInFlight, async () => {
       const response = await fetch(updating ? `/api/option-simulations/${workspace.id}` : '/api/option-simulations', {
         method: updating ? 'PUT' : 'POST', headers: { 'content-type': 'application/json' },
         body: JSON.stringify(updating ? { workspace, expectedUpdatedAt: workspace.updatedAt } : { ...workspace, id: undefined, updatedAt: undefined }),
       });
       if (!response.ok) throw new Error(response.status === 409 ? 'ข้อมูลมีการเปลี่ยนแปลง กรุณาเปิดเวอร์ชันล่าสุดหรือบันทึกเป็นสำเนา' : response.status === 401 ? 'กรุณาเข้าสู่ระบบเพื่อบันทึก ระบบยังเก็บฉบับร่างไว้ในเครื่อง' : 'ไม่สามารถบันทึกได้ กรุณาลองใหม่');
-      const payload = await response.json() as { data: Saved }; setWorkspace(payload.data); setSaveStatus('Saved'); localStorage.removeItem('nexora-options-simulator-draft-v1'); void loadSaved();
-    } catch (error) { setSaveStatus(navigator.onLine ? 'Save failed' : 'Offline draft'); setErrors([error instanceof Error ? error.message : 'ไม่สามารถบันทึกได้ กรุณาลองใหม่']); }
-    finally { saveInFlight.current = false; }
+      const payload = await response.json() as { data: Saved };
+      setWorkspace(payload.data);
+      localStorage.removeItem('nexora-options-simulator-draft-v1');
+      void loadSaved();
+      return payload.data;
+    }, (status) => {
+      setSaveStatus(status);
+      if (status === 'Saving') setSavingMode(mode);
+    });
+    if (!attempt.started) return;
+    setSavingMode(null);
+    if (attempt.ok) {
+      setOperationError(null);
+      addToast({ title: mode === 'copy' ? 'บันทึกสำเนาแล้ว' : 'บันทึกแล้ว', type: 'success' });
+      return;
+    }
+    const message = attempt.error instanceof Error ? attempt.error.message : 'ไม่สามารถบันทึกได้ กรุณาลองใหม่';
+    setOperationError(message);
+    addToast({ title: 'บันทึกไม่สำเร็จ', message, type: 'error' });
   }
   async function remove(item: Saved) {
     if (!confirm(`Delete “${item.name}”?`)) return;
@@ -288,7 +341,7 @@ export default function SimulatorWorkspace({ initialType }: { initialType: Simul
   }
 
   const tabLabels: Record<string, string> = { Inputs: 'ข้อมูลสัญญา', 'What-If': 'What-If', 'Monte Carlo': 'Monte Carlo', Payoff: 'Payoff', Greeks: 'Greeks' };
-  const displayedSaveStatus: Record<string, string> = { Unsaved: 'ยังไม่บันทึก', Saving: 'กำลังบันทึก', Saved: 'บันทึกแล้ว', 'Save failed': 'บันทึกไม่สำเร็จ', 'Offline draft': 'ฉบับร่างออฟไลน์' };
+  const displayedSaveStatus: Record<string, string> = { Unsaved: 'ยังไม่บันทึก', Saving: 'กำลังบันทึก', Saved: 'บันทึกแล้ว', Failed: 'บันทึกไม่สำเร็จ', 'Offline draft': 'ฉบับร่างออฟไลน์' };
   const activeLeg = selectedLegId === 'portfolio' ? null : workspace.legs.find((leg) => leg.id === selectedLegId) ?? null;
   const analysisSelection = activeLeg ? selectedLegId : 'portfolio';
   const scopedLegs = activeLeg ? [activeLeg] : workspace.legs;
@@ -296,7 +349,6 @@ export default function SimulatorWorkspace({ initialType }: { initialType: Simul
   const minimumTargetDate = addCalendarDays(workspace.valuationDate, 1);
   const dte = Math.max(0, calendarDaysBetween(workspace.scenarios[0].valuationDate, earliestExpiration));
   const monteCarloDte = Math.max(1, calendarDaysBetween(workspace.valuationDate, earliestExpiration));
-  const contractReady = Boolean(workspace.symbol && workspace.underlyingPrice && scopedLegs.length && scopedLegs.every((leg) => leg.strike > 0 && leg.entryPremium >= 0 && leg.impliedVolatility > 0 && leg.quantity > 0 && leg.expiration > workspace.valuationDate));
   const scenario = workspace.scenarios[0];
   const currentIv = activeLeg?.impliedVolatility ?? scopedLegs[0]?.impliedVolatility ?? 0;
   const dateIssue = targetDateError(scenario.valuationDate, workspace.valuationDate, earliestExpiration);
@@ -304,18 +356,21 @@ export default function SimulatorWorkspace({ initialType }: { initialType: Simul
   const priceImpactApprox = workspace.underlyingPrice === null ? null : sensitivity.delta * (scenario.targetPrice - workspace.underlyingPrice);
   const timeImpactApprox = sensitivity.theta * Math.max(0, calendarDaysBetween(workspace.valuationDate, scenario.valuationDate));
   const progressPercent = workspace.monteCarlo.paths > 0 ? Math.min(100, progress / workspace.monteCarlo.paths * 100) : 0;
+  const calculateLabel = tab === 'Monte Carlo Simulation' ? 'Start Simulation' : 'คำนวณ What-If';
+  const calculateDisabledReason = running ? 'กำลังคำนวณอยู่ กรุณารอให้เสร็จหรือกดยกเลิกก่อน' : null;
+  const isSaving = saveStatus === 'Saving';
   const fieldError = (path: string) => {
-    const issue = errors.find((message) => message.startsWith(`${path}:`));
-    return issue ? displayValidationMessage(issue) : undefined;
+    const issue = validationErrors.find((message) => validationMessageParts(message).path === path);
+    return issue ? validationMessageParts(issue).reason : undefined;
   };
   const tabDisplay = tab === 'What-If Analysis' ? 'What-If' : tab === 'Monte Carlo Simulation' ? 'Monte Carlo' : tabLabels[tab];
 
   return <div><Header title="Options Portfolio Simulator" subtitle="จำลองและวิเคราะห์เท่านั้น ไม่มีการส่งคำสั่งซื้อขายจริง" />
-    <main className="mx-auto max-w-7xl space-y-5 p-4 pb-24 md:p-8">
-      <div className="flex flex-wrap justify-between gap-2"><Button variant="ghost" onClick={() => router.push('/tools')}><ArrowLeft size={16} className="mr-2" />Tools</Button><div className="flex items-center gap-2"><span className="text-xs text-slate-400">{displayedSaveStatus[saveStatus] ?? saveStatus}</span><Button variant="outline" onClick={() => void save(true)}><Copy size={15} className="mr-2" />บันทึกเป็นสำเนา</Button><Button onClick={() => void save()}><Save size={15} className="mr-2" />บันทึก</Button></div></div>
-      <section className={box}><h2 className="mb-3 text-lg font-bold">1. เลือกหุ้นหรือ ETF</h2><div className="relative max-w-xl"><Search size={16} className="absolute left-3 top-3 text-slate-500" /><Input className="pl-9" value={query} onChange={(event) => { setQuery(event.target.value); if (!event.target.value.trim()) setMatches([]); }} placeholder="ค้นหา Symbol หรือชื่อบริษัท" />{matches.length > 0 && <div className="absolute z-20 mt-1 w-full rounded-xl border border-slate-700 bg-slate-950 shadow-2xl">{matches.map((asset) => <button key={asset.symbol} onClick={() => choose(asset)} className="flex w-full justify-between p-3 text-left hover:bg-slate-800"><span><strong>{asset.symbol}</strong> <span className="text-sm text-slate-400">{asset.name}</span></span><small>{asset.exchange} · {asset.assetType}</small></button>)}</div>}</div>
+    <main className="mx-auto max-w-7xl space-y-5 p-4 pb-[calc(9rem+env(safe-area-inset-bottom))] md:p-8">
+      <div className="flex flex-wrap justify-between gap-2"><Button variant="ghost" onClick={() => router.push('/tools')}><ArrowLeft size={16} className="mr-2" />Tools</Button><div className="flex w-full flex-wrap items-center justify-end gap-2 sm:w-auto"><span role="status" aria-live="polite" aria-atomic="true" className="inline-flex min-h-10 items-center gap-1.5 text-xs text-slate-400">{saveStatus === 'Saving' && <LoaderCircle aria-hidden="true" size={14} className="animate-spin motion-reduce:animate-none" />}{saveStatus === 'Saved' && <Check aria-hidden="true" size={14} className="text-emerald-400" />}{displayedSaveStatus[saveStatus] ?? saveStatus}</span><Button variant="outline" disabled={isSaving} onClick={() => void save(true)}>{isSaving && savingMode === 'copy' ? <LoaderCircle aria-hidden="true" size={15} className="mr-2 animate-spin motion-reduce:animate-none" /> : <Copy aria-hidden="true" size={15} className="mr-2" />}บันทึกเป็นสำเนา</Button><Button disabled={isSaving} onClick={() => void save(saveStatus === 'Failed' && lastSaveMode.current === 'copy')}>{isSaving && savingMode === 'save' ? <LoaderCircle aria-hidden="true" size={15} className="mr-2 animate-spin motion-reduce:animate-none" /> : saveStatus === 'Saved' ? <Check aria-hidden="true" size={15} className="mr-2" /> : <Save aria-hidden="true" size={15} className="mr-2" />}{saveStatus === 'Failed' ? 'ลองบันทึกอีกครั้ง' : 'บันทึก'}</Button></div></div>
+      <section className={box}><h2 className="mb-3 text-lg font-bold">1. เลือกหุ้นหรือ ETF</h2><div className="relative max-w-xl"><Search size={16} className="absolute left-3 top-3 text-slate-500" /><Input className="pl-9" value={query} data-validation-path="symbol" onChange={(event) => { setQuery(event.target.value); if (!event.target.value.trim()) setMatches([]); }} placeholder="ค้นหา Symbol หรือชื่อบริษัท" />{matches.length > 0 && <div className="absolute z-20 mt-1 w-full rounded-xl border border-slate-700 bg-slate-950 shadow-2xl">{matches.map((asset) => <button key={asset.symbol} onClick={() => choose(asset)} className="flex w-full justify-between p-3 text-left hover:bg-slate-800"><span><strong>{asset.symbol}</strong> <span className="text-sm text-slate-400">{asset.name}</span></span><small>{asset.exchange} · {asset.assetType}</small></button>)}</div>}</div>
         {workspace.symbol ? <div className="mt-4 flex flex-wrap gap-4 rounded-xl bg-slate-900 p-3 text-sm"><strong>{workspace.symbol} · {workspace.companyName}</strong><span>{workspace.exchange ?? 'ไม่มีข้อมูลตลาด'}</span><span>{workspace.currency}</span><span>{workspace.underlyingPrice ?? 'ไม่มีข้อมูลราคา'}</span><span className="uppercase">{workspace.dataStatus}</span><span className="text-slate-500">{workspace.dataTimestamp ? new Date(workspace.dataTimestamp).toLocaleString() : 'ไม่มีเวลาข้อมูล'}</span></div> : <p className="mt-3 text-sm text-amber-300">เลือกหุ้นจากระบบ ข้อมูลราคาหรือสัญญาจะไม่ถูกสร้างขึ้นเอง</p>}
-        {workspace.symbol && <div className="mt-3 max-w-xs"><Numeric title="Underlying Price" placeholder="เช่น 130" helper="กรอกเองเมื่อไม่มีราคาจากผู้ให้บริการ" value={workspace.underlyingPrice ?? 0} min={0} onChange={(value) => { if (hasResults.current) setInputsOutdated(true); change({ underlyingPrice: value || null, dataStatus: 'manual' }); }} /></div>}
+        {workspace.symbol && <div className="mt-3 max-w-xs"><Numeric title="Underlying Price" placeholder="เช่น 130" helper="กรอกเองเมื่อไม่มีราคาจากผู้ให้บริการ" value={workspace.underlyingPrice ?? 0} min={0.0000001} validationPath="underlyingPrice" onChange={(value) => { if (hasResults.current) setInputsOutdated(true); change({ underlyingPrice: value || null, dataStatus: 'manual' }); }} /></div>}
       </section>
       <Tabs tabs={Object.values(tabLabels)} activeTab={tabDisplay} onChange={(next) => {
         const key = Object.keys(tabLabels).find((item) => tabLabels[item] === next) ?? next;
@@ -323,35 +378,33 @@ export default function SimulatorWorkspace({ initialType }: { initialType: Simul
       }} />
       {(tab === 'What-If Analysis' || tab === 'Monte Carlo Simulation') && <>
         <ContractSummary workspace={workspace} selectedLegId={analysisSelection} onSelect={selectAnalysisContract} onEdit={() => setTab('Inputs')} />
-        {!contractReady && <section className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-4 text-sm text-amber-100">
-          <strong>ข้อมูลสัญญายังไม่ครบ</strong><p className="mt-1 text-amber-200/80">กรุณาเลือกหุ้นและกรอก Strike, Premium, Expiration และ IV ในแท็บ Inputs ก่อนวิเคราะห์</p>
-          <Button className="mt-3" size="sm" onClick={() => setTab('Inputs')}>แก้ไขข้อมูลสัญญา</Button>
-        </section>}
       </>}
       {tab === 'What-If Analysis' && <section className={box} data-testid="what-if-controls">
         <h1 className="text-xl font-bold">What-If Analysis</h1>
         <p className="mb-5 text-sm text-slate-400">ทดลองเปลี่ยนราคา เวลา และ IV เพื่อดูผลกระทบต่อมูลค่าสัญญาและ P&amp;L</p>
         <div className="grid gap-5 lg:grid-cols-3">
-          <div className="rounded-xl border border-slate-700 p-4"><Numeric title="Target Stock Price" placeholder="เช่น 130" helper="ราคาหุ้นที่ต้องการทดลองว่าจะขึ้นหรือลงไปถึงระดับใด" min={0.0000001} externalError={fieldError('scenarios.0.targetPrice')} value={scenario.targetPrice} onChange={(value) => scenarioChange(0, { targetPrice: value })} />
+          <div className="rounded-xl border border-slate-700 p-4"><Numeric title="Target Stock Price" placeholder="เช่น 130" helper="ราคาหุ้นที่ต้องการทดลองว่าจะขึ้นหรือลงไปถึงระดับใด" min={0.0000001} externalError={fieldError('scenarios.0.targetPrice')} validationPath="scenarios.0.targetPrice" value={scenario.targetPrice} onChange={(value) => scenarioChange(0, { targetPrice: value })} />
             <input aria-label="Target price change percent" className="mt-3 w-full accent-[#D4FF00]" type="range" min="-50" max="100" value={workspace.underlyingPrice ? Math.round((scenario.targetPrice / workspace.underlyingPrice - 1) * 100) : 0} onChange={(event) => scenarioChange(0, { targetPrice: (workspace.underlyingPrice ?? 0) * (1 + Number(event.target.value) / 100) })} />
             <p className="mt-1 text-xs text-slate-400">Current Stock Price {workspace.underlyingPrice?.toFixed(2) ?? 'N/A'} · Change {workspace.underlyingPrice ? `${((scenario.targetPrice / workspace.underlyingPrice - 1) * 100).toFixed(1)}%` : 'N/A'}</p></div>
-          <div className="rounded-xl border border-slate-700 p-4"><FieldLabel title="Target Date" helper="เลือกวันในอนาคต แต่ต้องไม่เกินวันหมดอายุ" /><div className="relative"><Input className="cursor-pointer pr-9" type="date" aria-label="Target Date" min={minimumTargetDate} max={earliestExpiration} placeholder="เลือกวันที่จากปฏิทิน" value={scenario.valuationDate} onChange={(event) => scenarioChange(0, { valuationDate: clampTargetDate(event.target.value, workspace.valuationDate, earliestExpiration) })} /><CalendarDays aria-hidden="true" size={16} className="pointer-events-none absolute right-3 top-3 text-slate-500" /></div>
+          <div className="rounded-xl border border-slate-700 p-4"><FieldLabel title="Target Date" helper="เลือกวันในอนาคต แต่ต้องไม่เกินวันหมดอายุ" /><div className="relative"><Input className="cursor-pointer pr-9" type="date" aria-label="Target Date" min={minimumTargetDate} max={earliestExpiration} placeholder="เลือกวันที่จากปฏิทิน" value={scenario.valuationDate} data-validation-path="scenarios.0.valuationDate" onChange={(event) => scenarioChange(0, { valuationDate: clampTargetDate(event.target.value, workspace.valuationDate, earliestExpiration) })} /><CalendarDays aria-hidden="true" size={16} className="pointer-events-none absolute right-3 top-3 text-slate-500" /></div>
             <p className="mt-2 text-xs text-slate-400">Expiration {earliestExpiration} · DTE ที่เหลือ {dte} วัน</p>{dateIssue && <p role="alert" className="mt-1 text-xs text-red-300">{dateIssue}</p>}</div>
           <div className="rounded-xl border border-slate-700 p-4"><PercentInput title="IV (%)" placeholder="เช่น 114.50" helper="กรอกเป็นเปอร์เซ็นต์ เช่น 114.50 = 114.50%" value={currentIv * (1 + scenario.volatilityShift) * 100} onChange={(value) => scenarioChange(0, { volatilityShift: currentIv > 0 ? Math.max(-0.99, value / (currentIv * 100) - 1) : 0 })} />
             <input aria-label="IV shock percent" className="mt-3 w-full accent-[#D4FF00]" type="range" min="-90" max="200" value={Math.round(scenario.volatilityShift * 100)} onChange={(event) => scenarioChange(0, { volatilityShift: Number(event.target.value) / 100 })} />
             <p className="mt-1 text-xs text-slate-400">Current IV {(currentIv * 100).toFixed(1)}% · IV Shock {scenario.volatilityShift >= 0 ? '+' : ''}{(scenario.volatilityShift * 100).toFixed(1)}%</p></div>
         </div>
         <div className="mt-5 grid grid-cols-2 gap-3 md:grid-cols-4" data-testid="sensitivity-summary"><Metric title="Delta" value={sensitivity.delta.toFixed(4)} helper="รวมตาม Buy/Sell, Quantity และ Multiplier ของสัญญาที่เลือก" /><Metric title="Theta/day" value={sensitivity.theta.toFixed(4)} helper="รวม Time Decay โดยประมาณของสัญญาที่เลือก" /><Metric title="Price Impact (ประมาณ)" value={priceImpactApprox === null ? 'N/A' : priceImpactApprox.toFixed(2)} helper="คำนวณเร็วจาก Delta; Estimated Premium ยังใช้ pricing engine" /><Metric title="Time Impact (ประมาณ)" value={timeImpactApprox.toFixed(2)} helper="คำนวณเร็วจาก Theta/day; ไม่แทน pricing engine" /></div>
+        <div className="mt-5 hidden justify-end md:flex" data-testid="desktop-calculate-action"><div><Button disabled={running} aria-describedby={calculateDisabledReason ? 'desktop-calculate-disabled-reason' : undefined} onClick={analyze}>{calculateLabel}</Button>{calculateDisabledReason && <p id="desktop-calculate-disabled-reason" className="mt-1 text-xs text-amber-300">{calculateDisabledReason}</p>}</div></div>
       </section>}
       {tab === 'Monte Carlo Simulation' && <section className={box} data-testid="monte-carlo-controls">
         <h1 className="text-xl font-bold">Monte Carlo Simulation</h1><p className="mb-5 text-sm text-slate-400">จำลองเส้นทางราคาหุ้นจำนวนมาก เพื่อประเมินความน่าจะเป็นของผลลัพธ์ออปชัน</p>
-        <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3"><div><Numeric title="Target Stock Price" placeholder="เช่น 130" helper="ราคาที่ต้องการตรวจสอบว่ามีโอกาสไปถึงมากน้อยเพียงใด" min={0.0000001} externalError={fieldError('scenarios.0.targetPrice')} value={scenario.targetPrice} onChange={(value) => scenarioChange(0, { targetPrice: value })} /><p className="mt-1 text-xs text-slate-400">ต่างจาก Current Price {workspace.underlyingPrice ? `${((scenario.targetPrice / workspace.underlyingPrice - 1) * 100).toFixed(2)}%` : 'N/A'}</p></div>
-          <div><FieldLabel title="Target Date" helper="วันที่ต้องการตรวจสอบโอกาสที่ราคาจะไปถึงเป้าหมาย" /><div className="relative"><Input className="cursor-pointer pr-9" type="date" aria-label="Monte Carlo Target Date" min={minimumTargetDate} max={earliestExpiration} value={scenario.valuationDate} onChange={(event) => scenarioChange(0, { valuationDate: clampTargetDate(event.target.value, workspace.valuationDate, earliestExpiration) })} /><CalendarDays aria-hidden="true" size={16} className="pointer-events-none absolute right-3 top-3 text-slate-500" /></div><p className="mt-2 text-xs text-slate-400">เหลือ {Math.max(0, calendarDaysBetween(workspace.valuationDate, scenario.valuationDate))} วัน · ไม่เกิน {earliestExpiration}</p>{dateIssue && <p role="alert" className="mt-1 text-xs text-red-300">{dateIssue}</p>}{analysisSelection === 'portfolio' && new Set(scopedLegs.map((leg) => leg.expiration)).size > 1 && <p className="mt-1 text-xs text-amber-300">ทั้งพอร์ตใช้วันหมดอายุที่เร็วที่สุดเป็นขอบเขต</p>}</div>
+        <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3"><div><Numeric title="Target Stock Price" placeholder="เช่น 130" helper="ราคาที่ต้องการตรวจสอบว่ามีโอกาสไปถึงมากน้อยเพียงใด" min={0.0000001} externalError={fieldError('scenarios.0.targetPrice')} validationPath="scenarios.0.targetPrice" value={scenario.targetPrice} onChange={(value) => scenarioChange(0, { targetPrice: value })} /><p className="mt-1 text-xs text-slate-400">ต่างจาก Current Price {workspace.underlyingPrice ? `${((scenario.targetPrice / workspace.underlyingPrice - 1) * 100).toFixed(2)}%` : 'N/A'}</p></div>
+          <div><FieldLabel title="Target Date" helper="วันที่ต้องการตรวจสอบโอกาสที่ราคาจะไปถึงเป้าหมาย" /><div className="relative"><Input className="cursor-pointer pr-9" type="date" aria-label="Monte Carlo Target Date" min={minimumTargetDate} max={earliestExpiration} value={scenario.valuationDate} data-validation-path="scenarios.0.valuationDate" onChange={(event) => scenarioChange(0, { valuationDate: clampTargetDate(event.target.value, workspace.valuationDate, earliestExpiration) })} /><CalendarDays aria-hidden="true" size={16} className="pointer-events-none absolute right-3 top-3 text-slate-500" /></div><p className="mt-2 text-xs text-slate-400">เหลือ {Math.max(0, calendarDaysBetween(workspace.valuationDate, scenario.valuationDate))} วัน · ไม่เกิน {earliestExpiration}</p>{dateIssue && <p role="alert" className="mt-1 text-xs text-red-300">{dateIssue}</p>}{analysisSelection === 'portfolio' && new Set(scopedLegs.map((leg) => leg.expiration)).size > 1 && <p className="mt-1 text-xs text-amber-300">ทั้งพอร์ตใช้วันหมดอายุที่เร็วที่สุดเป็นขอบเขต</p>}</div>
           <PercentInput title="IV (%)" placeholder="เช่น 114.50" helper="กรอกเป็นเปอร์เซ็นต์ เช่น 114.50 = 114.50%" value={engineVolatilityToPercent(workspace.monteCarlo.volatility)} onChange={(value) => monteCarloChange({ volatility: percentVolatilityToEngine(value) })} />
-          <div><FieldLabel title="Paths" helper="จำนวนรอบจำลอง ยิ่งมากผลยิ่งนิ่ง แต่ใช้เวลาคำนวณนานขึ้น" /><select aria-label="Paths" className={select} value={workspace.monteCarlo.paths} onChange={(event) => monteCarloChange({ paths: Number(event.target.value) })}>{BASIC_PATH_OPTIONS.map((value) => <option key={value} value={value}>{value.toLocaleString()}</option>)}</select>{fieldError('monteCarlo.paths') && <p role="alert" className="mt-1 text-xs text-red-300">{fieldError('monteCarlo.paths')}</p>}</div>
+          <div><FieldLabel title="Paths" helper="จำนวนรอบจำลอง ยิ่งมากผลยิ่งนิ่ง แต่ใช้เวลาคำนวณนานขึ้น" /><select aria-label="Paths" className={select} value={workspace.monteCarlo.paths} data-validation-path="monteCarlo.paths" onChange={(event) => monteCarloChange({ paths: Number(event.target.value) })}>{BASIC_PATH_OPTIONS.map((value) => <option key={value} value={value}>{value.toLocaleString()}</option>)}</select>{fieldError('monteCarlo.paths') && <p role="alert" className="mt-1 text-xs text-red-300">{fieldError('monteCarlo.paths')}</p>}</div>
           <Metric title="Delta" value={sensitivity.delta.toFixed(4)} helper="ใช้แสดง sensitivity เท่านั้น ไม่ใช้สร้าง GBM paths" /><Metric title="Theta/day" value={sensitivity.theta.toFixed(4)} helper="ค่าประมาณ Time Decay ของสัญญาที่เลือก" /><Metric title="Days to Expiration" value={`${monteCarloDte} วัน`} helper="ดึงจาก Expiration ใน Inputs" /><Metric title="Premium Paid" value={scopedLegs.reduce((sum, leg) => sum + leg.entryPremium * leg.quantity * leg.multiplier + leg.fees, 0).toFixed(2)} helper="ดึงจาก Inputs" /></div>
         <p className="mt-4 text-xs text-slate-500">ระบบใช้ Random Seed, drift, rates, time steps และ policy เดิมภายในโดยไม่เปิดเป็นช่องกรอก</p>
         {running && <div className="mt-5"><div className="mb-1 flex justify-between text-xs text-slate-400"><span>{progress.toLocaleString()} / {workspace.monteCarlo.paths.toLocaleString()}</span><span>{progressPercent.toFixed(0)}%</span></div><div className="h-2 rounded bg-slate-800"><div className="h-2 rounded bg-[#D4FF00]" style={{ width: `${progressPercent}%` }} /></div><Button className="mt-3 min-h-11" variant="danger" onClick={cancelWorker}>Cancel</Button></div>}
+        <div className="mt-5 hidden justify-end md:flex" data-testid="desktop-simulation-action"><div><Button disabled={running} aria-describedby={calculateDisabledReason ? 'desktop-simulation-disabled-reason' : undefined} onClick={analyze}>{calculateLabel}</Button>{calculateDisabledReason && <p id="desktop-simulation-disabled-reason" className="mt-1 text-xs text-amber-300">{calculateDisabledReason}</p>}</div></div>
       </section>}
       {resultsOutdated && (valuation || mc) && <p role="status" className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-200">{inputsOutdated ? 'ข้อมูลสัญญามีการเปลี่ยนแปลง กรุณาคำนวณใหม่' : 'ข้อมูลมีการเปลี่ยนแปลง กรุณาคำนวณใหม่'}</p>}
       {tab === 'What-If Analysis' && valuation && <WhatIfHighlights workspace={analysisWorkspace()} valuation={valuation} sensitivity={sensitivity} />}
@@ -359,16 +412,17 @@ export default function SimulatorWorkspace({ initialType }: { initialType: Simul
       {tab === 'Inputs' && <section className={box} data-testid="option-legs-form"><div className="grid gap-3 md:grid-cols-3"><Field title="ชื่อแบบจำลอง" placeholder="เช่น Earnings Call" helper="ชื่อสำหรับค้นหาแบบจำลองภายหลัง" value={workspace.name} onChange={(value) => change({ name: value })} /><Field title="Strategy" placeholder="เช่น Long Call" helper="ชื่อกลยุทธ์ที่ตรวจจับจาก Option Legs" value={workspace.strategyType} onChange={(value) => change({ strategyType: value })} /><div><FieldLabel title="Valuation Date" helper="วันที่ฐานสำหรับการคำนวณ" /><Input type="date" aria-label="Valuation Date" value={workspace.valuationDate} onChange={(event) => { if (hasResults.current) setInputsOutdated(true); change({ valuationDate: event.target.value, scenarios: workspace.scenarios.map((item, index) => index === 0 ? { ...item, valuationDate: clampTargetDate(item.valuationDate, event.target.value, workspace.legs.map((leg) => leg.expiration).sort()[0] ?? item.valuationDate) } : item) }); }} /></div></div>
         <div className="my-4"><h2 className="text-lg font-bold">2. Option Legs</h2><p className="text-xs text-slate-400">สร้างและแก้ไขข้อมูลสัญญาที่นี่เพียงจุดเดียว</p></div>
         <div className="space-y-4">{workspace.legs.map((leg, index) => { const resolved = legSensitivity(workspace, leg); return <article key={leg.id} className="overflow-hidden rounded-2xl border border-slate-700 bg-slate-950/20 p-4"><div className="mb-4 flex items-start justify-between gap-3"><div className="flex flex-wrap items-center gap-2"><strong>Leg {index + 1}</strong><span className="rounded-full bg-violet-500/10 px-2 py-1 text-[10px] font-semibold text-violet-300">{leg.kind === 'call' ? 'Call' : 'Put'}</span><span className={`rounded-full px-2 py-1 text-[10px] font-semibold ${leg.side === 'buy' ? 'bg-emerald-500/10 text-emerald-300' : 'bg-amber-500/10 text-amber-300'}`}>{leg.side === 'buy' ? 'Buy' : 'Sell'}</span></div><div className="flex shrink-0 gap-1"><Button className="min-h-11 px-3" variant="ghost" aria-label={`ทำสำเนา Leg ${index + 1}`} onClick={() => change({ legs: [...workspace.legs.slice(0, index + 1), { ...leg, id: uid() }, ...workspace.legs.slice(index + 1)] })}><Copy size={15} /><span className="sr-only sm:not-sr-only sm:ml-2">Duplicate</span></Button><Button className="min-h-11 min-w-11" variant="danger" aria-label={`ลบ Leg ${index + 1}`} disabled={workspace.legs.length === 1} onClick={() => change({ legs: workspace.legs.filter((_, i) => i !== index) })}><Trash2 size={15} /></Button></div></div>
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4"><Choice title="Option Type" value={leg.kind} options={['call', 'put']} optionLabels={{ call: 'Call', put: 'Put' }} onChange={(value) => legChange(index, { kind: value as OptionLeg['kind'] })} /><Choice title="Side" value={leg.side} options={['buy', 'sell']} optionLabels={{ buy: 'Buy', sell: 'Sell' }} onChange={(value) => legChange(index, { side: value as OptionLeg['side'] })} /><Numeric title="Quantity" placeholder="เช่น 1" min={1} integer helper="จำนวนสัญญาที่ต้องการวิเคราะห์" externalError={fieldError(`legs.${index}.quantity`)} value={leg.quantity} onChange={(value) => legChange(index, { quantity: value })} /><Numeric title="Strike Price" placeholder="เช่น 120" min={0.0000001} helper="ราคาใช้สิทธิตามสัญญา" externalError={fieldError(`legs.${index}.strike`)} value={leg.strike} onChange={(value) => legChange(index, { strike: value })} /></div>
-          <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4"><div><FieldLabel title="Expiration" helper="วันหมดอายุของสัญญา" /><Input type="date" aria-label={`Leg ${index + 1} Expiration`} min={addCalendarDays(workspace.valuationDate, 1)} value={leg.expiration} onChange={(event) => legChange(index, { expiration: event.target.value })} />{fieldError(`legs.${index}.expiration`) && <p role="alert" className="mt-1 text-xs text-red-300">{fieldError(`legs.${index}.expiration`)}</p>}</div><PremiumInput value={leg.entryPremium} helper="ต้นทุนต่อหุ้น เช่น $1.40" externalError={fieldError(`legs.${index}.entryPremium`)} onChange={(value) => legChange(index, { entryPremium: value })} /><PercentInput title="IV (%)" value={engineVolatilityToPercent(leg.impliedVolatility)} placeholder="เช่น 114.50" helper="กรอกเป็นเปอร์เซ็นต์ เช่น 114.50 = 114.50%" externalError={fieldError(`legs.${index}.impliedVolatility`)} onChange={(value) => legChange(index, { impliedVolatility: percentVolatilityToEngine(value) })} /><Numeric title="Contract Multiplier" placeholder="เช่น 100" min={0.0000001} helper="หุ้นสหรัฐฯ ส่วนใหญ่ 1 สัญญา = 100 หุ้น" externalError={fieldError(`legs.${index}.multiplier`)} value={leg.multiplier} onChange={(value) => legChange(index, { multiplier: value })} /></div>
-          <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:max-w-[50%]"><GreekInput title="Delta" placeholder="เช่น 0.35" helper="Premium เปลี่ยนโดยประมาณเมื่อหุ้นขยับ $1" value={leg.delta ?? null} fallbackValue={resolved.delta} source={leg.deltaSource ?? (leg.delta == null ? 'model' : 'manual')} timestamp={leg.deltaTimestamp} min={-1} max={1} externalError={fieldError(`legs.${index}.delta`)} onChange={(value) => legChange(index, { delta: value, deltaSource: value === null ? 'model' : 'manual', deltaTimestamp: null })} /><GreekInput title="Theta/day" placeholder="เช่น -0.04" helper="มูลค่าที่ลดลงโดยประมาณต่อวันจาก Time Decay" value={leg.theta ?? null} fallbackValue={resolved.theta} source={leg.thetaSource ?? (leg.theta == null ? 'model' : 'manual')} timestamp={leg.thetaTimestamp} externalError={fieldError(`legs.${index}.theta`)} onChange={(value) => legChange(index, { theta: value, thetaSource: value === null ? 'model' : 'manual', thetaTimestamp: null })} /></div>
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4"><Choice title="Option Type" value={leg.kind} options={['call', 'put']} optionLabels={{ call: 'Call', put: 'Put' }} validationPath={`legs.${index}.kind`} onChange={(value) => legChange(index, { kind: value as OptionLeg['kind'] })} /><Choice title="Side" value={leg.side} options={['buy', 'sell']} optionLabels={{ buy: 'Buy', sell: 'Sell' }} validationPath={`legs.${index}.side`} onChange={(value) => legChange(index, { side: value as OptionLeg['side'] })} /><Numeric title="Quantity" placeholder="เช่น 1" min={1} integer helper="จำนวนสัญญาที่ต้องการวิเคราะห์" externalError={fieldError(`legs.${index}.quantity`)} validationPath={`legs.${index}.quantity`} value={leg.quantity} onChange={(value) => legChange(index, { quantity: value })} /><Numeric title="Strike Price" placeholder="เช่น 120" min={0.0000001} helper="ราคาใช้สิทธิตามสัญญา" externalError={fieldError(`legs.${index}.strike`)} validationPath={`legs.${index}.strike`} value={leg.strike} onChange={(value) => legChange(index, { strike: value })} /></div>
+          <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4"><div><FieldLabel title="Expiration" helper="วันหมดอายุของสัญญา" /><Input type="date" aria-label={`Leg ${index + 1} Expiration`} min={addCalendarDays(workspace.valuationDate, 1)} value={leg.expiration} data-validation-path={`legs.${index}.expiration`} onChange={(event) => legChange(index, { expiration: event.target.value })} />{fieldError(`legs.${index}.expiration`) && <p role="alert" className="mt-1 text-xs text-red-300">{fieldError(`legs.${index}.expiration`)}</p>}</div><PremiumInput value={leg.entryPremium} helper="ต้นทุนต่อหุ้น เช่น $1.40" externalError={fieldError(`legs.${index}.entryPremium`)} validationPath={`legs.${index}.entryPremium`} onChange={(value) => legChange(index, { entryPremium: value })} /><PercentInput title="IV (%)" value={engineVolatilityToPercent(leg.impliedVolatility)} placeholder="เช่น 114.50" helper="กรอกเป็นเปอร์เซ็นต์ เช่น 114.50 = 114.50%" externalError={fieldError(`legs.${index}.impliedVolatility`)} validationPath={`legs.${index}.impliedVolatility`} onChange={(value) => legChange(index, { impliedVolatility: percentVolatilityToEngine(value) })} /><Numeric title="Contract Multiplier" placeholder="เช่น 100" min={0.0000001} helper="หุ้นสหรัฐฯ ส่วนใหญ่ 1 สัญญา = 100 หุ้น" externalError={fieldError(`legs.${index}.multiplier`)} validationPath={`legs.${index}.multiplier`} value={leg.multiplier} onChange={(value) => legChange(index, { multiplier: value })} /></div>
+          <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:max-w-[50%]"><GreekInput title="Delta" placeholder="เช่น 0.35" helper="Premium เปลี่ยนโดยประมาณเมื่อหุ้นขยับ $1" value={leg.delta ?? null} fallbackValue={resolved.delta} source={leg.deltaSource ?? (leg.delta == null ? 'model' : 'manual')} timestamp={leg.deltaTimestamp} min={-1} max={1} externalError={fieldError(`legs.${index}.delta`)} validationPath={`legs.${index}.delta`} onChange={(value) => legChange(index, { delta: value, deltaSource: value === null ? 'model' : 'manual', deltaTimestamp: null })} /><GreekInput title="Theta/day" placeholder="เช่น -0.04" helper="มูลค่าที่ลดลงโดยประมาณต่อวันจาก Time Decay" value={leg.theta ?? null} fallbackValue={resolved.theta} source={leg.thetaSource ?? (leg.theta == null ? 'model' : 'manual')} timestamp={leg.thetaTimestamp} externalError={fieldError(`legs.${index}.theta`)} validationPath={`legs.${index}.theta`} onChange={(value) => legChange(index, { theta: value, thetaSource: value === null ? 'model' : 'manual', thetaTimestamp: null })} /></div>
         </article>; })}</div><Button className="mt-4 min-h-11 w-full border-dashed" variant="outline" onClick={() => change({ legs: [...workspace.legs, newLeg()] })}><Plus size={16} className="mr-2" />เพิ่ม Option Leg</Button></section>}
-      {errors.length > 0 && <section role="alert" className="rounded-xl border border-red-500/30 bg-red-500/10 p-4"><strong>กรุณาตรวจสอบข้อมูลก่อนคำนวณ:</strong><ul className="list-disc pl-5 text-sm">{[...new Set(errors.map(displayValidationMessage))].map((error) => <li key={error}>{error}</li>)}</ul></section>}
+      {validationErrors.length > 0 && <section role="alert" data-testid="validation-warning" className="rounded-xl border border-red-500/30 bg-red-500/10 p-4"><strong>กรุณาตรวจสอบข้อมูลก่อนคำนวณ:</strong><ul className="list-disc pl-5 text-sm">{[...new Set(validationErrors.map(displayValidationMessage))].map((error) => <li key={error}>{error}</li>)}</ul></section>}
+      {operationError && <section role="alert" className="rounded-xl border border-red-500/30 bg-red-500/10 p-4 text-sm">{operationError}</section>}
       {tab === 'Payoff' && valuation && <Payoff valuation={valuation} spot={workspace.underlyingPrice} />}
       {tab === 'Greeks' && valuation && <section className={box}><div className="grid grid-cols-2 gap-3 md:grid-cols-5">{Object.entries(valuation.greeks).map(([key, value]) => <Metric key={key} title={key[0].toUpperCase() + key.slice(1)} value={value.toFixed(4)} helper={greekHelpers[key]} />)}</div></section>}
       <section className={box}><div className="mb-3 flex flex-wrap justify-between gap-2"><h2 className="text-lg font-bold">แบบจำลองของฉัน</h2><div className="flex gap-2"><Input className="w-56" value={savedQuery} onChange={(event) => setSavedQuery(event.target.value)} placeholder="ค้นหาชื่อ Symbol หรือ Strategy" /><Button size="sm" variant="outline" onClick={() => { if (saveStatus === 'Saved' || confirm('Discard unsaved inputs?')) setWorkspace(fresh(initialType)); }}><Plus size={14} /> สร้างใหม่</Button><Button size="sm" variant="danger" onClick={() => { if (confirm('Reset the entire current simulation?')) { setWorkspace(fresh(initialType)); setSaveStatus('Unsaved'); } }}>ล้างข้อมูล</Button></div></div>{savedState === 'loading' ? <div className="h-20 animate-pulse rounded bg-slate-800" /> : savedState === 'error' ? <Button onClick={() => void loadSaved()}>ลองใหม่</Button> : saved.length === 0 ? <p className="text-sm text-slate-400">ยังไม่มีแบบจำลองบนเซิร์ฟเวอร์ เข้าสู่ระบบเพื่อบันทึก โดยระบบจะเก็บฉบับร่างไว้ในเครื่อง</p> : <div className="grid gap-3 md:grid-cols-2">{saved.filter((item) => `${item.name} ${item.symbol} ${item.strategyType} ${item.simulationType}`.toLowerCase().includes(savedQuery.toLowerCase())).map((item) => <article key={item.id} className="rounded-xl border border-slate-700 p-3"><strong>{item.name}</strong><p className="text-xs text-slate-400">{item.symbol} · {item.strategyType} · {item.simulationType} · {new Date(item.updatedAt).toLocaleString()} · {item.dataStatus}</p><div className="mt-2 flex gap-2"><Button size="sm" onClick={() => { if (saveStatus === 'Saved' || confirm('Discard unsaved inputs?')) { setWorkspace(normalizeUiWorkspace(item)); setValuation(item.resultSnapshot?.whatIf ?? null); setMc(item.resultSnapshot?.monteCarlo ?? null); setSaveStatus('Saved'); } }}>เปิด</Button><Button size="sm" variant="outline" onClick={() => { setWorkspace(normalizeUiWorkspace({ ...item, id: undefined, updatedAt: undefined, name: `${item.name} (copy)`, legs: item.legs.map((leg) => ({ ...leg, id: uid() })), scenarios: item.scenarios.map((scenario) => ({ ...scenario, id: uid() })) })); setSaveStatus('Unsaved'); }}>ทำสำเนา</Button><Button size="sm" variant="danger" onClick={() => void remove(item)}>ลบ</Button></div></article>)}</div>}</section>
       <p className="rounded-xl border border-slate-800 p-4 text-xs text-slate-500"><strong>Methodology:</strong> Black‑Scholes prices European zero-dividend options. A 200-step binomial tree prices American/dividend cases; Greeks use finite differences. GBM assumes constant user-entered drift/volatility and log-normal returns. Liquidity, spreads, assignment, taxes and volatility smile are excluded. Results are analysis, not advice or a guarantee.</p>
-    </main>{(tab === 'What-If Analysis' || tab === 'Monte Carlo Simulation') && <div className="fixed inset-x-0 bottom-0 z-30 border-t border-slate-800 bg-slate-950/95 p-3 md:left-auto md:right-6"><Button className="w-full" disabled={running || !contractReady} onClick={analyze}>{tab === 'Monte Carlo Simulation' ? 'Start Simulation' : 'Calculate What-If'}</Button></div>}
+    </main>{(tab === 'What-If Analysis' || tab === 'Monte Carlo Simulation') && <div data-testid="mobile-calculate-action" className="fixed inset-x-0 bottom-[calc(4rem+env(safe-area-inset-bottom))] z-40 border-t border-slate-800 bg-slate-950/95 p-3 backdrop-blur md:hidden"><Button className="min-h-11 w-full" disabled={running} aria-describedby={calculateDisabledReason ? 'mobile-calculate-disabled-reason' : undefined} onClick={analyze}>{calculateLabel}</Button>{calculateDisabledReason && <p id="mobile-calculate-disabled-reason" className="mt-1 text-center text-xs text-amber-300">{calculateDisabledReason}</p>}</div>}
     <Modal isOpen={Boolean(pending)} onClose={() => setPending(null)} title="Change underlying?"><p className="mb-3 text-sm">Strike, expiry, premium and IV will be reset; they are never carried to a new symbol.</p><div className="space-y-2"><Button className="w-full" onClick={() => pending && void setSymbol(pending)}>Start new</Button><Button className="w-full" variant="outline" onClick={() => pending && void setSymbol(pending, true)}>Duplicate settings and reset contracts</Button><Button className="w-full" variant="ghost" onClick={() => setPending(null)}>Cancel</Button></div></Modal>
   </div>;
 }
@@ -383,9 +437,9 @@ const greekHelpers: Record<string, string> = {
 
 function Helper({ children, id }: { children?: string; id?: string }) { return children ? <p id={id} className="mt-1 text-[10px] leading-tight text-slate-500">{children}</p> : null; }
 function FieldLabel({ title, tooltip, helper, htmlFor }: { title: string; tooltip?: string; helper?: string; htmlFor?: string }) { return <><label htmlFor={htmlFor} className={label}><span className="inline-flex items-center gap-1">{title}{tooltip && <span title={tooltip} aria-label={`${title}: ${tooltip}`} tabIndex={0}><HelpCircle size={12} className="cursor-help" /></span>}</span></label>{helper && <Helper id={htmlFor ? `${htmlFor}-helper` : undefined}>{helper}</Helper>}</>; }
-type NumericProps = { title: string; value: number; step?: string; helper?: string; tooltip?: string; suffix?: string; placeholder?: string; min?: number; max?: number; onChange: (value: number) => void };
+type NumericProps = { title: string; value: number; step?: string; helper?: string; tooltip?: string; suffix?: string; placeholder?: string; min?: number; max?: number; validationPath?: string; onChange: (value: number) => void };
 type ValidatedNumericProps = NumericProps & { integer?: boolean; externalError?: string };
-function Numeric({ title, value, step = 'any', helper, tooltip, suffix, placeholder, min, max, integer = false, externalError, onChange }: ValidatedNumericProps) {
+function Numeric({ title, value, step = 'any', helper, tooltip, suffix, placeholder, min, max, integer = false, externalError, validationPath, onChange }: ValidatedNumericProps) {
   const id = useId();
   const focused = useRef(false);
   const [draft, setDraft] = useState(() => Number.isFinite(value) ? String(value) : '');
@@ -402,10 +456,10 @@ function Numeric({ title, value, step = 'any', helper, tooltip, suffix, placehol
     setDraftError(null); onChange(parsed); setDraft(String(parsed));
   };
   const error = draftError ?? externalError;
-  return <div><FieldLabel htmlFor={id} title={title} tooltip={tooltip} helper={helper} /><div className="relative"><Input id={id} aria-describedby={helper ? `${id}-helper` : undefined} aria-invalid={Boolean(error)} className={suffix ? 'pr-10' : undefined} type="text" inputMode="decimal" placeholder={placeholder} value={draft} onFocus={(event) => { focused.current = true; if (value === 0) event.currentTarget.select(); }} onChange={(event) => { setDraft(event.target.value); setDraftError(null); }} onBlur={commit} onKeyDown={(event) => { if (event.key === 'Enter') event.currentTarget.blur(); }} data-step={step} />{suffix && <span className="pointer-events-none absolute right-3 top-2.5 text-xs text-slate-500">{suffix}</span>}</div>{error && <p role="alert" className="mt-1 text-xs text-red-300">{error}</p>}</div>;
+  return <div><FieldLabel htmlFor={id} title={title} tooltip={tooltip} helper={helper} /><div className="relative"><Input id={id} aria-describedby={helper ? `${id}-helper` : undefined} aria-invalid={Boolean(error)} className={suffix ? 'pr-10' : undefined} type="text" inputMode="decimal" placeholder={placeholder} value={draft} onFocus={(event) => { focused.current = true; if (value === 0) event.currentTarget.select(); }} onChange={(event) => { setDraft(event.target.value); setDraftError(null); }} onBlur={commit} onKeyDown={(event) => { if (event.key === 'Enter') event.currentTarget.blur(); }} data-step={step} data-validation-path={validationPath} />{suffix && <span className="pointer-events-none absolute right-3 top-2.5 text-xs text-slate-500">{suffix}</span>}</div>{error && <p role="alert" className="mt-1 text-xs text-red-300">{error}</p>}</div>;
 }
 
-function PremiumInput({ value, helper, externalError, onChange }: { value: number; helper: string; externalError?: string; onChange: (value: number) => void }) {
+function PremiumInput({ value, helper, externalError, validationPath, onChange }: { value: number; helper: string; externalError?: string; validationPath?: string; onChange: (value: number) => void }) {
   const id = useId();
   const focused = useRef(false);
   const [digits, setDigits] = useState(() => premiumDigitsFromValue(value));
@@ -417,10 +471,10 @@ function PremiumInput({ value, helper, externalError, onChange }: { value: numbe
     onChange(premiumFromDigitString(normalized) ?? 0);
   };
   const error = draftError ?? externalError;
-  return <div><FieldLabel htmlFor={id} title="Premium" helper={helper} /><div className="relative"><span className="pointer-events-none absolute left-3 top-2.5 text-sm text-slate-400">$</span><Input id={id} className="pl-8" type="text" inputMode="decimal" placeholder="เช่น 1.40" value={formatPremiumDigits(digits)} aria-invalid={Boolean(error)} onFocus={() => { focused.current = true; }} onChange={(event) => { commitDigits(event.target.value); setDraftError(null); }} onPaste={(event) => { event.preventDefault(); const parsed = parsePremiumPaste(event.clipboardData.getData('text')); if (parsed === null) { setDraftError('Premium ต้องเป็นจำนวนเงินที่ไม่ติดลบ'); return; } setDraftError(null); commitDigits(premiumDigitsFromValue(parsed)); }} onKeyDown={(event) => { if ((event.ctrlKey || event.metaKey) && ['a', 'c', 'v', 'x'].includes(event.key.toLowerCase())) return; if (/^\d$/.test(event.key)) { event.preventDefault(); commitDigits(`${digits}${event.key}`); } else if (event.key === 'Backspace') { event.preventDefault(); commitDigits(digits.slice(0, -1)); } else if (event.key === 'Delete') { event.preventDefault(); commitDigits(''); } else if (event.key === 'Enter') event.currentTarget.blur(); }} onBlur={() => { focused.current = false; if (digits && premiumFromDigitString(digits) === null) setDraftError('Premium ต้องเป็นจำนวนเงินที่ไม่ติดลบ'); }} /></div>{error && <p role="alert" className="mt-1 text-xs text-red-300">{error}</p>}</div>;
+  return <div><FieldLabel htmlFor={id} title="Premium" helper={helper} /><div className="relative"><span className="pointer-events-none absolute left-3 top-2.5 text-sm text-slate-400">$</span><Input id={id} className="pl-8" type="text" inputMode="decimal" placeholder="เช่น 1.40" value={formatPremiumDigits(digits)} aria-invalid={Boolean(error)} data-validation-path={validationPath} onFocus={() => { focused.current = true; }} onChange={(event) => { commitDigits(event.target.value); setDraftError(null); }} onPaste={(event) => { event.preventDefault(); const parsed = parsePremiumPaste(event.clipboardData.getData('text')); if (parsed === null) { setDraftError('Premium ต้องเป็นจำนวนเงินที่ไม่ติดลบ'); return; } setDraftError(null); commitDigits(premiumDigitsFromValue(parsed)); }} onKeyDown={(event) => { if ((event.ctrlKey || event.metaKey) && ['a', 'c', 'v', 'x'].includes(event.key.toLowerCase())) return; if (/^\d$/.test(event.key)) { event.preventDefault(); commitDigits(`${digits}${event.key}`); } else if (event.key === 'Backspace') { event.preventDefault(); commitDigits(digits.slice(0, -1)); } else if (event.key === 'Delete') { event.preventDefault(); commitDigits(''); } else if (event.key === 'Enter') event.currentTarget.blur(); }} onBlur={() => { focused.current = false; if (digits && premiumFromDigitString(digits) === null) setDraftError('Premium ต้องเป็นจำนวนเงินที่ไม่ติดลบ'); }} /></div>{error && <p role="alert" className="mt-1 text-xs text-red-300">{error}</p>}</div>;
 }
 
-function PercentInput({ title, value, helper, placeholder, externalError, onChange }: { title: string; value: number; helper: string; placeholder: string; externalError?: string; onChange: (value: number) => void }) {
+function PercentInput({ title, value, helper, placeholder, externalError, validationPath, onChange }: { title: string; value: number; helper: string; placeholder: string; externalError?: string; validationPath?: string; onChange: (value: number) => void }) {
   const id = useId();
   const focused = useRef(false);
   const [draft, setDraft] = useState(() => value > 0 && Number.isFinite(value) ? value.toFixed(2) : '');
@@ -433,10 +487,10 @@ function PercentInput({ title, value, helper, placeholder, externalError, onChan
     setDraftError(null); onChange(parsed); setDraft(parsed.toFixed(2));
   };
   const error = draftError ?? externalError;
-  return <div><FieldLabel htmlFor={id} title={title} helper={helper} /><div className="relative"><Input id={id} className="pr-8" type="text" inputMode="decimal" placeholder={placeholder} value={draft} aria-invalid={Boolean(error)} onFocus={() => { focused.current = true; }} onChange={(event) => { const normalized = normalizePercentDraft(event.target.value); if (normalized !== null) setDraft(normalized); setDraftError(null); }} onBlur={commit} onKeyDown={(event) => { if (event.key === 'Enter') event.currentTarget.blur(); }} /><span className="pointer-events-none absolute right-3 top-2.5 text-xs text-slate-500">%</span></div>{error && <p role="alert" className="mt-1 text-xs text-red-300">{error}</p>}</div>;
+  return <div><FieldLabel htmlFor={id} title={title} helper={helper} /><div className="relative"><Input id={id} className="pr-8" type="text" inputMode="decimal" placeholder={placeholder} value={draft} aria-invalid={Boolean(error)} data-validation-path={validationPath} onFocus={() => { focused.current = true; }} onChange={(event) => { const normalized = normalizePercentDraft(event.target.value); if (normalized === null) return; setDraft(normalized); setDraftError(null); const parsed = parsePercentDraft(normalized); onChange(parsed !== null && parsed > 0 ? parsed : 0); }} onBlur={commit} onKeyDown={(event) => { if (event.key === 'Enter') event.currentTarget.blur(); }} /><span className="pointer-events-none absolute right-3 top-2.5 text-xs text-slate-500">%</span></div>{error && <p role="alert" className="mt-1 text-xs text-red-300">{error}</p>}</div>;
 }
 
-function GreekInput({ title, value, fallbackValue, source, timestamp, helper, placeholder, min, max, externalError, onChange }: { title: string; value: number | null; fallbackValue: number | null; source: OptionLeg['deltaSource']; timestamp?: string | null; helper: string; placeholder: string; min?: number; max?: number; externalError?: string; onChange: (value: number | null) => void }) {
+function GreekInput({ title, value, fallbackValue, source, timestamp, helper, placeholder, min, max, externalError, validationPath, onChange }: { title: string; value: number | null; fallbackValue: number | null; source: OptionLeg['deltaSource']; timestamp?: string | null; helper: string; placeholder: string; min?: number; max?: number; externalError?: string; validationPath?: string; onChange: (value: number | null) => void }) {
   const id = useId();
   const focused = useRef(false);
   const shownValue = value ?? fallbackValue;
@@ -452,10 +506,10 @@ function GreekInput({ title, value, fallbackValue, source, timestamp, helper, pl
   };
   const labelText = source === 'provider' ? 'Provider data' : source === 'manual' ? 'Manual' : 'Model Estimate';
   const error = draftError ?? externalError;
-  return <div><div className="flex items-start justify-between gap-2"><FieldLabel htmlFor={id} title={title} helper={helper} />{source === 'manual' && <button type="button" className="text-[10px] text-[#D4FF00]" onClick={() => onChange(null)}>ใช้ค่าระบบ</button>}</div><Input id={id} type="text" inputMode="decimal" placeholder={placeholder} value={draft} aria-invalid={Boolean(error)} onFocus={(event) => { focused.current = true; event.currentTarget.select(); }} onChange={(event) => { setDraft(event.target.value); setDraftError(null); }} onBlur={commit} onKeyDown={(event) => { if (event.key === 'Enter') event.currentTarget.blur(); }} /><p className={`mt-1 text-[10px] ${source === 'manual' ? 'text-amber-300' : source === 'provider' ? 'text-emerald-300' : 'text-slate-400'}`}>{labelText}{source === 'provider' && timestamp ? ` · ${new Date(timestamp).toLocaleString()}` : ''}</p>{error && <p role="alert" className="mt-1 text-xs text-red-300">{error}</p>}</div>;
+  return <div><div className="flex items-start justify-between gap-2"><FieldLabel htmlFor={id} title={title} helper={helper} />{source === 'manual' && <button type="button" className="text-[10px] text-[#D4FF00]" onClick={() => onChange(null)}>ใช้ค่าระบบ</button>}</div><Input id={id} type="text" inputMode="decimal" placeholder={placeholder} value={draft} aria-invalid={Boolean(error)} data-validation-path={validationPath} onFocus={(event) => { focused.current = true; event.currentTarget.select(); }} onChange={(event) => { setDraft(event.target.value); setDraftError(null); }} onBlur={commit} onKeyDown={(event) => { if (event.key === 'Enter') event.currentTarget.blur(); }} /><p className={`mt-1 text-[10px] ${source === 'manual' ? 'text-amber-300' : source === 'provider' ? 'text-emerald-300' : 'text-slate-400'}`}>{labelText}{source === 'provider' && timestamp ? ` · ${new Date(timestamp).toLocaleString()}` : ''}</p>{error && <p role="alert" className="mt-1 text-xs text-red-300">{error}</p>}</div>;
 }
 function Field({ title, value, helper, placeholder, onChange }: { title: string; value: string; helper?: string; placeholder?: string; onChange: (value: string) => void }) { const id = useId(); return <div><FieldLabel htmlFor={id} title={title} helper={helper} /><Input id={id} placeholder={placeholder} value={value} onChange={(event) => onChange(event.target.value)} /></div>; }
-function Choice({ title, value, options, optionLabels = {}, helper, onChange }: { title: string; value: string; options: string[]; optionLabels?: Record<string, string>; helper?: string; onChange: (value: string) => void }) { const id = useId(); return <div><FieldLabel htmlFor={id} title={title} helper={helper} /><select id={id} className={select} value={value} onChange={(event) => onChange(event.target.value)}>{options.map((option) => <option key={option} value={option}>{optionLabels[option] ?? option}</option>)}</select></div>; }
+function Choice({ title, value, options, optionLabels = {}, helper, validationPath, onChange }: { title: string; value: string; options: string[]; optionLabels?: Record<string, string>; helper?: string; validationPath?: string; onChange: (value: string) => void }) { const id = useId(); return <div><FieldLabel htmlFor={id} title={title} helper={helper} /><select id={id} className={select} value={value} data-validation-path={validationPath} onChange={(event) => onChange(event.target.value)}>{options.map((option) => <option key={option} value={option}>{optionLabels[option] ?? option}</option>)}</select></div>; }
 function Metric({ title, value, helper }: { title: string; value: string; helper?: string }) { return <div className="rounded-xl bg-slate-900 p-3"><small className="inline-flex items-center gap-1 text-slate-500">{title}{helper && <span title={helper} aria-label={`${title}: ${helper}`} tabIndex={0}><HelpCircle size={11} className="cursor-help" /></span>}</small><p className="font-mono font-bold">{value}</p><Helper>{helper}</Helper></div>; }
 function ContractSummary({ workspace, selectedLegId, onSelect, onEdit }: { workspace: SimulationWorkspace; selectedLegId: string; onSelect: (value: string) => void; onEdit: () => void }) {
   const date = workspace.valuationDate;

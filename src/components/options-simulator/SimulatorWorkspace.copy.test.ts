@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 
 const source = readFileSync(new URL('./SimulatorWorkspace.tsx', import.meta.url), 'utf8');
 const validationSource = readFileSync(new URL('../../lib/options-simulator/validation.ts', import.meta.url), 'utf8');
+const bottomNavSource = readFileSync(new URL('../layout/BottomNav.tsx', import.meta.url), 'utf8');
 
 describe('Options Portfolio Simulator copy', () => {
   it('shows the requested beginner-friendly Thai copy', () => {
@@ -91,10 +92,59 @@ describe('Options Portfolio Simulator copy', () => {
     expect(source).toContain('percentVolatilityToEngine(value)');
   });
 
+  it('renders validation warnings only for real validation errors and focuses the first field', () => {
+    expect(source).toContain('validationErrors.length > 0 && <section role="alert" data-testid="validation-warning"');
+    expect(source).toContain('validationErrors.map(displayValidationMessage)');
+    expect(source).toContain('focusFirstValidationField(issues)');
+    expect(source).toContain("document.querySelectorAll<HTMLElement>('[data-validation-path]')");
+    expect(source).toContain('validationPath={`legs.${index}.entryPremium`}');
+    expect(source).not.toContain('!contractReady');
+    expect(source).not.toContain('disabled={running || !contractReady}');
+  });
+
+  it('uses calculation-only validation and reports development paths without values', () => {
+    expect(source).toContain('calculationValidationMessages(analysisWorkspace())');
+    expect(source).toContain("console.debug('[Options Simulator validation]'");
+    expect(source).toContain('return { path, unit: validationPathUnit(path) };');
+    expect(source).not.toContain('return { path, value');
+  });
+
   it('shows distinct target-touch and terminal-close probabilities', () => {
     expect(source).toContain('Probability of Reaching Target by Date');
     expect(source).toContain('Probability of Closing Above Target');
     expect(source).toContain('Probability of Closing Below Target');
     expect(source).toContain('ผลลัพธ์เป็นความน่าจะเป็นจากสมมติฐาน ไม่ใช่การทำนายราคาที่แน่นอน');
+  });
+
+  it('shows accessible save states, disables both actions, and supports retry feedback', () => {
+    expect(source).toContain("useState<SaveFeedbackStatus | 'Offline draft'>('Unsaved')");
+    expect(source).toContain('role="status" aria-live="polite" aria-atomic="true"');
+    expect(source).toContain("saveStatus === 'Saving'");
+    expect(source).toContain("saveStatus === 'Saved'");
+    expect(source).toContain("saveStatus === 'Failed'");
+    expect(source).toContain('disabled={isSaving}');
+    expect(source).toContain('ลองบันทึกอีกครั้ง');
+    expect(source).toContain('motion-reduce:animate-none');
+    expect(source).toContain("addToast({ title: 'บันทึกไม่สำเร็จ'");
+    expect(source).toContain("saveStatus !== 'Unsaved'");
+  });
+
+  it('keeps Calculate visible at 320px and moves the desktop action to the form end', () => {
+    expect(source).toContain('data-testid="mobile-calculate-action"');
+    expect(source).toContain('md:hidden');
+    expect(source).toContain('className="min-h-11 w-full"');
+    expect(source).toContain('data-testid="desktop-calculate-action"');
+    expect(source).toContain('hidden justify-end md:flex');
+    expect(source).not.toContain('md:left-auto md:right-6');
+  });
+
+  it('positions the sticky mobile action above bottom navigation and reserves content space', () => {
+    expect(bottomNavSource).toContain('h-16');
+    expect(bottomNavSource).toContain('z-50');
+    expect(source).toContain('bottom-[calc(4rem+env(safe-area-inset-bottom))]');
+    expect(source).toContain('z-40');
+    expect(source).toContain('pb-[calc(9rem+env(safe-area-inset-bottom))]');
+    expect(source).toContain('mobile-calculate-disabled-reason');
+    expect(source).toContain('aria-describedby={calculateDisabledReason');
   });
 });
