@@ -1,7 +1,7 @@
 import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it, vi } from 'vitest';
-import type { MarketDataApiError, Quote } from '@/src/lib/market-data/types';
+import type { CompanyProfile, MarketDataApiError, Quote } from '@/src/lib/market-data/types';
 import { CompanyProfileCard } from './CompanyProfileCard';
 import { StockPriceHeader } from './StockPriceHeader';
 
@@ -39,12 +39,13 @@ describe('Stock Detail unavailable UX', () => {
       />,
     );
 
-    expect(occurrences(html, 'ข้อมูลบริษัทไม่พร้อมใช้งานชั่วคราว')).toBe(1);
+    expect(occurrences(html, 'Company profile is temporarily unavailable')).toBe(1);
     expect(occurrences(
       html,
-      'ผู้ให้บริการข้อมูลถึงขีดจำกัดการเรียกใช้งาน กรุณาลองใหม่ภายหลัง',
+      'The data provider rate limit was reached. Please try again later.',
     )).toBe(1);
-    expect(occurrences(html, 'ไม่พบข้อมูล')).toBeGreaterThanOrEqual(4);
+    expect(occurrences(html, 'ยังไม่มีรายละเอียดบริษัทสำหรับแปล')).toBe(1);
+    expect(occurrences(html, 'Unavailable')).toBeGreaterThanOrEqual(4);
     expect(html).not.toContain('rate-limited');
     expect(html).not.toContain('Profile quota exceeded');
   });
@@ -65,6 +66,96 @@ describe('Stock Detail unavailable UX', () => {
 
     expect(html).toContain('disabled=""');
     expect(html).toContain('title="ยังไม่มีข้อความต้นฉบับสำหรับแปล"');
+    expect(html).toContain('ยังไม่มีรายละเอียดบริษัทสำหรับแปล');
+  });
+
+  it('shows a cached Profile after a provider rate limit with status and timestamp', () => {
+    const cachedProfile: CompanyProfile = {
+      symbol: 'RKLB',
+      name: 'Rocket Lab USA, Inc.',
+      description: 'Rocket Lab provides launch services.',
+      exchange: 'NASDAQ',
+      currency: 'USD',
+      country: 'USA',
+      sector: 'Industrials',
+      industry: 'Aerospace & Defense',
+      website: 'https://www.rocketlabusa.com/',
+      marketCapitalization: 20_000_000_000,
+      employees: 2_100,
+      fiscalYearEnd: 'December',
+      latestQuarter: '2026-06-30',
+    };
+    const html = renderToStaticMarkup(
+      <CompanyProfileCard
+        symbol="RKLB"
+        profile={cachedProfile}
+        freshness={{
+          status: 'stale',
+          asOf: '2026-06-30T00:00:00.000Z',
+          cachedAt: '2026-07-19T08:30:00.000Z',
+          maxAgeSeconds: 86_400,
+        }}
+        provider="alpha-vantage"
+        error={null}
+        loading={false}
+        retryAt={0}
+        onRetry={vi.fn()}
+        language="en"
+      />,
+    );
+
+    expect(html).toContain('Rocket Lab provides launch services.');
+    expect(html).toContain('Stale · alpha-vantage');
+    expect(html).toMatch(/7\/19\/2026/);
+    expect(html).not.toContain('Company profile is temporarily unavailable');
+  });
+
+  it('switches every Profile card label between Thai and English', () => {
+    const localizedProfile: CompanyProfile = {
+      symbol: 'RKLB',
+      name: 'Rocket Lab USA, Inc.',
+      description: 'Rocket Lab provides launch services.',
+      exchange: 'NASDAQ',
+      currency: 'USD',
+      country: 'USA',
+      sector: 'Industrials',
+      industry: 'Aerospace & Defense',
+      website: null,
+      marketCapitalization: null,
+      employees: null,
+      fiscalYearEnd: null,
+      latestQuarter: null,
+    };
+    const baseProps = {
+      symbol: 'RKLB',
+      profile: localizedProfile,
+      freshness: {
+        status: 'cached' as const,
+        asOf: '2026-07-19T00:00:00.000Z',
+        maxAgeSeconds: 86_400,
+      },
+      provider: 'alpha-vantage',
+      error: null,
+      loading: false,
+      retryAt: 0,
+      onRetry: vi.fn(),
+    };
+    const thai = renderToStaticMarkup(
+      <CompanyProfileCard {...baseProps} language="th" />,
+    );
+    const english = renderToStaticMarkup(
+      <CompanyProfileCard {...baseProps} language="en" />,
+    );
+
+    for (const label of ['ข้อมูลบริษัท', 'ประเทศ', 'จำนวนพนักงาน', 'สกุลเงิน', 'สิ้นสุดปีบัญชี', 'ไม่พร้อมใช้งาน']) {
+      expect(thai).toContain(label);
+    }
+    for (const label of ['Company Profile', 'Country', 'Employees', 'Currency', 'Fiscal year end', 'Unavailable']) {
+      expect(english).toContain(label);
+    }
+    for (const thaiLabel of ['ข้อมูลบริษัท', 'ประเทศ', 'จำนวนพนักงาน', 'สกุลเงิน', 'สิ้นสุดปีบัญชี']) {
+      expect(english).not.toContain(thaiLabel);
+    }
   });
 
   it('shows fallback price, resolved currency, Thai fallback label, and timestamp once', () => {
@@ -93,7 +184,6 @@ describe('Stock Detail unavailable UX', () => {
           maxAgeSeconds: 86_400,
         }}
         market={null}
-        marketError={null}
         provider="nasdaq"
         providerConfigured
         quoteError={{
@@ -117,5 +207,7 @@ describe('Stock Detail unavailable UX', () => {
     expect(html).not.toContain('rate-limited');
     expect(html).not.toContain('Quote quota exceeded');
     expect(html).not.toContain('Unavailable');
+    expect(html).not.toContain('ไม่พบข้อมูล');
+    expect(occurrences(html, 'ไม่สามารถตรวจสอบสถานะตลาดได้')).toBe(1);
   });
 });

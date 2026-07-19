@@ -12,6 +12,7 @@ import {
   displayCountry,
   displayFiscalYearEnd,
   resolvedDescription,
+  shouldRequestCompanyProfileTranslation,
   type CompanyProfileLanguage,
 } from '@/src/lib/stock-detail/profile-presentation';
 import { companyProfileTranslationClient } from './company-profile-translation-client';
@@ -40,14 +41,25 @@ function Field({
   );
 }
 
-const PROFILE_STATUS_LABELS: Record<DataFreshness['status'], string> = {
-  realtime: 'ข้อมูลสด',
-  delayed: 'ข้อมูลล่าช้า',
-  'end-of-day': 'ข้อมูลสิ้นวัน',
-  cached: 'ข้อมูลแคช',
-  stale: 'ข้อมูลเก่า',
-  unknown: 'ไม่ทราบความสดของข้อมูล',
-  unavailable: 'ข้อมูลไม่พร้อมใช้งาน',
+const PROFILE_STATUS_LABELS: Record<CompanyProfileLanguage, Record<DataFreshness['status'], string>> = {
+  th: {
+    realtime: 'ข้อมูลสด',
+    delayed: 'ข้อมูลล่าช้า',
+    'end-of-day': 'ข้อมูลสิ้นวัน',
+    cached: 'ข้อมูลแคช',
+    stale: 'ข้อมูลเก่า',
+    unknown: 'ไม่ทราบความสดของข้อมูล',
+    unavailable: 'ไม่พร้อมใช้งาน',
+  },
+  en: {
+    realtime: 'Live',
+    delayed: 'Delayed',
+    'end-of-day': 'End of day',
+    cached: 'Cached',
+    stale: 'Stale',
+    unknown: 'Unknown freshness',
+    unavailable: 'Unavailable',
+  },
 };
 
 export function CompanyProfileCard({
@@ -59,6 +71,8 @@ export function CompanyProfileCard({
   loading,
   retryAt,
   onRetry,
+  language: controlledLanguage,
+  onLanguageChange,
 }: {
   symbol: string;
   profile: CompanyProfile | null;
@@ -68,18 +82,22 @@ export function CompanyProfileCard({
   loading: boolean;
   retryAt: number;
   onRetry: () => void;
+  language?: CompanyProfileLanguage;
+  onLanguageChange?: (language: CompanyProfileLanguage) => void;
 }) {
-  const sourceText = profile?.description ?? null;
-  const [language, setLanguage] = useState<CompanyProfileLanguage>(
+  const sourceText = profile?.description?.trim() || null;
+  const [localLanguage, setLocalLanguage] = useState<CompanyProfileLanguage>(
     sourceText ? 'th' : 'en',
   );
+  const language = controlledLanguage ?? localLanguage;
+  const setLanguage = onLanguageChange ?? setLocalLanguage;
   const [attempt, setAttempt] = useState(0);
   const [translation, setTranslation] = useState<TranslationResult | null>(null);
   const translationKey = `${symbol}:${sourceText ?? ''}`;
   const activeLanguage = sourceText ? language : 'en';
 
   useEffect(() => {
-    if (activeLanguage !== 'th' || !sourceText) return;
+    if (!shouldRequestCompanyProfileTranslation(activeLanguage, sourceText)) return;
     const controller = new AbortController();
     let current = true;
     void companyProfileTranslationClient.request({
@@ -118,10 +136,11 @@ export function CompanyProfileCard({
     translationFailed: Boolean(activeTranslation?.error),
   });
   const labels = companyProfileLabels[activeLanguage];
-  const errorPresentation = companyProfileErrorPresentation(error);
-  const status = PROFILE_STATUS_LABELS[freshness.status];
+  const errorPresentation = companyProfileErrorPresentation(error, activeLanguage);
+  const status = PROFILE_STATUS_LABELS[activeLanguage][freshness.status];
   const website = profile?.website ?? null;
   const profileCoolingDown = retryAt > 0;
+  const profileTimestamp = freshness.cachedAt ?? freshness.asOf;
   const fields = useMemo(() => [
     {
       label: labels.country,
@@ -147,8 +166,10 @@ export function CompanyProfileCard({
         <div className="min-w-0">
           <h2 className="font-bold text-white">{labels.title}</h2>
           <p className="mt-1 break-words text-[10px] text-slate-500">
-            {status} · {provider ?? 'ไม่ทราบผู้ให้บริการ'}
-            {freshness.asOf ? ` · ${new Date(freshness.asOf).toLocaleString('th-TH')}` : ''}
+            {status} · {provider ?? labels.unknownProvider}
+            {profileTimestamp
+              ? ` · ${new Date(profileTimestamp).toLocaleString(activeLanguage === 'th' ? 'th-TH' : 'en-US')}`
+              : ''}
           </p>
         </div>
         <div className="flex shrink-0 rounded-lg border border-slate-700 p-1" aria-label="Company Profile language">
@@ -185,10 +206,10 @@ export function CompanyProfileCard({
               className="mt-3 min-h-10 rounded-lg border border-amber-400/30 px-3 text-xs text-amber-200 disabled:opacity-50"
             >
               {loading
-                ? 'กำลังโหลด…'
+                ? labels.loading
                 : profileCoolingDown
-                  ? 'รอตามระยะเวลาที่กำหนดแล้วลองอีกครั้ง'
-                  : 'ลองโหลดข้อมูลบริษัทอีกครั้ง'}
+                  ? labels.retryWait
+                  : labels.retryProfile}
             </button>
           )}
         </div>
@@ -196,18 +217,18 @@ export function CompanyProfileCard({
 
       <div className="mt-4 min-h-24">
         <p className="whitespace-pre-line text-sm leading-7 text-slate-300">
-          {description.text ?? labels.missing}
+          {description.text ?? labels.missingDescription}
         </p>
-        {loadingTranslation && <p className="mt-2 text-xs text-slate-500">กำลังโหลดคำแปล…</p>}
+        {loadingTranslation && <p className="mt-2 text-xs text-slate-500">{labels.loadingTranslation}</p>}
         {description.fellBackToEnglish && (
           <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-amber-300">
-            <span>ไม่สามารถโหลดคำแปลได้ กำลังแสดงข้อความภาษาอังกฤษต้นฉบับ</span>
+            <span>{labels.translationFailed}</span>
             <button
               type="button"
               onClick={() => setAttempt((value) => value + 1)}
               className="min-h-9 rounded-lg border border-amber-400/30 px-3"
             >
-              ลองแปลอีกครั้ง
+              {labels.retryTranslation}
             </button>
           </div>
         )}
@@ -219,7 +240,7 @@ export function CompanyProfileCard({
             key={field.label}
             label={field.label}
             value={field.value}
-            missingLabel={labels.missing}
+            missingLabel={labels.unavailable}
           />
         ))}
       </div>

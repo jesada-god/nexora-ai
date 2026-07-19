@@ -14,6 +14,8 @@ import { FairValueCard } from '@/src/components/analytics/fair-value/FairValueCa
 import type { FxQuote } from '@/src/lib/market-data/fx/types';
 import { quoteEnvelopeSchema } from '@/src/lib/stock-detail/api-schemas';
 import { formatMarketCapitalization } from '@/src/lib/stock-detail/profile-presentation';
+import type { CompanyProfileLanguage } from '@/src/lib/stock-detail/profile-presentation';
+import { resolveCompanyIdentity } from '@/src/lib/stock-detail/identity';
 import type {
   InitialHistoryResponse,
   StockDetailQuoteResource,
@@ -51,6 +53,7 @@ interface StockDetailClientProps {
   quoteResource: StockDetailQuoteResource;
   profileResource: StockDetailResource<CompanyProfile>;
   overviewResource: StockDetailResource<MarketOverview>;
+  instrumentName: string | null;
   instrumentCurrency: string | null;
   instrumentExchange: string | null;
   initialHistory: InitialHistoryResponse;
@@ -92,6 +95,7 @@ export function StockDetailClient({
   quoteResource: initialQuoteResource,
   profileResource: initialProfileResource,
   overviewResource,
+  instrumentName,
   instrumentCurrency,
   instrumentExchange,
   initialHistory,
@@ -117,11 +121,25 @@ export function StockDetailClient({
   const [profileResource, setProfileResource] = useState(initialProfileResource);
   const [profileLoading, setProfileLoading] = useState(false);
   const [profileRetryAt, setProfileRetryAt] = useState(0);
+  const [profileLanguage, setProfileLanguage] = useState<CompanyProfileLanguage>(
+    initialProfileResource.data?.description ? 'th' : 'en',
+  );
   const isOnline = useOnlineStatus();
   const profile = profileResource.data;
   const overview = overviewResource.data;
   const quote = quoteResource.data;
-  const exchange = profile?.exchange ?? instrumentExchange;
+  const identity = resolveCompanyIdentity({
+    symbol,
+    profile,
+    instrument: {
+      name: instrumentName,
+      exchange: instrumentExchange,
+    },
+    quoteMetadata: {
+      symbol: quote?.symbol ?? symbol,
+    },
+  });
+  const exchange = identity.exchange;
   const sourceCurrency = resolvePriceCurrency({
     profileCurrency: profile?.currency,
     quoteCurrency: quote?.currency,
@@ -275,7 +293,7 @@ export function StockDetailClient({
           <div className="min-w-0">
             <h1 className="truncate text-lg font-bold text-white">{symbol}</h1>
             <p className="truncate text-xs text-slate-500">
-              {profile?.name ?? 'ไม่พบชื่อบริษัท'} · {exchange ?? 'ไม่พบตลาด'}
+              {identity.name}{exchange ? ` · ${exchange}` : ''}
             </p>
           </div>
         </div>
@@ -315,7 +333,6 @@ export function StockDetailClient({
           quote={quote}
           freshness={quoteResource.freshness}
           market={market}
-          marketError={overviewResource.error}
           provider={quoteResource.provider}
           providerConfigured={providerConfigured}
           quoteError={quoteResource.error}
@@ -341,6 +358,8 @@ export function StockDetailClient({
               profileLoading={profileLoading}
               profileRetryAt={profileRetryAt}
               onRetryProfile={() => void retryProfile()}
+              profileLanguage={profileLanguage}
+              onProfileLanguageChange={setProfileLanguage}
               keyStatisticsEnabled={keyStatisticsEnabled}
               fairValueEnabled={fairValueEnabled}
             />
@@ -386,6 +405,8 @@ function Overview({
   profileLoading,
   profileRetryAt,
   onRetryProfile,
+  profileLanguage,
+  onProfileLanguageChange,
   keyStatisticsEnabled,
   fairValueEnabled,
 }: {
@@ -396,6 +417,8 @@ function Overview({
   profileLoading: boolean;
   profileRetryAt: number;
   onRetryProfile: () => void;
+  profileLanguage: CompanyProfileLanguage;
+  onProfileLanguageChange: (language: CompanyProfileLanguage) => void;
   keyStatisticsEnabled: boolean;
   fairValueEnabled: boolean;
 }) {
@@ -423,7 +446,11 @@ function Overview({
     <div className="space-y-5">
       <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
         {beforeFairValue.map((metric) => <MetricCard key={metric.label} {...metric} />)}
-        <FairValueCard symbol={symbol} enabled={fairValueEnabled} />
+        <FairValueCard
+          symbol={symbol}
+          enabled={fairValueEnabled}
+          language={profileLanguage}
+        />
         {afterFairValue.map((metric) => <MetricCard key={metric.label} {...metric} />)}
       </div>
       {keyStatisticsEnabled && <KeyStatisticsSection symbol={symbol} />}
@@ -436,6 +463,8 @@ function Overview({
         loading={profileLoading}
         retryAt={profileRetryAt}
         onRetry={onRetryProfile}
+        language={profileLanguage}
+        onLanguageChange={onProfileLanguageChange}
       />
     </div>
   );

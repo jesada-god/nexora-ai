@@ -4,6 +4,7 @@ import {
   displayFiscalYearEnd,
   formatMarketCapitalization,
   resolvedDescription,
+  shouldRequestCompanyProfileTranslation,
 } from './profile-presentation';
 import { companyProfileTranslationRequestSchema } from './api-schemas';
 
@@ -36,5 +37,12 @@ describe('Company Profile presentation', () => {
   it('localizes only display values for Thai', () => {
     expect(displayCountry('USA', 'th')).toContain('สหรัฐ');
     expect(displayFiscalYearEnd('December', 'th')).toBe('ธันวาคม');
+  });
+
+  it('requests translation only for Thai when English source text exists', () => {
+    expect(shouldRequestCompanyProfileTranslation('th', 'Rocket Lab provides launch services.')).toBe(true);
+    expect(shouldRequestCompanyProfileTranslation('en', 'Rocket Lab provides launch services.')).toBe(false);
+    expect(shouldRequestCompanyProfileTranslation('th', null)).toBe(false);
+    expect(shouldRequestCompanyProfileTranslation('th', '   ')).toBe(false);
   });
 });

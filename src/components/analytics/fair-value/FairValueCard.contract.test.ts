@@ -41,4 +41,11 @@ describe('Stock Overview Fair Value contract', () => {
     expect(card).toContain('result?.key === requestKey');
     expect(card).toContain('controller.abort()');
   });
+
+  it('localizes disabled and unavailable Fair Value copy', () => {
+    expect(card).toContain("'ไม่พร้อมใช้งาน'");
+    expect(card).toContain("'Unavailable'");
+    expect(card).toContain("'ระบบ Fair Value ถูกปิดอยู่'");
+    expect(card).toContain("'Fair Value feature is disabled'");
+  });
 });

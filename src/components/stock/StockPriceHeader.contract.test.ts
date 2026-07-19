@@ -38,6 +38,12 @@ describe('StockPriceHeader integration contract', () => {
     expect(header).not.toContain("displayPrice === null ? 'Unavailable'");
   });
 
+  it('does not render fallback change placeholders or duplicate market errors', () => {
+    expect(header).toContain('{regularChange && <div');
+    expect(header).toContain("'ไม่สามารถตรวจสอบสถานะตลาดได้'");
+    expect(header).not.toContain("stockDetailErrorMessage(marketError");
+  });
+
   it('keeps Previous Close out of the Overview cards', () => {
     const overviewCards = detail.slice(detail.indexOf('function Overview'));
     expect(overviewCards).not.toContain("['Previous Close'");

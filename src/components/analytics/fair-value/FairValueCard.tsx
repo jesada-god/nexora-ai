@@ -2,11 +2,20 @@
 
 import { useEffect, useId, useState } from 'react';
 import type { FairValueResult } from '@/src/lib/analytics/valuation/types';
+import type { CompanyProfileLanguage } from '@/src/lib/stock-detail/profile-presentation';
 import { FairValueDetailsDrawer } from './FairValueDetailsDrawer';
 import { requestFairValue } from './fair-value-client';
 import { convertUsdForDisplay, displayStatus, formatFairValueMoney, formatUpsidePercent, modelLabel, upsideTone, type DisplayCurrency } from './presentation';
 
-export function FairValueCard({ symbol, enabled }: { symbol: string; enabled: boolean }) {
+export function FairValueCard({
+  symbol,
+  enabled,
+  language = 'th',
+}: {
+  symbol: string;
+  enabled: boolean;
+  language?: CompanyProfileLanguage;
+}) {
   const requestKey = `${symbol}:${enabled}`;
   const [result, setResult] = useState<{ key: string; data: FairValueResult | null; error: string | null } | null>(null);
   const [open, setOpen] = useState(false);
@@ -35,7 +44,10 @@ export function FairValueCard({ symbol, enabled }: { symbol: string; enabled: bo
   const currentResult = result?.key === requestKey ? result : null;
   const data = currentResult?.data ?? null;
   const loading = enabled && currentResult === null;
-  const error = enabled ? currentResult?.error ?? null : 'ฟีเจอร์ Fair Value ถูกปิดอยู่ตามการตั้งค่าระบบ';
+  const unavailableLabel = language === 'th' ? 'ไม่พร้อมใช้งาน' : 'Unavailable';
+  const error = enabled
+    ? currentResult?.error ?? null
+    : language === 'th' ? 'ระบบ Fair Value ถูกปิดอยู่' : 'Fair Value feature is disabled';
   const available = data?.status === 'available' ? data : null;
   const fxRate = available?.displayFx?.rate ?? null;
   const thbAvailable = fxRate != null && Number.isFinite(fxRate) && fxRate > 0;
@@ -69,7 +81,7 @@ export function FairValueCard({ symbol, enabled }: { symbol: string; enabled: bo
           </>
         ) : (
           <div>
-            <p className="font-mono text-sm text-amber-300">Unavailable</p>
+            <p className="font-mono text-sm text-amber-300">{unavailableLabel}</p>
             <p className="mt-1 line-clamp-2 text-[10px] text-slate-500">{unavailableReason ?? 'ข้อมูลจริงไม่เพียงพอ'}</p>
           </div>
         )}

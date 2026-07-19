@@ -42,7 +42,6 @@ interface StockPriceHeaderProps {
   quote: Quote | null;
   freshness: DataFreshness;
   market: MarketSummary | null;
-  marketError: MarketDataApiError | null;
   provider: string | null;
   providerConfigured: boolean;
   quoteError: MarketDataApiError | null;
@@ -112,7 +111,6 @@ export function StockPriceHeader({
   quote,
   freshness,
   market,
-  marketError,
   provider,
   providerConfigured,
   quoteError,
@@ -165,6 +163,9 @@ export function StockPriceHeader({
   const extendedDirection = extendedChange?.direction ?? null;
   const thbUnavailable = !verifiedUsdSource || fxRate === null || !Number.isFinite(fxRate) || fxRate <= 0;
   const quoteCoolingDown = quoteRetryAt > 0;
+  const combinedStatus = market
+    ? `${sessionView.label} · ${dataStatusView.label}`
+    : 'ไม่สามารถตรวจสอบสถานะตลาดได้';
 
   return <>
     <section className="min-h-40 min-w-0 overflow-hidden rounded-2xl border border-border bg-bg-card p-4 shadow-xl sm:p-5">
@@ -176,33 +177,24 @@ export function StockPriceHeader({
               : 'max-w-full break-words text-[clamp(2rem,11vw,3rem)] font-bold leading-none tracking-tight text-text-main [overflow-wrap:anywhere]'}>
               {displayPrice === null ? 'ไม่พบราคาล่าสุด' : formatNumber(displayPrice)}
             </p>
-            {regularPrice !== null && <div className={`flex min-w-0 flex-wrap items-baseline gap-x-2 text-base font-semibold sm:text-lg ${directionClass(changeDirection)}`}>
+            {regularChange && <div className={`flex min-w-0 flex-wrap items-baseline gap-x-2 text-base font-semibold sm:text-lg ${directionClass(changeDirection)}`}>
               <span className="break-words [overflow-wrap:anywhere]">{formatSigned(displayChange)}</span>
-              <span className="break-words [overflow-wrap:anywhere]">{formatPercent(regularChange?.percent ?? null)}</span>
+              <span className="break-words [overflow-wrap:anywhere]">{formatPercent(regularChange.percent)}</span>
               {directionMark(changeDirection) && <span aria-label={changeDirection === 'up' ? 'ราคาเพิ่มขึ้น' : 'ราคาลดลง'}>{directionMark(changeDirection)}</span>}
             </div>}
             <span className="text-sm font-semibold text-text-muted">{displayedCurrency}</span>
           </div>
 
           <div className="mt-3 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-sm text-text-muted">
-            <span className="inline-flex min-w-0 items-center gap-1.5">
-              <StatusEmoji value={sessionView.emoji}/>
-              <span>{sessionView.label}</span>
-            </span>
-            <span aria-hidden="true">·</span>
+            {fallbackLabel && <span className="text-amber-300">ข้อมูลจากวันซื้อขายก่อนหน้า</span>}
+            {fallbackLabel && <span aria-hidden="true">·</span>}
             <span>{formatProviderTimestamp(freshness.asOf)}</span>
             <span aria-hidden="true">·</span>
             <span className="inline-flex min-w-0 items-center gap-1.5">
-              {dataStatusView.emoji && <StatusEmoji value={dataStatusView.emoji}/>}
-              <span>{dataStatusView.label}</span>
+              <StatusEmoji value={market ? sessionView.emoji : '⚠️'}/>
+              <span>{combinedStatus}</span>
             </span>
-            {fallbackLabel && <><span aria-hidden="true">·</span><span className="text-amber-300">ข้อมูลจากวันซื้อขายก่อนหน้า</span></>}
           </div>
-          {!market && marketError && (
-            <p className="mt-2 break-words text-xs text-amber-300">
-              {stockDetailErrorMessage(marketError, 'market', providerConfigured)}
-            </p>
-          )}
         </div>
 
         <div className="flex shrink-0 items-center gap-1 rounded-xl border border-border bg-bg-base p-1">
@@ -245,12 +237,11 @@ export function StockPriceHeader({
         <Detail label="Provider" value={provider ?? 'ไม่พบข้อมูล'}/>
         <Detail label="Symbol" value={symbol}/>
         <Detail label="Exchange" value={exchange ?? 'ไม่พบข้อมูล'}/>
-        <Detail label="Session" value={sessionView.label}/>
-        <Detail label="Market Status" value={sessionView.label}/>
+        <Detail label="Session" value={combinedStatus}/>
         <Detail label="Regular Price" value={`${formatNumber(regularPrice)} ${normalizedSourceCurrency ?? 'ไม่ทราบสกุลเงิน'}`}/>
-        <Detail label="Previous Close" value={`${formatNumber(quote?.previousClose ?? null)} ${normalizedSourceCurrency ?? 'ไม่ทราบสกุลเงิน'}`}/>
-        <Detail label="Extended Price" value={extendedQuote && extendedChange ? `${formatNumber(extendedQuote.price)} ${normalizedSourceCurrency ?? 'ไม่ทราบสกุลเงิน'} · ${extendedQuote.provider}` : 'ไม่พบข้อมูล'}/>
-        <Detail label="Comparison Base" value={extendedQuote && extendedChange ? 'Official Regular Close' : 'Previous Close'}/>
+        {!fallbackLabel && <Detail label="Previous Close" value={`${formatNumber(quote?.previousClose ?? null)} ${normalizedSourceCurrency ?? 'ไม่ทราบสกุลเงิน'}`}/>}
+        {extendedQuote && extendedChange && <Detail label="Extended Price" value={`${formatNumber(extendedQuote.price)} ${normalizedSourceCurrency ?? 'ไม่ทราบสกุลเงิน'} · ${extendedQuote.provider}`}/>}
+        {!fallbackLabel && <Detail label="Comparison Base" value={extendedQuote && extendedChange ? 'Official Regular Close' : 'Previous Close'}/>}
         <Detail label="Display Currency" value={displayedCurrency}/>
         <Detail label="Timestamp" value={`${freshness.asOf ?? 'ไม่พบข้อมูล'} (${formatProviderTimestamp(freshness.asOf)})`}/>
         <Detail label="Market Timezone" value="ผู้ให้บริการไม่ได้ระบุเขตเวลา; timestamp แสดงด้วย UTC"/>

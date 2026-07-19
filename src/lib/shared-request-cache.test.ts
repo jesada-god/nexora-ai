@@ -12,7 +12,9 @@ describe('SharedRequestCache', () => {
     vi.useFakeTimers(); const cache = new SharedRequestCache(); const policy = { freshMs: 10, staleMs: 1000, errorMs: 100 };
     await cache.resolve('history:AAPL:1m', async () => 'old', policy); vi.advanceTimersByTime(11);
     const result = await cache.resolve('history:AAPL:1m', async () => { throw new Error('quota'); }, policy);
-    expect(result).toEqual({ value: 'old', state: 'stale' }); vi.useRealTimers();
+    expect(result).toMatchObject({ value: 'old', state: 'stale', error: expect.any(Error) });
+    expect(result.storedAt).toBeTypeOf('number');
+    vi.useRealTimers();
   });
 
   it('keeps a cached Profile available when its provider later fails', async () => {
@@ -26,7 +28,20 @@ describe('SharedRequestCache', () => {
     }, policy);
     expect(result.state).toBe('stale');
     expect(result.value.name).toBe('Rocket Lab USA, Inc.');
+    expect(result.error).toEqual(expect.objectContaining({ message: 'provider unavailable' }));
     vi.useRealTimers();
+  });
+
+  it('does not clear the Profile cache when the Quote key is rate-limited', async () => {
+    const cache = new SharedRequestCache();
+    const policy = { freshMs: 1_000, staleMs: 1_000, errorMs: 100 };
+    await cache.resolve('profile:RKLB', async () => 'Rocket Lab USA, Inc.', policy);
+    await expect(cache.resolve('quote:RKLB', async () => {
+      throw new Error('quote rate limit');
+    }, policy)).rejects.toThrow('quote rate limit');
+    const profile = await cache.resolve('profile:RKLB', async () => 'unexpected', policy);
+    expect(profile.state).toBe('cache');
+    expect(profile.value).toBe('Rocket Lab USA, Inc.');
   });
 
   it('keeps history ranges in separate cache keys', async () => {

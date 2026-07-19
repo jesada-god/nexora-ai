@@ -47,8 +47,28 @@ export function stockDetailErrorMessage(
 
 export function companyProfileErrorPresentation(
   error: Pick<MarketDataApiError, 'code'> | null,
+  language: 'th' | 'en' = 'th',
 ): { title: string; detail: string } | null {
   if (!error) return null;
+  if (language === 'en') {
+    const details: Partial<Record<MarketDataErrorCode, string>> = {
+      'provider-not-configured': 'The market data provider is not configured.',
+      'invalid-request': 'The company profile request is invalid.',
+      'invalid-symbol': 'The market symbol is invalid.',
+      'not-found': 'No company profile was found for this symbol.',
+      'rate-limited': 'The data provider rate limit was reached. Please try again later.',
+      timeout: 'The company profile request timed out. Please try again later.',
+      'provider-unauthorized': 'The data provider could not authorize this request.',
+      'upstream-unavailable': 'Company profile data is temporarily unavailable.',
+      'invalid-provider-response': 'The provider returned an incomplete company profile.',
+      'insufficient-data': 'There is not enough company profile data to display.',
+      'internal-error': 'Company profile data is temporarily unavailable.',
+    };
+    return {
+      title: 'Company profile is temporarily unavailable',
+      detail: details[error.code] ?? 'Company profile data is temporarily unavailable.',
+    };
+  }
   return {
     title: 'ข้อมูลบริษัทไม่พร้อมใช้งานชั่วคราว',
     detail: stockDetailErrorMessage(error, 'profile'),

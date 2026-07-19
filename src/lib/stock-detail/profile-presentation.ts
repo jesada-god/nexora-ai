@@ -35,18 +35,41 @@ export const companyProfileLabels = {
     currency: 'สกุลเงิน',
     fiscalYearEnd: 'สิ้นสุดปีบัญชี',
     website: 'เยี่ยมชมเว็บไซต์บริษัท',
-    missing: 'ไม่พบข้อมูล',
+    unavailable: 'ไม่พร้อมใช้งาน',
+    missingDescription: 'ยังไม่มีรายละเอียดบริษัทสำหรับแปล',
+    unknownProvider: 'ไม่ทราบผู้ให้บริการ',
+    loading: 'กำลังโหลด…',
+    retryWait: 'รอตามระยะเวลาที่กำหนดแล้วลองอีกครั้ง',
+    retryProfile: 'ลองโหลดข้อมูลบริษัทอีกครั้ง',
+    loadingTranslation: 'กำลังโหลดคำแปล…',
+    translationFailed: 'ไม่สามารถโหลดคำแปลได้ กำลังแสดงข้อความภาษาอังกฤษต้นฉบับ',
+    retryTranslation: 'ลองแปลอีกครั้ง',
   },
   en: {
-    title: 'Company profile',
+    title: 'Company Profile',
     country: 'Country',
     employees: 'Employees',
     currency: 'Currency',
     fiscalYearEnd: 'Fiscal year end',
     website: 'Visit company website',
-    missing: 'ไม่พบข้อมูล',
+    unavailable: 'Unavailable',
+    missingDescription: 'ยังไม่มีรายละเอียดบริษัทสำหรับแปล',
+    unknownProvider: 'Unknown provider',
+    loading: 'Loading…',
+    retryWait: 'Wait for the retry period, then try again',
+    retryProfile: 'Retry company profile',
+    loadingTranslation: 'Loading translation…',
+    translationFailed: 'Translation is unavailable. Showing the original English text.',
+    retryTranslation: 'Retry translation',
   },
 } as const;
+
+export function shouldRequestCompanyProfileTranslation(
+  language: CompanyProfileLanguage,
+  sourceText: string | null,
+): sourceText is string {
+  return language === 'th' && Boolean(sourceText?.trim());
+}
 
 export function displayCountry(source: string | null, language: CompanyProfileLanguage): string | null {
   if (!source || language === 'en') return source;

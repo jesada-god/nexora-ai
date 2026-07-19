@@ -82,6 +82,9 @@ export default async function StockDetailPage({
       quoteResource={snapshot.quote}
       profileResource={snapshot.profile}
       overviewResource={snapshot.overview}
+      instrumentName={instrumentResult.status === 'fulfilled'
+        ? instrumentResult.value?.name ?? null
+        : null}
       instrumentCurrency={instrumentResult.status === 'fulfilled'
         ? instrumentResult.value?.currency ?? null
         : null}
