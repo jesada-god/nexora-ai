@@ -68,6 +68,15 @@ export class AlphaVantageProvider implements MarketDataProvider {
       throw mapProviderFailure({ cause });
     }
 
+    const contentType = response.headers.get('content-type')?.toLowerCase() ?? '';
+    if (!contentType.includes('application/json') && !contentType.includes('+json')) {
+      throw mapProviderFailure({
+        status: response.status,
+        cause: new Error('Market data provider returned a non-JSON response'),
+        retryAfterSeconds: retryAfterSeconds(response),
+      });
+    }
+
     let payload: unknown;
     try {
       payload = await response.json();
@@ -137,6 +146,9 @@ export class AlphaVantageProvider implements MarketDataProvider {
       REVALIDATE_SECONDS.history,
     );
     const data = this.normalize(() => normalizeHistoryResponse(payload, symbol, range));
+    if (data.prices.length === 0) {
+      throw new MarketDataError('insufficient-data', `No daily history found for ${symbol}`);
+    }
     const latestDate = data.prices.at(-1)?.date;
     return {
       data,

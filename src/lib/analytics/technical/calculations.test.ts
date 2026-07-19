@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { HistoricalPrice } from '@/src/lib/market-data/types';
-import { atrWilder, calculateTechnicalAnalysis, ema, macd, rsiWilder, sma } from './calculations';
+import { adxWilder, atrWilder, calculateTechnicalAnalysis, ema, ichimoku, macd, onBalanceVolume, rateOfChange, rsiWilder, sma, stochastic } from './calculations';
 
 const freshness = { status: 'end-of-day' as const, asOf: '2026-07-18T20:00:00.000Z', maxAgeSeconds: 86_400 };
 const context = { symbol: 'TEST', source: 'fixture', freshness, calculatedAt: '2026-07-19T00:00:00.000Z' };
@@ -33,6 +33,27 @@ describe('technical indicator formulas', () => {
 
   it('calculates Wilder ATR from true ranges', () => {
     expect(atrWilder(candles(5), 3)).toEqual([null, null, 2, 2, 2]);
+  });
+
+  it('calculates Stochastic, OBV and ROC from aligned raw candles', () => {
+    const input = candles(8);
+    const stochasticResult = stochastic(input, 3, 1, 2);
+    expect(stochasticResult.k.slice(0, 2)).toEqual([null, null]);
+    expect(stochasticResult.k[2]).toBeCloseTo(75);
+    expect(stochasticResult.d[3]).toBeCloseTo(75);
+    expect(onBalanceVolume(input)).toEqual([0, 1001, 2003, 3006, 4010, 5015, 6021, 7028]);
+    expect(rateOfChange([10, 11, 12, 15], 2)).toEqual([null, null, expect.closeTo(20, 10), expect.closeTo(36.363636, 5)]);
+  });
+
+  it('calculates finite Wilder ADX/DMI and Ichimoku without reading future candles', () => {
+    const input = candles(90, (candle, index) => ({ ...candle, high: candle.high + Math.sin(index), low: candle.low - Math.cos(index) }));
+    const dmi = adxWilder(input, 14);
+    expect(dmi.adx.slice(27).every((value) => value != null && Number.isFinite(value))).toBe(true);
+    const before = ichimoku(input, 9, 26, 52, 26);
+    const after = ichimoku([...input, { ...input.at(-1)!, date: '2026-04-01', high: 10_000, close: 9_999 }], 9, 26, 52, 26);
+    expect(after.conversion.slice(0, input.length)).toEqual(before.conversion);
+    expect(after.leadingA.slice(0, input.length)).toEqual(before.leadingA);
+    expect(after.leadingB.slice(0, input.length)).toEqual(before.leadingB);
   });
 });
 
@@ -75,5 +96,21 @@ describe('technical analysis contract', () => {
     expect(() => calculateTechnicalAnalysis(candles(40), context, { smaPeriod: 251 })).toThrow();
     expect(() => calculateTechnicalAnalysis(candles(40), context, { macdFastPeriod: 30, macdSlowPeriod: 20 })).toThrow();
   });
-});
 
+  it('provides requested 20/50/100/200 presets, aligned volume, and refuses daily VWAP', () => {
+    const input = candles(220);
+    const result = calculateTechnicalAnalysis(input, context);
+    expect(result.status).toBe('available');
+    if (result.status === 'available') {
+      expect(result.indicators.sma.status === 'available' && result.indicators.sma.latest.date).toBe(input.at(-1)!.date);
+      expect(result.indicators.sma50.status).toBe('available');
+      expect(result.indicators.sma100.status).toBe('available');
+      expect(result.indicators.sma200.status).toBe('available');
+      expect(result.indicators.ema50.status).toBe('available');
+      expect(result.indicators.ema100.status).toBe('available');
+      expect(result.indicators.ema200.status).toBe('available');
+      expect(result.indicators.volume.status === 'available' && result.indicators.volume.latest).toEqual({ date: input.at(-1)!.date, value: input.at(-1)!.volume });
+      expect(result.indicators.vwap).toMatchObject({ status: 'unavailable', reason: expect.stringContaining('session boundaries') });
+    }
+  });
+});

@@ -1,4 +1,5 @@
 'use client';
+
 import dynamic from 'next/dynamic';
 import { useState, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
@@ -6,24 +7,449 @@ import { Activity, ArrowLeft, Bell, Share2, Star } from 'lucide-react';
 import { addWatchlistItemAction, removeWatchlistItemAction } from '@/app/watchlist/actions';
 import { Tabs } from '@/src/components/ui/Tabs';
 import { useToast } from '@/src/components/ui/Toast';
-import type { CompanyProfile, DataFreshness, MarketOverview, Quote } from '@/src/lib/market-data/types';
 import { useOnlineStatus } from '@/src/hooks/useOnlineStatus';
-const ChartPanel = dynamic(() => import('./ChartPanel').then((m) => m.ChartPanel), { ssr: false, loading: () => <div className="h-[340px] animate-pulse rounded-xl bg-slate-800/50"/> });
-const NewsFeed = dynamic(() => import('@/src/components/news/NewsFeed').then((m) => m.NewsFeed), { ssr: false, loading: () => <div className="h-72 animate-pulse rounded-xl bg-slate-800/50"/> });
+import { KeyStatisticsSection } from '@/src/components/analytics/key-statistics/KeyStatisticsSection';
+import { FairValueSection } from '@/src/components/analytics/fair-value/FairValueSection';
+import { FairValueCard } from '@/src/components/analytics/fair-value/FairValueCard';
+import type { FxQuote } from '@/src/lib/market-data/fx/types';
+import { quoteEnvelopeSchema } from '@/src/lib/stock-detail/api-schemas';
+import { formatMarketCapitalization } from '@/src/lib/stock-detail/profile-presentation';
+import type {
+  InitialHistoryResponse,
+  StockDetailQuoteResource,
+  StockDetailResource,
+} from '@/src/lib/stock-detail/types';
+import type {
+  CompanyProfile,
+  MarketDataApiError,
+  MarketOverview,
+} from '@/src/lib/market-data/types';
+import { CompanyProfileCard } from './CompanyProfileCard';
+import { resolvePriceCurrency } from './price-header';
+import { requestCompanyProfile } from './profile-retry';
+import { StockPriceHeader } from './StockPriceHeader';
+
+const ChartPanel = dynamic(
+  () => import('./ChartPanel').then((module) => module.ChartPanel),
+  {
+    ssr: false,
+    loading: () => <div className="h-[340px] animate-pulse rounded-xl bg-slate-800/50" />,
+  },
+);
+const NewsFeed = dynamic(
+  () => import('@/src/components/news/NewsFeed').then((module) => module.NewsFeed),
+  {
+    ssr: false,
+    loading: () => <div className="h-72 animate-pulse rounded-xl bg-slate-800/50" />,
+  },
+);
+
 const tabs = ['Overview', 'Chart', 'Financials', 'News', 'Analysis'];
-function value(input: string | number | null | undefined, formatter?: (n: number) => string) { if (input == null || input === '') return '—'; return typeof input === 'number' && formatter ? formatter(input) : String(input); }
-function freshnessLabel(data: DataFreshness) { if (data.status === 'unavailable') return 'unavailable'; const stale = data.asOf && Date.now() - new Date(data.asOf).valueOf() > Math.max(300, data.maxAgeSeconds ?? 0) * 1000; return stale ? 'stale' : data.status === 'realtime' ? 'live' : data.status; }
-export function StockDetailClient({ symbol, quote, profile, overview, freshness, providerConfigured, initialWatched, technicalIndicatorsEnabled }: { symbol: string; quote: Quote | null; profile: CompanyProfile | null; overview: MarketOverview | null; freshness: DataFreshness; providerConfigured: boolean; initialWatched: boolean; technicalIndicatorsEnabled: boolean }) {
-  const router = useRouter(); const { addToast } = useToast(); const [tab, setTab] = useState('Overview'); const [watched, setWatched] = useState(initialWatched); const [pending, startTransition] = useTransition();
-  const isOnline = useOnlineStatus();
-  const market = overview?.markets.find((item) => item.primaryExchanges.some((exchange) => profile?.exchange?.toLowerCase().includes(exchange.toLowerCase()))) ?? overview?.markets[0]; const positive = (quote?.change ?? 0) >= 0;
-  const toggleWatch = () => { if (!isOnline) { addToast({ title: 'แก้ไข Watchlist ไม่ได้ขณะออฟไลน์', type: 'error' }); return; } startTransition(async () => { const result = watched ? await removeWatchlistItemAction(symbol) : await addWatchlistItemAction(symbol); if (result.ok) { setWatched(!watched); addToast({ title: watched ? 'นำออกจาก Watchlist แล้ว' : 'เพิ่มใน Watchlist แล้ว', type: 'success' }); } else addToast({ title: result.message, type: 'error' }); }); };
-  const share = async () => { const url = window.location.href; try { if (navigator.share) await navigator.share({ title: symbol, url }); else await navigator.clipboard.writeText(url); addToast({ title: 'แชร์ลิงก์แล้ว', type: 'success' }); } catch { /* cancelled */ } };
-  return <div className="pb-20"><header className="sticky top-0 z-40 flex min-h-16 items-center justify-between border-b border-slate-800 bg-[#0A0E17]/95 px-3 backdrop-blur-md"><div className="flex min-w-0 items-center gap-2"><button aria-label="กลับ" onClick={() => { const sameOriginReferrer = document.referrer.startsWith(window.location.origin); if (sameOriginReferrer && window.history.length > 1) router.back(); else router.push('/search'); }} className="flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-full text-slate-400"><ArrowLeft size={20}/></button><div className="min-w-0"><h1 className="truncate text-lg font-bold text-white">{symbol}</h1><p className="truncate text-xs text-slate-500">{profile?.name ?? '—'} · {profile?.exchange ?? '—'}</p></div></div><div className="flex shrink-0"><button disabled={pending || !isOnline} aria-label="Watchlist" onClick={toggleWatch} className={watched ? 'flex min-h-11 min-w-11 items-center justify-center text-[#D4FF00]' : 'flex min-h-11 min-w-11 items-center justify-center text-slate-400'}><Star size={20} fill={watched ? 'currentColor' : 'none'}/></button><button onClick={() => addToast({ title: 'Alert: Coming Soon', type: 'info' })} aria-label="Alert Coming Soon" className="flex min-h-11 min-w-11 items-center justify-center text-slate-400"><Bell size={20}/></button><button onClick={() => void share()} aria-label="แชร์" className="flex min-h-11 min-w-11 items-center justify-center text-slate-400"><Share2 size={20}/></button></div></header>
-  <main className="space-y-6 p-4 md:p-8"><section className="min-h-36 rounded-2xl border border-slate-800 bg-[#151B28] p-5"><div className="flex flex-wrap items-start justify-between gap-3"><div><p className="font-mono text-4xl font-bold text-white">{quote ? quote.price.toLocaleString(undefined, { maximumFractionDigits: 4 }) : '—'}</p><p className={`mt-2 font-semibold ${quote ? positive ? 'text-emerald-400' : 'text-red-400' : 'text-slate-500'}`}>{quote?.change == null ? '—' : `${positive ? '+' : ''}${quote.change.toFixed(2)} (${quote.changePercent == null ? '—' : `${quote.changePercent.toFixed(2)}%`})`}</p></div><div className="text-right"><span className={`rounded-full border px-2 py-1 text-[10px] uppercase ${freshness.status === 'unavailable' ? 'border-red-500/30 text-red-300' : 'border-slate-700 text-slate-300'}`}>{freshnessLabel(freshness)}</span><p className="mt-2 text-xs text-slate-500">{market ? `${market.region}: ${market.currentStatus}` : 'Market status: —'}</p><p className="text-[10px] text-slate-600">{freshness.asOf ? new Date(freshness.asOf).toLocaleString('th-TH') : 'Timestamp: —'}</p></div></div>{!quote && <p className="mt-5 rounded-lg bg-slate-900/50 p-3 text-sm text-amber-300">{providerConfigured ? 'Quote ไม่พร้อมใช้งานหรือไม่พบ symbol นี้' : 'ต้องตั้งค่า Market Data Provider ก่อนใช้งาน'}</p>}</section>
-  <div className="sticky top-16 z-30 -mx-4 border-y border-slate-800 bg-[#0A0E17]/95 px-4 py-3 backdrop-blur md:static md:mx-0 md:border-0 md:bg-transparent md:px-0"><Tabs tabs={tabs} activeTab={tab} onChange={setTab}/></div>
-  <section className="min-h-[360px]">{tab === 'Overview' && <Overview quote={quote} profile={profile}/>} {tab === 'Chart' && <ChartPanel symbol={symbol} active={tab === 'Chart'} technicalIndicatorsEnabled={technicalIndicatorsEnabled}/>} {tab === 'News' && <NewsFeed symbol={symbol}/>} {tab === 'Financials' && <ComingSoon title="Financials"/>} {tab === 'Analysis' && <div className="rounded-2xl border border-amber-500/20 bg-[#151B28] p-8 text-center"><Activity className="mx-auto mb-3 text-amber-300"/><h2 className="font-bold text-white">Analysis · Experimental / Coming Soon</h2><p className="mt-2 text-sm text-slate-400">S/R และ AI ยังไม่ได้คำนวณจริง และจะไม่แสดงเป็นคำแนะนำลงทุน</p></div>}</section>
-  </main></div>;
+
+interface StockDetailClientProps {
+  symbol: string;
+  quoteResource: StockDetailQuoteResource;
+  profileResource: StockDetailResource<CompanyProfile>;
+  overviewResource: StockDetailResource<MarketOverview>;
+  instrumentCurrency: string | null;
+  instrumentExchange: string | null;
+  initialHistory: InitialHistoryResponse;
+  fxQuote: FxQuote | null;
+  evaluatedAt: string;
+  providerConfigured: boolean;
+  initialWatched: boolean;
+  technicalIndicatorsEnabled: boolean;
+  advancedChartTypesEnabled: boolean;
+  extendedIndicatorsEnabled: boolean;
+  supportResistanceEnabled: boolean;
+  keyStatisticsEnabled: boolean;
+  fairValueEnabled: boolean;
 }
-function Overview({ quote, profile }: { quote: Quote | null; profile: CompanyProfile | null }) { const stats = [['Open', value(quote?.open, (n) => n.toLocaleString())], ['High', value(quote?.high, (n) => n.toLocaleString())], ['Low', value(quote?.low, (n) => n.toLocaleString())], ['Previous close', value(quote?.previousClose, (n) => n.toLocaleString())], ['Volume', value(quote?.volume, (n) => n.toLocaleString())], ['Market cap', value(profile?.marketCapitalization, (n) => Intl.NumberFormat('en', { notation: 'compact' }).format(n))], ['Sector', value(profile?.sector)], ['Industry', value(profile?.industry)]]; return <div className="space-y-5"><div className="grid grid-cols-2 gap-3 md:grid-cols-4">{stats.map(([label, val]) => <div key={label} className="min-h-20 rounded-xl border border-slate-800 bg-[#151B28] p-3"><p className="text-[10px] uppercase text-slate-500">{label}</p><p className="mt-2 break-words font-mono text-sm text-white">{val}</p></div>)}</div><div className="rounded-2xl border border-slate-800 bg-[#151B28] p-5"><h2 className="font-bold text-white">Company profile</h2><p className="mt-3 whitespace-pre-line text-sm leading-6 text-slate-400">{profile?.description ?? '—'}</p><div className="mt-4 grid gap-2 text-sm sm:grid-cols-2"><p>Country: <span className="text-white">{profile?.country ?? '—'}</span></p><p>Employees: <span className="text-white">{profile?.employees?.toLocaleString() ?? '—'}</span></p><p>Currency: <span className="text-white">{profile?.currency ?? '—'}</span></p><p>Fiscal year end: <span className="text-white">{profile?.fiscalYearEnd ?? '—'}</span></p></div>{profile?.website && <a href={profile.website} target="_blank" rel="noopener noreferrer" className="mt-4 inline-block text-sm text-[#D4FF00]">เว็บไซต์บริษัท ↗</a>}</div></div>; }
-function ComingSoon({ title }: { title: string }) { return <div className="flex min-h-64 items-center justify-center rounded-2xl border border-slate-800 bg-[#151B28] p-6 text-center"><div><p className="font-bold text-white">{title}</p><p className="mt-2 text-sm text-slate-500">Coming Soon · ไม่มีการแสดงข้อมูลจำลอง</p></div></div>; }
+
+function MetricCard({
+  label,
+  value,
+}: {
+  label: string;
+  value: string | null;
+}) {
+  return (
+    <div className="min-h-20 rounded-xl border border-slate-800 bg-[#151B28] p-3">
+      <p className="text-[10px] uppercase text-slate-500">{label}</p>
+      <p className="mt-2 break-words font-mono text-sm text-white">
+        {value ?? 'ไม่พบข้อมูล'}
+      </p>
+    </div>
+  );
+}
+
+function numberValue(value: number | null | undefined): string | null {
+  return value == null || !Number.isFinite(value) ? null : value.toLocaleString('en-US');
+}
+
+export function StockDetailClient({
+  symbol,
+  quoteResource: initialQuoteResource,
+  profileResource: initialProfileResource,
+  overviewResource,
+  instrumentCurrency,
+  instrumentExchange,
+  initialHistory,
+  fxQuote,
+  evaluatedAt,
+  providerConfigured,
+  initialWatched,
+  technicalIndicatorsEnabled,
+  advancedChartTypesEnabled,
+  extendedIndicatorsEnabled,
+  supportResistanceEnabled,
+  keyStatisticsEnabled,
+  fairValueEnabled,
+}: StockDetailClientProps) {
+  const router = useRouter();
+  const { addToast } = useToast();
+  const [tab, setTab] = useState('Overview');
+  const [watched, setWatched] = useState(initialWatched);
+  const [pending, startTransition] = useTransition();
+  const [quoteResource, setQuoteResource] = useState(initialQuoteResource);
+  const [quoteLoading, setQuoteLoading] = useState(false);
+  const [quoteRetryAt, setQuoteRetryAt] = useState(0);
+  const [profileResource, setProfileResource] = useState(initialProfileResource);
+  const [profileLoading, setProfileLoading] = useState(false);
+  const [profileRetryAt, setProfileRetryAt] = useState(0);
+  const isOnline = useOnlineStatus();
+  const profile = profileResource.data;
+  const overview = overviewResource.data;
+  const quote = quoteResource.data;
+  const exchange = profile?.exchange ?? instrumentExchange;
+  const sourceCurrency = resolvePriceCurrency({
+    profileCurrency: profile?.currency,
+    quoteCurrency: quote?.currency,
+    instrumentCurrency,
+    exchange,
+  }).currency;
+  const market = overview?.markets.find((item) => (
+    item.primaryExchanges.some((exchange) => (
+      profile?.exchange?.toLowerCase().includes(exchange.toLowerCase())
+      || instrumentExchange?.toLowerCase().includes(exchange.toLowerCase())
+    ))
+  )) ?? overview?.markets[0] ?? null;
+
+  const toggleWatch = () => {
+    if (!isOnline) {
+      addToast({ title: 'แก้ไข Watchlist ไม่ได้ขณะออฟไลน์', type: 'error' });
+      return;
+    }
+    startTransition(async () => {
+      const result = watched
+        ? await removeWatchlistItemAction(symbol)
+        : await addWatchlistItemAction(symbol);
+      if (result.ok) {
+        setWatched(!watched);
+        addToast({
+          title: watched ? 'นำออกจาก Watchlist แล้ว' : 'เพิ่มใน Watchlist แล้ว',
+          type: 'success',
+        });
+      } else {
+        addToast({ title: result.message, type: 'error' });
+      }
+    });
+  };
+
+  const share = async () => {
+    const url = window.location.href;
+    try {
+      if (navigator.share) await navigator.share({ title: symbol, url });
+      else await navigator.clipboard.writeText(url);
+      addToast({ title: 'แชร์ลิงก์แล้ว', type: 'success' });
+    } catch {
+      // The user cancelled the share sheet.
+    }
+  };
+
+  const retryQuote = async () => {
+    const now = Date.now();
+    if (quoteLoading || now < quoteRetryAt) return;
+    setQuoteLoading(true);
+    try {
+      const response = await fetch(`/api/market/quote/${encodeURIComponent(symbol)}`, {
+        headers: { Accept: 'application/json' },
+      });
+      const body = quoteEnvelopeSchema.safeParse(await response.json());
+      if (!body.success) throw new Error('Quote API returned an invalid response');
+      if (!response.ok || !body.data.data) {
+        const error = body.data.error ?? {
+          code: 'internal-error' as const,
+          message: 'Quote is unavailable',
+          retryable: true,
+        };
+        const retryAfterSeconds = body.data.error?.retryAfterSeconds ?? 0;
+        if (retryAfterSeconds > 0) {
+          setQuoteRetryAt(Date.now() + retryAfterSeconds * 1_000);
+          window.setTimeout(() => setQuoteRetryAt(0), retryAfterSeconds * 1_000);
+        }
+        setQuoteResource((current) => ({
+          ...current,
+          reason: `${error.code}: ${error.message}`,
+          error,
+        }));
+        console.warn('[stock-detail:quote-retry]', { code: error.code });
+        return;
+      }
+      const fallback = body.data.meta.provider?.includes('(daily history)') ?? false;
+      setQuoteResource({
+        data: body.data.data,
+        freshness: body.data.meta.freshness,
+        provider: body.data.meta.provider,
+        reason: fallback ? 'Primary quote unavailable; using verified daily OHLCV' : null,
+        error: null,
+        fallbackLabel: fallback ? 'Previous trading day' : null,
+      });
+      setQuoteRetryAt(0);
+    } catch (cause) {
+      const error: MarketDataApiError = {
+        code: 'internal-error',
+        message: cause instanceof Error ? cause.message : 'Quote is unavailable',
+        retryable: true,
+      };
+      setQuoteResource((current) => ({
+        ...current,
+        reason: `${error.code}: ${error.message}`,
+        error,
+      }));
+      console.warn('[stock-detail:quote-retry]', { code: error.code });
+    } finally {
+      setQuoteLoading(false);
+    }
+  };
+
+  const retryProfile = async () => {
+    const now = Date.now();
+    if (profileLoading || now < profileRetryAt) return;
+    setProfileLoading(true);
+    try {
+      const next = await requestCompanyProfile(symbol);
+      setProfileResource(next);
+      const retryAfterSeconds = next.error?.retryAfterSeconds ?? 0;
+      if (retryAfterSeconds > 0) {
+        setProfileRetryAt(Date.now() + retryAfterSeconds * 1_000);
+        window.setTimeout(() => setProfileRetryAt(0), retryAfterSeconds * 1_000);
+      } else {
+        setProfileRetryAt(0);
+      }
+      if (next.error) {
+        console.warn('[stock-detail:profile-retry]', { code: next.error.code });
+      }
+    } catch (cause) {
+      const error: MarketDataApiError = {
+        code: 'upstream-unavailable',
+        message: cause instanceof Error ? cause.message : 'Company profile is unavailable',
+        retryable: true,
+      };
+      setProfileResource((current) => ({
+        ...current,
+        reason: `${error.code}: ${error.message}`,
+        error,
+      }));
+      console.warn('[stock-detail:profile-retry]', { code: error.code });
+    } finally {
+      setProfileLoading(false);
+    }
+  };
+
+  return (
+    <div className="pb-20">
+      <header className="sticky top-0 z-40 flex min-h-16 items-center justify-between border-b border-slate-800 bg-[#0A0E17]/95 px-3 backdrop-blur-md">
+        <div className="flex min-w-0 items-center gap-2">
+          <button
+            aria-label="กลับ"
+            onClick={() => {
+              const sameOriginReferrer = document.referrer.startsWith(window.location.origin);
+              if (sameOriginReferrer && window.history.length > 1) router.back();
+              else router.push('/search');
+            }}
+            className="flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-full text-slate-400"
+          >
+            <ArrowLeft size={20} />
+          </button>
+          <div className="min-w-0">
+            <h1 className="truncate text-lg font-bold text-white">{symbol}</h1>
+            <p className="truncate text-xs text-slate-500">
+              {profile?.name ?? 'ไม่พบชื่อบริษัท'} · {exchange ?? 'ไม่พบตลาด'}
+            </p>
+          </div>
+        </div>
+        <div className="flex shrink-0">
+          <button
+            disabled={pending || !isOnline}
+            aria-label="Watchlist"
+            onClick={toggleWatch}
+            className={watched
+              ? 'flex min-h-11 min-w-11 items-center justify-center text-[#D4FF00]'
+              : 'flex min-h-11 min-w-11 items-center justify-center text-slate-400'}
+          >
+            <Star size={20} fill={watched ? 'currentColor' : 'none'} />
+          </button>
+          <button
+            onClick={() => addToast({ title: 'Alert: Coming Soon', type: 'info' })}
+            aria-label="Alert Coming Soon"
+            className="flex min-h-11 min-w-11 items-center justify-center text-slate-400"
+          >
+            <Bell size={20} />
+          </button>
+          <button
+            onClick={() => void share()}
+            aria-label="แชร์"
+            className="flex min-h-11 min-w-11 items-center justify-center text-slate-400"
+          >
+            <Share2 size={20} />
+          </button>
+        </div>
+      </header>
+
+      <main className="space-y-6 p-4 md:p-8">
+        <StockPriceHeader
+          symbol={symbol}
+          exchange={exchange}
+          sourceCurrency={sourceCurrency}
+          quote={quote}
+          freshness={quoteResource.freshness}
+          market={market}
+          marketError={overviewResource.error}
+          provider={quoteResource.provider}
+          providerConfigured={providerConfigured}
+          quoteError={quoteResource.error}
+          fallbackLabel={quoteResource.fallbackLabel}
+          quoteLoading={quoteLoading}
+          quoteRetryAt={quoteRetryAt}
+          onRetryQuote={() => void retryQuote()}
+          fxQuote={fxQuote}
+          evaluatedAt={evaluatedAt}
+        />
+
+        <div className="sticky top-16 z-30 -mx-4 border-y border-slate-800 bg-[#0A0E17]/95 px-4 py-3 backdrop-blur md:static md:mx-0 md:border-0 md:bg-transparent md:px-0">
+          <Tabs tabs={tabs} activeTab={tab} onChange={setTab} />
+        </div>
+
+        <section className="min-h-[360px]">
+          {tab === 'Overview' && (
+            <Overview
+              symbol={symbol}
+              quoteResource={quoteResource}
+              profileResource={profileResource}
+              marketCapitalizationCurrency={sourceCurrency}
+              profileLoading={profileLoading}
+              profileRetryAt={profileRetryAt}
+              onRetryProfile={() => void retryProfile()}
+              keyStatisticsEnabled={keyStatisticsEnabled}
+              fairValueEnabled={fairValueEnabled}
+            />
+          )}
+          {tab === 'Chart' && (
+            <ChartPanel
+              symbol={symbol}
+              active={tab === 'Chart'}
+              initialHistory={initialHistory}
+              technicalIndicatorsEnabled={technicalIndicatorsEnabled}
+              advancedChartTypesEnabled={advancedChartTypesEnabled}
+              extendedIndicatorsEnabled={extendedIndicatorsEnabled}
+              supportResistanceEnabled={supportResistanceEnabled}
+              fairValueEnabled={fairValueEnabled}
+            />
+          )}
+          {tab === 'News' && <NewsFeed symbol={symbol} />}
+          {tab === 'Financials' && (
+            fairValueEnabled
+              ? <FairValueSection symbol={symbol} />
+              : <ComingSoon title="Financials" />
+          )}
+          {tab === 'Analysis' && (
+            <div className="rounded-2xl border border-amber-500/20 bg-[#151B28] p-8 text-center">
+              <Activity className="mx-auto mb-3 text-amber-300" />
+              <h2 className="font-bold text-white">Analysis · Experimental / Coming Soon</h2>
+              <p className="mt-2 text-sm text-slate-400">
+                AI analysis ยังไม่ได้คำนวณจริง และจะไม่แสดงเป็นคำแนะนำลงทุน
+              </p>
+            </div>
+          )}
+        </section>
+      </main>
+    </div>
+  );
+}
+
+function Overview({
+  symbol,
+  quoteResource,
+  profileResource,
+  marketCapitalizationCurrency,
+  profileLoading,
+  profileRetryAt,
+  onRetryProfile,
+  keyStatisticsEnabled,
+  fairValueEnabled,
+}: {
+  symbol: string;
+  quoteResource: StockDetailQuoteResource;
+  profileResource: StockDetailResource<CompanyProfile>;
+  marketCapitalizationCurrency: string | null;
+  profileLoading: boolean;
+  profileRetryAt: number;
+  onRetryProfile: () => void;
+  keyStatisticsEnabled: boolean;
+  fairValueEnabled: boolean;
+}) {
+  const quote = quoteResource.data;
+  const profile = profileResource.data;
+  const beforeFairValue = [
+    { label: 'Open', value: numberValue(quote?.open) },
+    { label: 'High', value: numberValue(quote?.high) },
+    { label: 'Low', value: numberValue(quote?.low) },
+  ];
+  const afterFairValue = [
+    { label: 'Volume', value: numberValue(quote?.volume) },
+    {
+      label: 'Market cap',
+      value: formatMarketCapitalization(
+        profile?.marketCapitalization ?? null,
+        marketCapitalizationCurrency,
+      ),
+    },
+    { label: 'Sector', value: profile?.sector ?? null },
+    { label: 'Industry', value: profile?.industry ?? null },
+  ];
+
+  return (
+    <div className="space-y-5">
+      <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+        {beforeFairValue.map((metric) => <MetricCard key={metric.label} {...metric} />)}
+        <FairValueCard symbol={symbol} enabled={fairValueEnabled} />
+        {afterFairValue.map((metric) => <MetricCard key={metric.label} {...metric} />)}
+      </div>
+      {keyStatisticsEnabled && <KeyStatisticsSection symbol={symbol} />}
+      <CompanyProfileCard
+        symbol={symbol}
+        profile={profile}
+        freshness={profileResource.freshness}
+        provider={profileResource.provider}
+        error={profileResource.error}
+        loading={profileLoading}
+        retryAt={profileRetryAt}
+        onRetry={onRetryProfile}
+      />
+    </div>
+  );
+}
+
+function ComingSoon({ title }: { title: string }) {
+  return (
+    <div className="flex min-h-64 items-center justify-center rounded-2xl border border-slate-800 bg-[#151B28] p-6 text-center">
+      <div>
+        <p className="font-bold text-white">{title}</p>
+        <p className="mt-2 text-sm text-slate-500">
+          Coming Soon · ไม่มีการแสดงข้อมูลจำลอง
+        </p>
+      </div>
+    </div>
+  );
+}

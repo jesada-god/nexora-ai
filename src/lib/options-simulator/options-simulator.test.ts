@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { runMonteCarlo } from './monte-carlo';
+import { boundedExpirationProfitFloor, buildHistogram, isOptionInTheMoney, runMonteCarlo } from './monte-carlo';
 import { blackScholes, binomialValue } from './pricing';
-import { detectStrategy, optionExpirationProfit, portfolioExpirationProfit, valuePortfolio } from './portfolio';
+import { detectStrategy, optionExpirationProfit, portfolioExpirationProfit, portfolioProfitLossBasis, valuePortfolio } from './portfolio';
 import type { OptionLeg, SimulationWorkspace } from './types';
 import { calculationValidationMessages, validationMessages } from './validation';
 
@@ -97,6 +97,27 @@ describe('portfolio payoff and strategy handling', () => {
     expect(scaled).toBe(unscaled * 3 * 50);
   });
 
+  it('uses absolute net debit for debit positions and the existing gross-premium policy for credit positions', () => {
+    const debitSpread = workspace({ legs: [
+      leg({ entryPremium: 10, fees: 0 }),
+      leg({ id: 'leg-2', side: 'sell', strike: 110, entryPremium: 5, fees: 0 }),
+    ] });
+    const debitValuation = valuePortfolio(debitSpread, debitSpread.scenarios[0]);
+    expect(portfolioProfitLossBasis(debitSpread)).toEqual({ amount: 500, policy: 'absolute-net-debit' });
+    expect(debitValuation.profitLossPercent).toBeCloseTo(debitValuation.profitLoss / 500 * 100, 10);
+
+    const creditPosition = workspace({ legs: [leg({ side: 'sell', entryPremium: 10, fees: 0 })] });
+    const creditValuation = valuePortfolio(creditPosition, creditPosition.scenarios[0]);
+    expect(portfolioProfitLossBasis(creditPosition)).toEqual({ amount: 1_000, policy: 'gross-premium-at-risk' });
+    expect(creditValuation.profitLossPercent).toBeCloseTo(creditValuation.profitLoss / 1_000 * 100, 10);
+  });
+
+  it('returns an unavailable P&L percentage instead of Infinity when the denominator is zero', () => {
+    const zeroBasis = workspace({ legs: [leg({ entryPremium: 0, fees: 0 })] });
+    expect(portfolioProfitLossBasis(zeroBasis)).toEqual({ amount: null, policy: 'unavailable' });
+    expect(valuePortfolio(zeroBasis, zeroBasis.scenarios[0]).profitLossPercent).toBeNull();
+  });
+
   it('aggregates multiple legs and detects common strategies', () => {
     const spread = [leg(), leg({ id: 'leg-2', side: 'sell', strike: 110, entryPremium: 5 })];
     expect(portfolioExpirationProfit(workspace({ legs: spread }), 120)).toBe(496);
@@ -105,6 +126,20 @@ describe('portfolio payoff and strategy handling', () => {
     expect(valuation.legs).toHaveLength(2);
     expect(valuation.breakEvens[0]).toBeCloseTo(105, 1);
     expect(valuation.unlimitedLoss).toBe(false);
+  });
+
+  it('reconciles projected P&L with simulated value and signed entry premium', () => {
+    const input = workspace({ legs: [leg({ entryPremium: 7.5, fees: 2 })] });
+    const result = valuePortfolio(input, { ...input.scenarios[0], targetPrice: 115 });
+    const signedEntryPremium = 7.5 * 100;
+    expect(result.profitLoss).toBeCloseTo(result.theoreticalValue - signedEntryPremium - 2, 10);
+  });
+
+  it('derives single-leg Call and Put break-even from strike and entry premium', () => {
+    const callInput = workspace({ legs: [leg({ kind: 'call', strike: 100, entryPremium: 5, fees: 0 })] });
+    const putInput = workspace({ legs: [leg({ kind: 'put', strike: 100, entryPremium: 5, fees: 0 })] });
+    expect(valuePortfolio(callInput, callInput.scenarios[0]).breakEvens[0]).toBeCloseTo(105, 1);
+    expect(valuePortfolio(putInput, putInput.scenarios[0]).breakEvens[0]).toBeCloseTo(95, 1);
   });
 
   it('classifies naked short call loss as unlimited', () => {
@@ -224,11 +259,18 @@ describe('validation and Monte Carlo', () => {
     expect(first.probabilityOfProfit).toBeGreaterThanOrEqual(0);
     expect(first.probabilityOfProfit).toBeLessThanOrEqual(1);
     expect(first.probabilityItm + first.probabilityOtm).toBeCloseTo(1, 10);
+    expect(first.validPaths).toBe(input.monteCarlo.paths);
+    expect(first.discardedPaths).toBe(0);
     expect(first.percentiles.p1).toBeLessThanOrEqual(first.percentiles.p5);
     expect(first.percentiles.p5).toBeLessThanOrEqual(first.percentiles.p95);
     expect(first.percentiles.p95).toBeLessThanOrEqual(first.percentiles.p99);
+    expect(first.percentiles.p5).toBeLessThanOrEqual(first.medianProfitLoss);
+    expect(first.medianProfitLoss).toBeLessThanOrEqual(first.percentiles.p95);
+    expect(first.histogram.reduce((sum, bucket) => sum + bucket.count, 0)).toBe(first.validPaths);
+    expect(first.terminalPriceHistogram.reduce((sum, bucket) => sum + bucket.count, 0)).toBe(first.validPaths);
     expect(first.samplePaths.length).toBeLessThanOrEqual(40);
     expect(JSON.stringify(first)).not.toMatch(/NaN|Infinity/);
+    expect(JSON.stringify(first)).not.toContain('"-0"');
   });
 
   it('separates touching a target from terminal closing probabilities and reports real progress', () => {
@@ -238,9 +280,80 @@ describe('validation and Monte Carlo', () => {
       targetPrice: 110,
       onProgress: (completed) => progress.push(completed),
     });
-    expect(result.probabilityReachingTarget).toBeGreaterThanOrEqual(result.probabilityClosingAboveTarget ?? 0);
+    expect(result.probabilityReachingTarget).toBeGreaterThan(result.probabilityClosingAboveTarget ?? 0);
     expect((result.probabilityClosingAboveTarget ?? 0) + (result.probabilityClosingBelowTarget ?? 0)).toBeCloseTo(1, 10);
+    for (const value of [result.probabilityOfProfit, result.probabilityItm, result.probabilityOtm, result.probabilityReachingTarget, result.probabilityClosingAboveTarget, result.probabilityClosingBelowTarget]) {
+      expect(value).toBeGreaterThanOrEqual(0);
+      expect(value).toBeLessThanOrEqual(1);
+    }
     expect(progress.at(-1)).toBe(input.monteCarlo.paths);
     expect(progress.every((completed, index) => index === 0 || completed > progress[index - 1])).toBe(true);
+  });
+
+  it('matches known deterministic POP, ITM and Expected P&L cases for Call and Put', () => {
+    const deterministic = { ...workspace().monteCarlo, drift: 0, volatility: 0, rate: 0, dividendYield: 0 };
+    const callInput = workspace({ underlyingPrice: 120, legs: [leg({ kind: 'call', strike: 100, entryPremium: 5, fees: 0 })] });
+    const callResult = runMonteCarlo(callInput, deterministic);
+    expect(callResult.probabilityOfProfit).toBe(1);
+    expect(callResult.probabilityItm).toBe(1);
+    expect(callResult.expectedProfitLoss).toBe(1_500);
+
+    const putInput = workspace({ underlyingPrice: 80, legs: [leg({ kind: 'put', strike: 100, entryPremium: 5, fees: 0 })] });
+    const putResult = runMonteCarlo(putInput, deterministic);
+    expect(putResult.probabilityOfProfit).toBe(1);
+    expect(putResult.probabilityItm).toBe(1);
+    expect(putResult.expectedProfitLoss).toBe(1_500);
+
+    const outOfMoney = workspace({ underlyingPrice: 80, legs: [leg({ kind: 'call', strike: 100, entryPremium: 5, fees: 0 })] });
+    const outOfMoneyResult = runMonteCarlo(outOfMoney, deterministic);
+    expect(outOfMoneyResult.probabilityOfProfit).toBe(0);
+    expect(outOfMoneyResult.probabilityItm).toBe(0);
+    expect(outOfMoneyResult.expectedProfitLoss).toBe(-500);
+  });
+
+  it('keeps VaR and Expected Shortfall on the lower loss tail', () => {
+    const input = workspace();
+    const result = runMonteCarlo(input, input.monteCarlo);
+    expect(result.valueAtRisk.p99).toBeGreaterThanOrEqual(result.valueAtRisk.p95);
+    expect(result.expectedShortfall.p99).toBeGreaterThanOrEqual(result.expectedShortfall.p95);
+    expect(result.expectedShortfall.p95).toBeGreaterThanOrEqual(result.valueAtRisk.p95);
+    expect(result.expectedShortfall.p99).toBeGreaterThanOrEqual(result.valueAtRisk.p99);
+    expect(-result.expectedShortfall.p95).toBeLessThanOrEqual(-result.valueAtRisk.p95);
+    expect(-result.expectedShortfall.p99).toBeLessThanOrEqual(-result.valueAtRisk.p99);
+  });
+
+  it('uses terminal Call/Put moneyness without treating ITM as profit', () => {
+    expect(isOptionInTheMoney(101, leg({ kind: 'call', strike: 100 }))).toBe(true);
+    expect(isOptionInTheMoney(99, leg({ kind: 'call', strike: 100 }))).toBe(false);
+    expect(isOptionInTheMoney(99, leg({ kind: 'put', strike: 100 }))).toBe(true);
+    expect(isOptionInTheMoney(101, leg({ kind: 'put', strike: 100 }))).toBe(false);
+
+    const expensiveCall = workspace({
+      underlyingPrice: 101,
+      legs: [leg({ kind: 'call', strike: 100, entryPremium: 10, fees: 0 })],
+      monteCarlo: { ...workspace().monteCarlo, drift: 0, volatility: 0 },
+    });
+    const result = runMonteCarlo(expensiveCall, expensiveCall.monteCarlo);
+    expect(result.probabilityItm).toBe(1);
+    expect(result.probabilityOfProfit).toBe(0);
+  });
+
+  it('builds deterministic histograms whose bins cover every valid path', () => {
+    expect(buildHistogram([5, 5, 5])).toEqual([{ lower: 5, upper: 5, count: 3 }]);
+    const bins = buildHistogram([-10, -5, 0, 5, 10], 4);
+    expect(bins).toHaveLength(4);
+    expect(bins.reduce((sum, bucket) => sum + bucket.count, 0)).toBe(5);
+    expect(buildHistogram([-10, -5, 0, 5, 10], 4)).toEqual(bins);
+    expect(() => buildHistogram([1], 0)).toThrow('positive integer');
+  });
+
+  it('never crosses the exact max-loss floor for bounded-loss strategies', () => {
+    const longCall = workspace({ legs: [leg({ kind: 'call', side: 'buy', strike: 100, entryPremium: 5, fees: 2 })] });
+    expect(boundedExpirationProfitFloor(longCall)).toBe(-502);
+    const result = runMonteCarlo(longCall, longCall.monteCarlo);
+    expect(result.percentiles.p1).toBeGreaterThanOrEqual(-502);
+
+    const nakedShortCall = workspace({ legs: [leg({ kind: 'call', side: 'sell' })] });
+    expect(boundedExpirationProfitFloor(nakedShortCall)).toBeNull();
   });
 });

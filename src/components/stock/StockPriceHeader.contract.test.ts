@@ -1,0 +1,54 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { describe, expect, it } from 'vitest';
+
+const header = readFileSync(join(process.cwd(), 'src/components/stock/StockPriceHeader.tsx'), 'utf8');
+const detail = readFileSync(join(process.cwd(), 'src/components/stock/StockDetailClient.tsx'), 'utf8');
+
+describe('StockPriceHeader integration contract', () => {
+  it('does not fetch when currency or details change', () => {
+    expect(header).not.toContain('fetch(');
+    expect(header).toContain("onClick={() => setCurrency(item)}");
+    expect(header).toContain('onClick={() => setDetailsOpen(true)}');
+  });
+
+  it('uses accessible, labelled status emoji and a shared modal', () => {
+    expect(header).toContain('<StatusEmoji');
+    expect(header).toContain('aria-hidden="true"');
+    expect(header).toContain('<Modal');
+    expect(header).toContain('aria-haspopup="dialog"');
+  });
+
+  it('shows provider disclosure and the previous-close comparison base', () => {
+    expect(header).toContain('<Detail label="Provider"');
+    expect(header).toContain('<Detail label="Session"');
+    expect(header).toContain('<Detail label="Timestamp"');
+    expect(header).toContain("value={extendedQuote && extendedChange ? 'Official Regular Close' : 'Previous Close'}");
+  });
+
+  it('never uses a 1:1 FX fallback or a mock price', () => {
+    expect(header).not.toContain('?? 1');
+    expect(header.toLowerCase()).not.toContain('mock');
+  });
+
+  it('uses a mobile-safe Thai empty-price heading instead of a large Unavailable word', () => {
+    expect(header).toContain("'ไม่พบราคาล่าสุด'");
+    expect(header).toContain('[overflow-wrap:anywhere]');
+    expect(header).toContain('text-[clamp(2rem,11vw,3rem)]');
+    expect(header).not.toContain("displayPrice === null ? 'Unavailable'");
+  });
+
+  it('keeps Previous Close out of the Overview cards', () => {
+    const overviewCards = detail.slice(detail.indexOf('function Overview'));
+    expect(overviewCards).not.toContain("['Previous Close'");
+  });
+
+  it('does not render a technical reason inside every metric card', () => {
+    const metricCard = detail.slice(
+      detail.indexOf('function MetricCard'),
+      detail.indexOf('function numberValue'),
+    );
+    expect(metricCard).not.toContain('reason');
+    expect(metricCard).toContain("value ?? 'ไม่พบข้อมูล'");
+  });
+});

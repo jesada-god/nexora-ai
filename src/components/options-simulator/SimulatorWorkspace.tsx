@@ -1,24 +1,42 @@
 'use client';
 
-import { useCallback, useEffect, useId, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react';
 import { ArrowLeft, CalendarDays, Check, Copy, HelpCircle, LoaderCircle, Plus, Save, Search, Trash2 } from 'lucide-react';
 import { useRouter } from 'next/navigation';
-import { CartesianGrid, Line, LineChart, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
+import { Bar, BarChart, CartesianGrid, Line, LineChart, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import Header from '@/src/components/layout/Header';
 import { Button } from '@/src/components/ui/Button';
 import { Input } from '@/src/components/ui/Input';
 import { Modal } from '@/src/components/ui/Modal';
 import { Tabs } from '@/src/components/ui/Tabs';
 import { useToast } from '@/src/components/ui/Toast';
+import { fetchFxRate } from '@/src/lib/market-data/fx/client';
+import type { FxQuote } from '@/src/lib/market-data/fx/types';
 import type { MarketDataEnvelope, Quote, SymbolSearchResult } from '@/src/lib/market-data/types';
-import { detectStrategy, valuePortfolio } from '@/src/lib/options-simulator/portfolio';
+import { boundedExpirationProfitFloor } from '@/src/lib/options-simulator/monte-carlo';
+import { detectStrategy, portfolioProfitLossBasis, valuePortfolio } from '@/src/lib/options-simulator/portfolio';
 import { priceOption } from '@/src/lib/options-simulator/pricing';
+import type { CallPutScenarioScore } from '@/src/lib/options-simulator/scenario-score';
 import type { MonteCarloResult, OptionLeg, PortfolioValuation, ScenarioInput, SimulationType, SimulationWorkspace } from '@/src/lib/options-simulator/types';
 import { calculationValidationMessages } from '@/src/lib/options-simulator/validation';
 import { runExclusiveSave, type SaveFeedbackStatus } from './save-feedback';
-import { addCalendarDays, aggregatePortfolioSensitivity, BASIC_PATH_OPTIONS, calendarDaysBetween, clampTargetDate, displayValidationMessage, engineVolatilityToPercent, formatPremiumDigits, isBasicPathOption, normalizePercentDraft, parseFiniteDraft, parsePercentDraft, parsePremiumPaste, percentVolatilityToEngine, premiumDigitsFromValue, premiumFromDigitString, targetDateError, validationMessageParts, validationPathUnit } from './simulator-ux';
+import { addCalendarDays, aggregatePortfolioSensitivity, auditResultReconciliation, BASIC_PATH_OPTIONS, buildProfitLossSummary, calendarDaysBetween, clampTargetDate, convertUsdForDisplay, displayValidationMessage, engineVolatilityToPercent, formatPremiumDigits, formatResultMoney, formatResultNumber, formatSignedPercent, isBasicPathOption, normalizePercentDraft, parseFiniteDraft, parsePercentDraft, parsePremiumPaste, percentVolatilityToEngine, premiumDigitsFromValue, premiumFromDigitString, profitLossState, profitLossStateLabel, profitLossToneClass, safeProfitLossPercent, targetDateError, validationMessageParts, validationPathUnit, type ResultCurrency } from './simulator-ux';
 
 type Saved = SimulationWorkspace & { id: string; createdAt: string; updatedAt: string; version: number };
+type MonteCarloDisplayResult = MonteCarloResult & {
+  validPaths?: number;
+  discardedPaths?: number;
+  terminalPriceHistogram?: Array<{ lower: number; upper: number; count: number }>;
+};
+
+function monteCarloSnapshot(result: MonteCarloDisplayResult): MonteCarloResult {
+  const snapshot = { ...result };
+  delete snapshot.validPaths;
+  delete snapshot.discardedPaths;
+  delete snapshot.terminalPriceHistogram;
+  return snapshot;
+}
+
 const box = 'rounded-2xl border border-slate-800 bg-[#151B28] p-4 shadow-xl md:p-6';
 const label = 'mb-1 block text-xs text-slate-400';
 const select = 'h-10 w-full rounded-md border border-slate-700 bg-[#151B28] px-3 text-sm text-white';
@@ -123,7 +141,8 @@ export default function SimulatorWorkspace({ initialType }: { initialType: Simul
   const [validationErrors, setValidationErrors] = useState<string[]>([]);
   const [operationError, setOperationError] = useState<string | null>(null);
   const [valuation, setValuation] = useState<PortfolioValuation | null>(null);
-  const [mc, setMc] = useState<MonteCarloResult | null>(null);
+  const [mc, setMc] = useState<MonteCarloDisplayResult | null>(null);
+  const [callPutScore, setCallPutScore] = useState<CallPutScenarioScore | null>(null);
   const [running, setRunning] = useState(false);
   const [progress, setProgress] = useState(0);
   const [saved, setSaved] = useState<Saved[]>([]);
@@ -135,12 +154,20 @@ export default function SimulatorWorkspace({ initialType }: { initialType: Simul
   const [resultsOutdated, setResultsOutdated] = useState(false);
   const [inputsOutdated, setInputsOutdated] = useState(false);
   const [scenarioDirty, setScenarioDirty] = useState(false);
+  const [resultCurrency, setResultCurrency] = useState<ResultCurrency>('USD');
+  const [fxQuote, setFxQuote] = useState<FxQuote | null>(null);
+  const [fxState, setFxState] = useState<'loading' | 'ready' | 'unavailable'>('loading');
   const worker = useRef<Worker | null>(null);
   const workerRunId = useRef(0);
   const hasResults = useRef(false);
   const saveInFlight = useRef(false);
   const lastSaveMode = useRef<'save' | 'copy'>('save');
   const hydrated = useRef(false);
+  const analysisWorkspaceValue = useMemo(() => (
+    selectedLegId === 'portfolio' || !workspace.legs.some((leg) => leg.id === selectedLegId)
+      ? workspace
+      : { ...workspace, legs: workspace.legs.filter((leg) => leg.id === selectedLegId) }
+  ), [selectedLegId, workspace]);
 
   const cancelWorker = useCallback(() => {
     workerRunId.current += 1;
@@ -170,6 +197,20 @@ export default function SimulatorWorkspace({ initialType }: { initialType: Simul
     const timer = window.setTimeout(() => void loadSaved(), 0);
     return () => window.clearTimeout(timer);
   }, [loadSaved]);
+  useEffect(() => {
+    let active = true;
+    void fetchFxRate().then((result) => {
+      if (!active) return;
+      setFxQuote(result.quote);
+      setFxState(result.quote ? 'ready' : 'unavailable');
+    }).catch(() => {
+      if (!active) return;
+      setFxQuote(null);
+      setFxState('unavailable');
+      setResultCurrency('USD');
+    });
+    return () => { active = false; };
+  }, []);
   useEffect(() => {
     const timer = window.setTimeout(() => {
       const draft = localStorage.getItem('nexora-options-simulator-draft-v1');
@@ -262,7 +303,7 @@ export default function SimulatorWorkspace({ initialType }: { initialType: Simul
     return true;
   }
   function analysisWorkspace(): SimulationWorkspace {
-    return selectedLegId === 'portfolio' || !workspace.legs.some((leg) => leg.id === selectedLegId) ? workspace : { ...workspace, legs: workspace.legs.filter((leg) => leg.id === selectedLegId) };
+    return analysisWorkspaceValue;
   }
   function analyze() {
     if (!validate()) return;
@@ -271,21 +312,21 @@ export default function SimulatorWorkspace({ initialType }: { initialType: Simul
     hasResults.current = true; setResultsOutdated(false); setInputsOutdated(false); setScenarioDirty(false); setValuation(result); setWorkspace((current) => ({ ...current, resultSnapshot: { ...current.resultSnapshot, whatIf: result } })); setSaveStatus('Unsaved');
   }
   function runMonteCarlo() {
-    cancelWorker(); const runId = ++workerRunId.current; setRunning(true); setProgress(0); setValidationErrors([]); setOperationError(null);
+    cancelWorker(); const runId = ++workerRunId.current; setRunning(true); setProgress(0); setValidationErrors([]); setOperationError(null); setCallPutScore(null);
     const instance = new Worker(new URL('../../workers/optionsMonteCarlo.worker.ts', import.meta.url)); worker.current = instance;
-    instance.onmessage = (event: MessageEvent<{ result?: MonteCarloResult; error?: string; progress?: { completed: number; total: number } }>) => {
+    instance.onmessage = (event: MessageEvent<{ result?: MonteCarloDisplayResult; scenarioScore?: CallPutScenarioScore; error?: string; progress?: { completed: number; total: number } }>) => {
       if (runId !== workerRunId.current || worker.current !== instance) return;
       if (event.data.progress) { setProgress(event.data.progress.completed); return; }
       instance.terminate(); worker.current = null; setRunning(false);
       if (event.data.result) {
-        hasResults.current = true; setResultsOutdated(false); setInputsOutdated(false); setScenarioDirty(false); setMc(event.data.result); setWorkspace((current) => ({ ...current, monteCarlo: settings, resultSnapshot: { ...current.resultSnapshot, monteCarlo: event.data.result } })); setSaveStatus('Unsaved');
+        hasResults.current = true; setResultsOutdated(false); setInputsOutdated(false); setScenarioDirty(false); setMc(event.data.result); setCallPutScore(event.data.scenarioScore ?? { status: 'unavailable', reason: 'ผลลัพธ์เดิมไม่มี Call/Put Scenario Score กรุณารัน Monte Carlo ใหม่', auditStatus: 'not-run' }); setWorkspace((current) => ({ ...current, monteCarlo: settings, resultSnapshot: { ...current.resultSnapshot, monteCarlo: monteCarloSnapshot(event.data.result as MonteCarloDisplayResult) } })); setSaveStatus('Unsaved');
       } else setOperationError(event.data.error ?? 'ไม่สามารถจำลองได้ กรุณาลองใหม่');
     };
     instance.onerror = () => { if (runId !== workerRunId.current) return; instance.terminate(); worker.current = null; setRunning(false); setOperationError('ไม่สามารถจำลอง Monte Carlo ได้ กรุณาลองใหม่'); };
     const scoped = analysisWorkspace();
     const targetDte = Math.max(1, calendarDaysBetween(workspace.valuationDate, workspace.scenarios[0].valuationDate));
     const settings = { ...workspace.monteCarlo, horizonDays: targetDte, steps: Math.min(workspace.monteCarlo.steps, targetDte) };
-    instance.postMessage({ workspace: scoped, settings, targetPrice: workspace.scenarios[0].targetPrice });
+    instance.postMessage({ workspace: scoped, comparisonWorkspace: workspace, settings, targetPrice: workspace.scenarios[0].targetPrice });
   }
 
   function selectAnalysisContract(nextSelection: string) {
@@ -352,7 +393,7 @@ export default function SimulatorWorkspace({ initialType }: { initialType: Simul
   const scenario = workspace.scenarios[0];
   const currentIv = activeLeg?.impliedVolatility ?? scopedLegs[0]?.impliedVolatility ?? 0;
   const dateIssue = targetDateError(scenario.valuationDate, workspace.valuationDate, earliestExpiration);
-  const sensitivity = aggregateSensitivity(analysisWorkspace());
+  const sensitivity = useMemo(() => aggregateSensitivity(analysisWorkspaceValue), [analysisWorkspaceValue]);
   const priceImpactApprox = workspace.underlyingPrice === null ? null : sensitivity.delta * (scenario.targetPrice - workspace.underlyingPrice);
   const timeImpactApprox = sensitivity.theta * Math.max(0, calendarDaysBetween(workspace.valuationDate, scenario.valuationDate));
   const progressPercent = workspace.monteCarlo.paths > 0 ? Math.min(100, progress / workspace.monteCarlo.paths * 100) : 0;
@@ -392,7 +433,7 @@ export default function SimulatorWorkspace({ initialType }: { initialType: Simul
             <input aria-label="IV shock percent" className="mt-3 w-full accent-[#D4FF00]" type="range" min="-90" max="200" value={Math.round(scenario.volatilityShift * 100)} onChange={(event) => scenarioChange(0, { volatilityShift: Number(event.target.value) / 100 })} />
             <p className="mt-1 text-xs text-slate-400">Current IV {(currentIv * 100).toFixed(1)}% · IV Shock {scenario.volatilityShift >= 0 ? '+' : ''}{(scenario.volatilityShift * 100).toFixed(1)}%</p></div>
         </div>
-        <div className="mt-5 grid grid-cols-2 gap-3 md:grid-cols-4" data-testid="sensitivity-summary"><Metric title="Delta" value={sensitivity.delta.toFixed(4)} helper="รวมตาม Buy/Sell, Quantity และ Multiplier ของสัญญาที่เลือก" /><Metric title="Theta/day" value={sensitivity.theta.toFixed(4)} helper="รวม Time Decay โดยประมาณของสัญญาที่เลือก" /><Metric title="Price Impact (ประมาณ)" value={priceImpactApprox === null ? 'N/A' : priceImpactApprox.toFixed(2)} helper="คำนวณเร็วจาก Delta; Estimated Premium ยังใช้ pricing engine" /><Metric title="Time Impact (ประมาณ)" value={timeImpactApprox.toFixed(2)} helper="คำนวณเร็วจาก Theta/day; ไม่แทน pricing engine" /></div>
+        <div className="mt-5 grid grid-cols-2 gap-3 md:grid-cols-4" data-testid="sensitivity-summary"><Metric title="Delta (ทั้งสถานะ)" value={`${formatResultMoney(sensitivity.delta, 'USD', null, true)} ต่อราคาหุ้นเปลี่ยน $1 USD`} helper="รวมตาม Buy/Sell, Quantity และ Multiplier ของสัญญาที่เลือก เป็น sensitivity ของทั้งสถานะ" /><Metric title="Theta/day (ทั้งสถานะ)" value={`${formatResultMoney(sensitivity.theta, 'USD', null, true)}/วัน`} helper="รวม Time Decay โดยประมาณของทั้งสถานะต่อหนึ่งวัน" /><Metric title="Price Impact (ประมาณ)" value={priceImpactApprox === null ? 'ไม่มีข้อมูล' : formatResultMoney(priceImpactApprox, 'USD', null, true)} helper="คำนวณเร็วจาก Delta; Estimated Premium ยังใช้ pricing engine" /><Metric title="Time Impact (ประมาณ)" value={formatResultMoney(timeImpactApprox, 'USD', null, true)} helper="คำนวณเร็วจาก Theta/day; ไม่แทน pricing engine" /></div>
         <div className="mt-5 hidden justify-end md:flex" data-testid="desktop-calculate-action"><div><Button disabled={running} aria-describedby={calculateDisabledReason ? 'desktop-calculate-disabled-reason' : undefined} onClick={analyze}>{calculateLabel}</Button>{calculateDisabledReason && <p id="desktop-calculate-disabled-reason" className="mt-1 text-xs text-amber-300">{calculateDisabledReason}</p>}</div></div>
       </section>}
       {tab === 'Monte Carlo Simulation' && <section className={box} data-testid="monte-carlo-controls">
@@ -401,14 +442,14 @@ export default function SimulatorWorkspace({ initialType }: { initialType: Simul
           <div><FieldLabel title="Target Date" helper="วันที่ต้องการตรวจสอบโอกาสที่ราคาจะไปถึงเป้าหมาย" /><div className="relative"><Input className="cursor-pointer pr-9" type="date" aria-label="Monte Carlo Target Date" min={minimumTargetDate} max={earliestExpiration} value={scenario.valuationDate} data-validation-path="scenarios.0.valuationDate" onChange={(event) => scenarioChange(0, { valuationDate: clampTargetDate(event.target.value, workspace.valuationDate, earliestExpiration) })} /><CalendarDays aria-hidden="true" size={16} className="pointer-events-none absolute right-3 top-3 text-slate-500" /></div><p className="mt-2 text-xs text-slate-400">เหลือ {Math.max(0, calendarDaysBetween(workspace.valuationDate, scenario.valuationDate))} วัน · ไม่เกิน {earliestExpiration}</p>{dateIssue && <p role="alert" className="mt-1 text-xs text-red-300">{dateIssue}</p>}{analysisSelection === 'portfolio' && new Set(scopedLegs.map((leg) => leg.expiration)).size > 1 && <p className="mt-1 text-xs text-amber-300">ทั้งพอร์ตใช้วันหมดอายุที่เร็วที่สุดเป็นขอบเขต</p>}</div>
           <PercentInput title="IV (%)" placeholder="เช่น 114.50" helper="กรอกเป็นเปอร์เซ็นต์ เช่น 114.50 = 114.50%" value={engineVolatilityToPercent(workspace.monteCarlo.volatility)} onChange={(value) => monteCarloChange({ volatility: percentVolatilityToEngine(value) })} />
           <div><FieldLabel title="Paths" helper="จำนวนรอบจำลอง ยิ่งมากผลยิ่งนิ่ง แต่ใช้เวลาคำนวณนานขึ้น" /><select aria-label="Paths" className={select} value={workspace.monteCarlo.paths} data-validation-path="monteCarlo.paths" onChange={(event) => monteCarloChange({ paths: Number(event.target.value) })}>{BASIC_PATH_OPTIONS.map((value) => <option key={value} value={value}>{value.toLocaleString()}</option>)}</select>{fieldError('monteCarlo.paths') && <p role="alert" className="mt-1 text-xs text-red-300">{fieldError('monteCarlo.paths')}</p>}</div>
-          <Metric title="Delta" value={sensitivity.delta.toFixed(4)} helper="ใช้แสดง sensitivity เท่านั้น ไม่ใช้สร้าง GBM paths" /><Metric title="Theta/day" value={sensitivity.theta.toFixed(4)} helper="ค่าประมาณ Time Decay ของสัญญาที่เลือก" /><Metric title="Days to Expiration" value={`${monteCarloDte} วัน`} helper="ดึงจาก Expiration ใน Inputs" /><Metric title="Premium Paid" value={scopedLegs.reduce((sum, leg) => sum + leg.entryPremium * leg.quantity * leg.multiplier + leg.fees, 0).toFixed(2)} helper="ดึงจาก Inputs" /></div>
+          <Metric title="Delta (ทั้งสถานะ)" value={`${formatResultMoney(sensitivity.delta, 'USD', null, true)} ต่อราคาหุ้นเปลี่ยน $1 USD`} helper="ใช้แสดง sensitivity ของทั้งสถานะเท่านั้น ไม่ใช้สร้าง GBM paths" /><Metric title="Theta/day (ทั้งสถานะ)" value={`${formatResultMoney(sensitivity.theta, 'USD', null, true)}/วัน`} helper="ค่าประมาณ Time Decay ของทั้งสถานะต่อหนึ่งวัน" /><Metric title="Days to Expiration" value={`${monteCarloDte} วัน`} helper="ดึงจาก Expiration ใน Inputs" /><Metric title="Premium Paid" value={formatResultMoney(scopedLegs.reduce((sum, leg) => sum + leg.entryPremium * leg.quantity * leg.multiplier + leg.fees, 0), 'USD', null)} helper="ดึงจาก Inputs" /></div>
         <p className="mt-4 text-xs text-slate-500">ระบบใช้ Random Seed, drift, rates, time steps และ policy เดิมภายในโดยไม่เปิดเป็นช่องกรอก</p>
         {running && <div className="mt-5"><div className="mb-1 flex justify-between text-xs text-slate-400"><span>{progress.toLocaleString()} / {workspace.monteCarlo.paths.toLocaleString()}</span><span>{progressPercent.toFixed(0)}%</span></div><div className="h-2 rounded bg-slate-800"><div className="h-2 rounded bg-[#D4FF00]" style={{ width: `${progressPercent}%` }} /></div><Button className="mt-3 min-h-11" variant="danger" onClick={cancelWorker}>Cancel</Button></div>}
         <div className="mt-5 hidden justify-end md:flex" data-testid="desktop-simulation-action"><div><Button disabled={running} aria-describedby={calculateDisabledReason ? 'desktop-simulation-disabled-reason' : undefined} onClick={analyze}>{calculateLabel}</Button>{calculateDisabledReason && <p id="desktop-simulation-disabled-reason" className="mt-1 text-xs text-amber-300">{calculateDisabledReason}</p>}</div></div>
       </section>}
       {resultsOutdated && (valuation || mc) && <p role="status" className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-200">{inputsOutdated ? 'ข้อมูลสัญญามีการเปลี่ยนแปลง กรุณาคำนวณใหม่' : 'ข้อมูลมีการเปลี่ยนแปลง กรุณาคำนวณใหม่'}</p>}
-      {tab === 'What-If Analysis' && valuation && <WhatIfHighlights workspace={analysisWorkspace()} valuation={valuation} sensitivity={sensitivity} />}
-      {tab === 'Monte Carlo Simulation' && mc && <MonteCarloHighlights workspace={analysisWorkspace()} result={mc} />}
+      {tab === 'What-If Analysis' && valuation && <WhatIfHighlights workspace={analysisWorkspace()} valuation={valuation} sensitivity={sensitivity} currency={resultCurrency} fxQuote={fxQuote} fxState={fxState} onCurrencyChange={setResultCurrency} />}
+      {tab === 'Monte Carlo Simulation' && mc && <MonteCarloHighlights workspace={analysisWorkspace()} result={mc} scenarioScore={callPutScore} currency={resultCurrency} fxQuote={fxQuote} fxState={fxState} onCurrencyChange={setResultCurrency} />}
       {tab === 'Inputs' && <section className={box} data-testid="option-legs-form"><div className="grid gap-3 md:grid-cols-3"><Field title="ชื่อแบบจำลอง" placeholder="เช่น Earnings Call" helper="ชื่อสำหรับค้นหาแบบจำลองภายหลัง" value={workspace.name} onChange={(value) => change({ name: value })} /><Field title="Strategy" placeholder="เช่น Long Call" helper="ชื่อกลยุทธ์ที่ตรวจจับจาก Option Legs" value={workspace.strategyType} onChange={(value) => change({ strategyType: value })} /><div><FieldLabel title="Valuation Date" helper="วันที่ฐานสำหรับการคำนวณ" /><Input type="date" aria-label="Valuation Date" value={workspace.valuationDate} onChange={(event) => { if (hasResults.current) setInputsOutdated(true); change({ valuationDate: event.target.value, scenarios: workspace.scenarios.map((item, index) => index === 0 ? { ...item, valuationDate: clampTargetDate(item.valuationDate, event.target.value, workspace.legs.map((leg) => leg.expiration).sort()[0] ?? item.valuationDate) } : item) }); }} /></div></div>
         <div className="my-4"><h2 className="text-lg font-bold">2. Option Legs</h2><p className="text-xs text-slate-400">สร้างและแก้ไขข้อมูลสัญญาที่นี่เพียงจุดเดียว</p></div>
         <div className="space-y-4">{workspace.legs.map((leg, index) => { const resolved = legSensitivity(workspace, leg); return <article key={leg.id} className="overflow-hidden rounded-2xl border border-slate-700 bg-slate-950/20 p-4"><div className="mb-4 flex items-start justify-between gap-3"><div className="flex flex-wrap items-center gap-2"><strong>Leg {index + 1}</strong><span className="rounded-full bg-violet-500/10 px-2 py-1 text-[10px] font-semibold text-violet-300">{leg.kind === 'call' ? 'Call' : 'Put'}</span><span className={`rounded-full px-2 py-1 text-[10px] font-semibold ${leg.side === 'buy' ? 'bg-emerald-500/10 text-emerald-300' : 'bg-amber-500/10 text-amber-300'}`}>{leg.side === 'buy' ? 'Buy' : 'Sell'}</span></div><div className="flex shrink-0 gap-1"><Button className="min-h-11 px-3" variant="ghost" aria-label={`ทำสำเนา Leg ${index + 1}`} onClick={() => change({ legs: [...workspace.legs.slice(0, index + 1), { ...leg, id: uid() }, ...workspace.legs.slice(index + 1)] })}><Copy size={15} /><span className="sr-only sm:not-sr-only sm:ml-2">Duplicate</span></Button><Button className="min-h-11 min-w-11" variant="danger" aria-label={`ลบ Leg ${index + 1}`} disabled={workspace.legs.length === 1} onClick={() => change({ legs: workspace.legs.filter((_, i) => i !== index) })}><Trash2 size={15} /></Button></div></div>
@@ -418,9 +459,9 @@ export default function SimulatorWorkspace({ initialType }: { initialType: Simul
         </article>; })}</div><Button className="mt-4 min-h-11 w-full border-dashed" variant="outline" onClick={() => change({ legs: [...workspace.legs, newLeg()] })}><Plus size={16} className="mr-2" />เพิ่ม Option Leg</Button></section>}
       {validationErrors.length > 0 && <section role="alert" data-testid="validation-warning" className="rounded-xl border border-red-500/30 bg-red-500/10 p-4"><strong>กรุณาตรวจสอบข้อมูลก่อนคำนวณ:</strong><ul className="list-disc pl-5 text-sm">{[...new Set(validationErrors.map(displayValidationMessage))].map((error) => <li key={error}>{error}</li>)}</ul></section>}
       {operationError && <section role="alert" className="rounded-xl border border-red-500/30 bg-red-500/10 p-4 text-sm">{operationError}</section>}
-      {tab === 'Payoff' && valuation && <Payoff valuation={valuation} spot={workspace.underlyingPrice} />}
-      {tab === 'Greeks' && valuation && <section className={box}><div className="grid grid-cols-2 gap-3 md:grid-cols-5">{Object.entries(valuation.greeks).map(([key, value]) => <Metric key={key} title={key[0].toUpperCase() + key.slice(1)} value={value.toFixed(4)} helper={greekHelpers[key]} />)}</div></section>}
-      <section className={box}><div className="mb-3 flex flex-wrap justify-between gap-2"><h2 className="text-lg font-bold">แบบจำลองของฉัน</h2><div className="flex gap-2"><Input className="w-56" value={savedQuery} onChange={(event) => setSavedQuery(event.target.value)} placeholder="ค้นหาชื่อ Symbol หรือ Strategy" /><Button size="sm" variant="outline" onClick={() => { if (saveStatus === 'Saved' || confirm('Discard unsaved inputs?')) setWorkspace(fresh(initialType)); }}><Plus size={14} /> สร้างใหม่</Button><Button size="sm" variant="danger" onClick={() => { if (confirm('Reset the entire current simulation?')) { setWorkspace(fresh(initialType)); setSaveStatus('Unsaved'); } }}>ล้างข้อมูล</Button></div></div>{savedState === 'loading' ? <div className="h-20 animate-pulse rounded bg-slate-800" /> : savedState === 'error' ? <Button onClick={() => void loadSaved()}>ลองใหม่</Button> : saved.length === 0 ? <p className="text-sm text-slate-400">ยังไม่มีแบบจำลองบนเซิร์ฟเวอร์ เข้าสู่ระบบเพื่อบันทึก โดยระบบจะเก็บฉบับร่างไว้ในเครื่อง</p> : <div className="grid gap-3 md:grid-cols-2">{saved.filter((item) => `${item.name} ${item.symbol} ${item.strategyType} ${item.simulationType}`.toLowerCase().includes(savedQuery.toLowerCase())).map((item) => <article key={item.id} className="rounded-xl border border-slate-700 p-3"><strong>{item.name}</strong><p className="text-xs text-slate-400">{item.symbol} · {item.strategyType} · {item.simulationType} · {new Date(item.updatedAt).toLocaleString()} · {item.dataStatus}</p><div className="mt-2 flex gap-2"><Button size="sm" onClick={() => { if (saveStatus === 'Saved' || confirm('Discard unsaved inputs?')) { setWorkspace(normalizeUiWorkspace(item)); setValuation(item.resultSnapshot?.whatIf ?? null); setMc(item.resultSnapshot?.monteCarlo ?? null); setSaveStatus('Saved'); } }}>เปิด</Button><Button size="sm" variant="outline" onClick={() => { setWorkspace(normalizeUiWorkspace({ ...item, id: undefined, updatedAt: undefined, name: `${item.name} (copy)`, legs: item.legs.map((leg) => ({ ...leg, id: uid() })), scenarios: item.scenarios.map((scenario) => ({ ...scenario, id: uid() })) })); setSaveStatus('Unsaved'); }}>ทำสำเนา</Button><Button size="sm" variant="danger" onClick={() => void remove(item)}>ลบ</Button></div></article>)}</div>}</section>
+      {tab === 'Payoff' && valuation && <Payoff valuation={valuation} spot={workspace.underlyingPrice} currency={resultCurrency} usdThbRate={fxQuote ? Number(fxQuote.rate) : null} />}
+      {tab === 'Greeks' && valuation && <section className={box}><div className="grid grid-cols-2 gap-3 md:grid-cols-5">{Object.entries(valuation.greeks).map(([key, value]) => <Metric key={key} title={key === 'delta' ? 'Delta (ทั้งสถานะ)' : key[0].toUpperCase() + key.slice(1)} value={key === 'delta' ? `${formatResultMoney(value, 'USD', null, true)} ต่อราคาหุ้นเปลี่ยน $1 USD` : formatResultNumber(value, 4)} helper={greekHelpers[key]} />)}</div></section>}
+      <section className={box}><div className="mb-3 flex flex-wrap justify-between gap-2"><h2 className="text-lg font-bold">แบบจำลองของฉัน</h2><div className="flex gap-2"><Input className="w-56" value={savedQuery} onChange={(event) => setSavedQuery(event.target.value)} placeholder="ค้นหาชื่อ Symbol หรือ Strategy" /><Button size="sm" variant="outline" onClick={() => { if (saveStatus === 'Saved' || confirm('Discard unsaved inputs?')) setWorkspace(fresh(initialType)); }}><Plus size={14} /> สร้างใหม่</Button><Button size="sm" variant="danger" onClick={() => { if (confirm('Reset the entire current simulation?')) { setWorkspace(fresh(initialType)); setSaveStatus('Unsaved'); } }}>ล้างข้อมูล</Button></div></div>{savedState === 'loading' ? <div className="h-20 animate-pulse rounded bg-slate-800" /> : savedState === 'error' ? <Button onClick={() => void loadSaved()}>ลองใหม่</Button> : saved.length === 0 ? <p className="text-sm text-slate-400">ยังไม่มีแบบจำลองบนเซิร์ฟเวอร์ เข้าสู่ระบบเพื่อบันทึก โดยระบบจะเก็บฉบับร่างไว้ในเครื่อง</p> : <div className="grid gap-3 md:grid-cols-2">{saved.filter((item) => `${item.name} ${item.symbol} ${item.strategyType} ${item.simulationType}`.toLowerCase().includes(savedQuery.toLowerCase())).map((item) => <article key={item.id} className="rounded-xl border border-slate-700 p-3"><strong>{item.name}</strong><p className="text-xs text-slate-400">{item.symbol} · {item.strategyType} · {item.simulationType} · {new Date(item.updatedAt).toLocaleString()} · {item.dataStatus}</p><div className="mt-2 flex gap-2"><Button size="sm" onClick={() => { if (saveStatus === 'Saved' || confirm('Discard unsaved inputs?')) { setWorkspace(normalizeUiWorkspace(item)); setValuation(item.resultSnapshot?.whatIf ?? null); setMc(item.resultSnapshot?.monteCarlo ?? null); setCallPutScore(null); setSaveStatus('Saved'); } }}>เปิด</Button><Button size="sm" variant="outline" onClick={() => { setWorkspace(normalizeUiWorkspace({ ...item, id: undefined, updatedAt: undefined, name: `${item.name} (copy)`, legs: item.legs.map((leg) => ({ ...leg, id: uid() })), scenarios: item.scenarios.map((scenario) => ({ ...scenario, id: uid() })) })); setSaveStatus('Unsaved'); }}>ทำสำเนา</Button><Button size="sm" variant="danger" onClick={() => void remove(item)}>ลบ</Button></div></article>)}</div>}</section>
       <p className="rounded-xl border border-slate-800 p-4 text-xs text-slate-500"><strong>Methodology:</strong> Black‑Scholes prices European zero-dividend options. A 200-step binomial tree prices American/dividend cases; Greeks use finite differences. GBM assumes constant user-entered drift/volatility and log-normal returns. Liquidity, spreads, assignment, taxes and volatility smile are excluded. Results are analysis, not advice or a guarantee.</p>
     </main>{(tab === 'What-If Analysis' || tab === 'Monte Carlo Simulation') && <div data-testid="mobile-calculate-action" className="fixed inset-x-0 bottom-[calc(4rem+env(safe-area-inset-bottom))] z-40 border-t border-slate-800 bg-slate-950/95 p-3 backdrop-blur md:hidden"><Button className="min-h-11 w-full" disabled={running} aria-describedby={calculateDisabledReason ? 'mobile-calculate-disabled-reason' : undefined} onClick={analyze}>{calculateLabel}</Button>{calculateDisabledReason && <p id="mobile-calculate-disabled-reason" className="mt-1 text-center text-xs text-amber-300">{calculateDisabledReason}</p>}</div>}
     <Modal isOpen={Boolean(pending)} onClose={() => setPending(null)} title="Change underlying?"><p className="mb-3 text-sm">Strike, expiry, premium and IV will be reset; they are never carried to a new symbol.</p><div className="space-y-2"><Button className="w-full" onClick={() => pending && void setSymbol(pending)}>Start new</Button><Button className="w-full" variant="outline" onClick={() => pending && void setSymbol(pending, true)}>Duplicate settings and reset contracts</Button><Button className="w-full" variant="ghost" onClick={() => setPending(null)}>Cancel</Button></div></Modal>
@@ -510,56 +551,355 @@ function GreekInput({ title, value, fallbackValue, source, timestamp, helper, pl
 }
 function Field({ title, value, helper, placeholder, onChange }: { title: string; value: string; helper?: string; placeholder?: string; onChange: (value: string) => void }) { const id = useId(); return <div><FieldLabel htmlFor={id} title={title} helper={helper} /><Input id={id} placeholder={placeholder} value={value} onChange={(event) => onChange(event.target.value)} /></div>; }
 function Choice({ title, value, options, optionLabels = {}, helper, validationPath, onChange }: { title: string; value: string; options: string[]; optionLabels?: Record<string, string>; helper?: string; validationPath?: string; onChange: (value: string) => void }) { const id = useId(); return <div><FieldLabel htmlFor={id} title={title} helper={helper} /><select id={id} className={select} value={value} data-validation-path={validationPath} onChange={(event) => onChange(event.target.value)}>{options.map((option) => <option key={option} value={option}>{optionLabels[option] ?? option}</option>)}</select></div>; }
-function Metric({ title, value, helper }: { title: string; value: string; helper?: string }) { return <div className="rounded-xl bg-slate-900 p-3"><small className="inline-flex items-center gap-1 text-slate-500">{title}{helper && <span title={helper} aria-label={`${title}: ${helper}`} tabIndex={0}><HelpCircle size={11} className="cursor-help" /></span>}</small><p className="font-mono font-bold">{value}</p><Helper>{helper}</Helper></div>; }
+function Metric({ title, value, helper }: { title: string; value: string; helper?: string }) { return <div className="min-w-0 rounded-xl bg-slate-900 p-3"><small className="inline-flex items-center gap-1 text-slate-500">{title}{helper && <span title={helper} aria-label={`${title}: ${helper}`} tabIndex={0}><HelpCircle size={11} className="cursor-help" /></span>}</small><p className="break-words font-mono font-bold">{value}</p><Helper>{helper}</Helper></div>; }
 function ContractSummary({ workspace, selectedLegId, onSelect, onEdit }: { workspace: SimulationWorkspace; selectedLegId: string; onSelect: (value: string) => void; onEdit: () => void }) {
   const date = workspace.valuationDate;
   const selectorId = useId();
+  const summaryLegs = useMemo(() => workspace.legs
+    .filter((leg) => selectedLegId === 'portfolio' || leg.id === selectedLegId)
+    .map((leg) => ({
+      leg,
+      dte: Math.max(0, calendarDaysBetween(date, leg.expiration)),
+      legNumber: workspace.legs.findIndex((item) => item.id === leg.id) + 1,
+      resolved: legSensitivity(workspace, leg),
+    })), [date, selectedLegId, workspace]);
   return <section className={box} data-testid="contract-summary"><div className="mb-4 flex flex-wrap items-start justify-between gap-3"><div><h2 className="text-lg font-bold">เลือกสัญญาที่ต้องการวิเคราะห์</h2><p className="text-xs text-slate-400">เลือกทั้งพอร์ตหรือรายสัญญา ระบบจะ autofill จากแท็บ Inputs</p></div><Button size="sm" variant="outline" onClick={onEdit}>แก้ไขข้อมูลสัญญา</Button></div>
     <div className="mb-4 max-w-md"><FieldLabel htmlFor={selectorId} title="สัญญา" helper="เปลี่ยนสัญญาแล้วจะรีเซ็ตเฉพาะค่าจำลองที่ขึ้นกับสัญญา" /><select id={selectorId} aria-label="เลือกสัญญาที่ต้องการวิเคราะห์" className={select} value={selectedLegId} onChange={(event) => onSelect(event.target.value)}><option value="portfolio">ทั้งพอร์ต</option>{workspace.legs.map((leg, index) => <option key={leg.id} value={leg.id}>Leg {index + 1} · {leg.side === 'buy' ? 'Buy' : 'Sell'} {leg.kind === 'call' ? 'Call' : 'Put'} · Strike {leg.strike}</option>)}</select></div>
-    <div className="space-y-3">{workspace.legs.filter((leg) => selectedLegId === 'portfolio' || leg.id === selectedLegId).map((leg) => { const dte = Math.max(0, calendarDaysBetween(date, leg.expiration)); const legNumber = workspace.legs.findIndex((item) => item.id === leg.id) + 1; const resolved = legSensitivity(workspace, leg); return <article key={leg.id} className="grid grid-cols-2 gap-3 rounded-xl border border-slate-700 p-3 text-sm sm:grid-cols-3 lg:grid-cols-6"><span className="sr-only">Leg {legNumber}</span><SummaryValue label="Option Type" value={leg.kind === 'call' ? 'Call' : 'Put'} /><SummaryValue label="Side" value={leg.side === 'buy' ? 'Buy' : 'Sell'} /><SummaryValue label="Quantity" value={leg.quantity.toString()} /><SummaryValue label="Strike" value={leg.strike.toString()} /><SummaryValue label="Expiration" value={leg.expiration} /><SummaryValue label="Premium" value={`$${leg.entryPremium.toFixed(2)}`} /><SummaryValue label="IV" value={`${engineVolatilityToPercent(leg.impliedVolatility).toFixed(2)}%`} /><SummaryValue label="Delta" value={resolved.delta === null ? 'N/A' : `${resolved.delta.toFixed(4)} · ${sourceLabel(resolved.deltaSource)}`} /><SummaryValue label="Theta/day" value={resolved.theta === null ? 'N/A' : `${resolved.theta.toFixed(4)} · ${sourceLabel(resolved.thetaSource)}`} /><SummaryValue label="Multiplier" value={leg.multiplier.toString()} /><SummaryValue label="Current DTE" value={`${dte} วัน`} />{(leg.deltaSource === 'provider' || leg.thetaSource === 'provider') && <SummaryValue label="Market data time" value={leg.deltaTimestamp ?? leg.thetaTimestamp ?? 'N/A'} />}</article>; })}</div></section>;
+    <div className="space-y-3">{summaryLegs.map(({ leg, dte, legNumber, resolved }) => <article key={leg.id} className="grid grid-cols-2 gap-3 rounded-xl border border-slate-700 p-3 text-sm sm:grid-cols-3 lg:grid-cols-6"><span className="sr-only">Leg {legNumber}</span><SummaryValue label="Option Type" value={leg.kind === 'call' ? 'Call' : 'Put'} /><SummaryValue label="Side" value={leg.side === 'buy' ? 'Buy' : 'Sell'} /><SummaryValue label="Quantity" value={leg.quantity.toString()} /><SummaryValue label="Strike" value={leg.strike.toString()} /><SummaryValue label="Expiration" value={leg.expiration} /><SummaryValue label="Premium" value={`$${leg.entryPremium.toFixed(2)}`} /><SummaryValue label="IV" value={`${engineVolatilityToPercent(leg.impliedVolatility).toFixed(2)}%`} /><SummaryValue label="Delta ต่อหุ้น" value={resolved.delta === null ? 'ไม่มีข้อมูล' : `${formatResultMoney(resolved.delta, 'USD', null, true)}/หุ้น ต่อราคาหุ้นเปลี่ยน $1 USD · ${sourceLabel(resolved.deltaSource)}`} /><SummaryValue label="Theta/day ต่อหุ้น" value={resolved.theta === null ? 'ไม่มีข้อมูล' : `${formatResultMoney(resolved.theta, 'USD', null, true)}/หุ้น/วัน · ${sourceLabel(resolved.thetaSource)}`} /><SummaryValue label="Multiplier" value={leg.multiplier.toString()} /><SummaryValue label="Current DTE" value={`${dte} วัน`} />{(leg.deltaSource === 'provider' || leg.thetaSource === 'provider') && <SummaryValue label="Market data time" value={leg.deltaTimestamp ?? leg.thetaTimestamp ?? 'ไม่มีข้อมูล'} />}</article>)}</div></section>;
 }
 function sourceLabel(source: OptionLeg['deltaSource']) { return source === 'provider' ? 'Provider' : source === 'manual' ? 'Manual' : 'Model Estimate'; }
 function SummaryValue({ label: title, value }: { label: string; value: string }) { return <div><small className="text-slate-500">{title}</small><p className="font-medium text-slate-100">{value}</p></div>; }
-function WhatIfHighlights({ workspace, valuation, sensitivity }: { workspace: SimulationWorkspace; valuation: PortfolioValuation; sensitivity: { delta: number; theta: number } }) {
+interface ResultDisplayProps {
+  currency: ResultCurrency;
+  fxQuote: FxQuote | null;
+  fxState: 'loading' | 'ready' | 'unavailable';
+  onCurrencyChange: (currency: ResultCurrency) => void;
+}
+
+function ResultCurrencyControl({ currency, fxQuote, fxState, onCurrencyChange }: ResultDisplayProps) {
+  const thbAvailable = fxState === 'ready' && fxQuote !== null;
+  const status = fxQuote?.stale ? 'stale' : fxQuote?.cached ? 'cached' : fxQuote ? 'live' : null;
+  return <div className="rounded-xl border border-slate-700 bg-slate-950/40 p-3" data-testid="result-currency-control">
+    <div className="flex flex-wrap items-center justify-between gap-3">
+      <div className="inline-flex rounded-lg border border-slate-700 p-1" role="group" aria-label="สกุลเงินผลลัพธ์">
+        {(['USD', 'THB'] as const).map((item) => <button key={item} type="button" aria-pressed={currency === item} disabled={item === 'THB' && !thbAvailable} onClick={() => onCurrencyChange(item)} className={`min-h-10 rounded-md px-4 text-sm font-semibold ${currency === item ? 'bg-[#D4FF00] text-slate-950' : 'text-slate-300'} disabled:cursor-not-allowed disabled:opacity-40`}>{item}</button>)}
+      </div>
+      {fxQuote ? <div className="text-right text-xs text-slate-400"><p>1 USD = {Number(fxQuote.rate).toFixed(2)} THB <span className={`ml-1 rounded-full px-2 py-0.5 font-semibold uppercase ${fxQuote.stale ? 'bg-amber-500/15 text-amber-300' : 'bg-emerald-500/15 text-emerald-300'}`}>{status}</span></p><p>อัตรา ณ {new Date(fxQuote.asOf).toLocaleString('th-TH')} · {fxQuote.source}</p></div>
+        : <p role="status" className="text-xs text-amber-300">{fxState === 'loading' ? 'กำลังโหลดอัตรา USD/THB — ยังเลือก THB ไม่ได้' : 'ไม่มีอัตรา USD/THB ที่ใช้งานได้ — ปิดการแสดงผล THB'}</p>}
+    </div>
+    <p className="mt-2 text-[11px] text-slate-500">ผลคำนวณ USD เป็น source of truth; การเลือก THB แปลงเฉพาะตอนแสดงผลและไม่รัน pricing หรือ Monte Carlo ใหม่</p>
+  </div>;
+}
+
+function ProfitLossValue({ amount, denominator, currency, usdThbRate, prefix }: { amount: number; denominator: number | null; currency: ResultCurrency; usdThbRate: number | null; prefix?: string }) {
+  const state = profitLossState(amount);
+  const percentage = safeProfitLossPercent(amount, denominator);
+  const label = profitLossStateLabel(state);
+  const value = `${formatResultMoney(amount, currency, usdThbRate, true)} (${formatSignedPercent(percentage)})`;
+  return <div className="min-w-0" role="status" aria-label={`${prefix ? `${prefix} ` : ''}${label} ${value}`}><p className={`break-words font-mono font-bold ${profitLossToneClass(state)}`}>{value}</p><p className={`text-xs ${profitLossToneClass(state)}`}>{percentage === null ? `${label} · ไม่มีฐานเงินสำหรับคำนวณเปอร์เซ็นต์` : `${label} · เทียบกับฐานเงินที่เสี่ยงเริ่มต้น`}</p></div>;
+}
+
+function ProfitLossMetric({ title, amount, denominator, currency, usdThbRate, helper }: { title: string; amount: number; denominator: number | null; currency: ResultCurrency; usdThbRate: number | null; helper?: string }) {
+  return <div className="min-w-0 rounded-xl bg-slate-900 p-3"><small className="inline-flex items-center gap-1 text-slate-500">{title}{helper && <span title={helper} aria-label={`${title}: ${helper}`} tabIndex={0}><HelpCircle size={11} className="cursor-help" /></span>}</small><ProfitLossValue amount={amount} denominator={denominator} currency={currency} usdThbRate={usdThbRate} prefix={title} /><Helper>{helper}</Helper></div>;
+}
+
+function ExplainedProfitLossMetric({ title, amount, currency, usdThbRate, helper }: { title: string; amount: number; currency: ResultCurrency; usdThbRate: number | null; helper: string }) {
+  const state = profitLossState(amount);
+  return <div className="min-w-0 rounded-xl bg-slate-900 p-3">
+    <small className="text-slate-400">{title}</small>
+    <p className={`mt-1 break-words font-mono font-bold ${profitLossToneClass(state)}`}>{formatResultMoney(amount, currency, usdThbRate, true)}</p>
+    <details className="mt-2 text-xs text-slate-400">
+      <summary className="inline-flex cursor-pointer list-none items-center gap-1 text-[#D4FF00]"><HelpCircle size={12} aria-hidden="true" />ดูคำอธิบาย</summary>
+      <p className="mt-1 leading-relaxed">{helper}</p>
+    </details>
+  </div>;
+}
+
+function profitLossFormula(policy: ReturnType<typeof portfolioProfitLossBasis>['policy']): string {
+  if (policy === 'absolute-net-debit') return 'P&L % = P&L ÷ absolute net debit × 100';
+  if (policy === 'gross-premium-at-risk') return 'P&L % = P&L ÷ gross premium-at-risk ตาม portfolio credit policy เดิม × 100';
+  return 'คำนวณ % ไม่ได้ เพราะ denominator เป็น 0 หรือไม่มีความหมาย';
+}
+
+function ExplainedResultMetric({ title, value, helper, toneClass = 'text-slate-100', secondary }: { title: string; value: string; helper: string; toneClass?: string; secondary?: string }) {
+  return <div className="min-w-0 rounded-xl bg-slate-900 p-3">
+    <small className="text-slate-400">{title}</small>
+    <p className={`mt-1 break-words font-mono font-bold ${toneClass}`}>{value}</p>
+    {secondary && <p className="mt-1 text-xs text-slate-400">{secondary}</p>}
+    <details className="mt-2 text-xs text-slate-400">
+      <summary className="inline-flex cursor-pointer list-none items-center gap-1 text-[#D4FF00]"><HelpCircle size={12} aria-hidden="true" />ดูคำอธิบาย</summary>
+      <p className="mt-1 leading-relaxed">{helper}</p>
+    </details>
+  </div>;
+}
+
+function ResultGroup({ title, testId, summary, children }: { title: string; testId: string; summary?: string; children: ReactNode }) {
+  return <section className="mt-4 rounded-xl border border-slate-700 bg-slate-950/30 p-3" data-testid={testId}>
+    <h3 className="font-semibold text-slate-100">{title}</h3>
+    {summary && <p className="mt-1 text-xs text-slate-400">{summary}</p>}
+    <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">{children}</div>
+  </section>;
+}
+
+function WhatIfHighlights({ workspace, valuation, sensitivity, currency, fxQuote, fxState, onCurrencyChange }: { workspace: SimulationWorkspace; valuation: PortfolioValuation; sensitivity: { delta: number; theta: number } } & ResultDisplayProps) {
   const scenario = workspace.scenarios[0];
-  const currentScenario = { ...scenario, targetPrice: workspace.underlyingPrice ?? scenario.targetPrice, valuationDate: workspace.valuationDate, volatilityShift: 0 };
-  let current: PortfolioValuation | null = null;
-  let priceImpact: number | null = null;
-  let timeImpact: number | null = null;
-  let ivImpact: number | null = null;
-  try {
-    current = valuePortfolio(workspace, currentScenario);
-    priceImpact = valuePortfolio(workspace, { ...currentScenario, targetPrice: scenario.targetPrice }).theoreticalValue - current.theoreticalValue;
-    timeImpact = valuePortfolio(workspace, { ...currentScenario, valuationDate: scenario.valuationDate }).theoreticalValue - current.theoreticalValue;
-    ivImpact = valuePortfolio(workspace, { ...currentScenario, volatilityShift: scenario.volatilityShift }).theoreticalValue - current.theoreticalValue;
-  } catch { /* incomplete inputs are already surfaced by validation */ }
-  const cash = (value: number) => new Intl.NumberFormat(undefined, { style: 'currency', currency: workspace.currency }).format(value);
+  const whatIfCalculation = useMemo(() => {
+    const currentScenario = { ...scenario, targetPrice: workspace.underlyingPrice ?? scenario.targetPrice, valuationDate: workspace.valuationDate, volatilityShift: 0 };
+    try {
+      const current = valuePortfolio(workspace, currentScenario);
+      const afterPrice = valuePortfolio(workspace, { ...currentScenario, targetPrice: scenario.targetPrice });
+      const afterTime = valuePortfolio(workspace, { ...currentScenario, targetPrice: scenario.targetPrice, valuationDate: scenario.valuationDate });
+      return {
+        current,
+        priceImpact: afterPrice.theoreticalValue - current.theoreticalValue,
+        timeImpact: afterTime.theoreticalValue - afterPrice.theoreticalValue,
+        ivImpact: valuation.theoreticalValue - afterTime.theoreticalValue,
+      };
+    } catch {
+      return { current: null, priceImpact: null, timeImpact: null, ivImpact: null };
+    }
+  }, [scenario, valuation, workspace]);
+  const { current, priceImpact, timeImpact, ivImpact } = whatIfCalculation;
+  const usdThbRate = fxQuote ? Number(fxQuote.rate) : null;
+  const basis = portfolioProfitLossBasis(workspace);
   const difference = current ? valuation.theoreticalValue - current.theoreticalValue : null;
-  const deltaApproximation = workspace.underlyingPrice === null ? null : sensitivity.delta * (scenario.targetPrice - workspace.underlyingPrice);
-  const thetaApproximation = sensitivity.theta * Math.max(0, calendarDaysBetween(workspace.valuationDate, scenario.valuationDate));
-  return <section className={box} data-testid="what-if-results"><h2 className="mb-4 text-lg font-bold">What-If Results</h2><div className="grid gap-3 md:grid-cols-3"><Metric title="Current" value={current ? cash(current.theoreticalValue) : 'N/A'} /><Metric title="Simulated · Estimated Premium" value={cash(valuation.theoreticalValue)} /><Metric title="Difference" value={difference === null ? 'N/A' : cash(difference)} /></div>
-    <div className="mt-3 grid grid-cols-2 gap-3 md:grid-cols-4"><Metric title="Projected P&L" value={cash(valuation.profitLoss)} /><Metric title="P&L %" value={valuation.profitLossPercent === null ? 'N/A' : `${valuation.profitLossPercent.toFixed(2)}%`} /><Metric title="Break-even" value={valuation.breakEvens.map((value) => value.toFixed(2)).join(', ') || 'N/A'} /><Metric title="Max Profit / Max Loss" value={`${valuation.unlimitedProfit ? 'Unlimited' : cash(valuation.maxProfit ?? 0)} / ${valuation.unlimitedLoss ? 'Unlimited' : cash(valuation.maxLoss ?? 0)}`} /><Metric title="Delta" value={valuation.greeks.delta.toFixed(4)} /><Metric title="Theta/day" value={valuation.greeks.theta.toFixed(4)} /><Metric title="Vega" value={valuation.greeks.vega.toFixed(4)} /><Metric title="Price Movement Impact" value={priceImpact === null ? 'N/A' : cash(priceImpact)} /><Metric title="Time Decay Impact" value={timeImpact === null ? 'N/A' : cash(timeImpact)} /><Metric title="IV Impact" value={ivImpact === null ? 'N/A' : cash(ivImpact)} /><Metric title="Delta Impact (ประมาณ)" value={deltaApproximation === null ? 'N/A' : cash(deltaApproximation)} helper="Sensitivity estimate เท่านั้น; ไม่เปลี่ยน Estimated Premium" /><Metric title="Theta Impact (ประมาณ)" value={cash(thetaApproximation)} helper="Sensitivity estimate จาก Theta/day" /></div>
+  const initialCostOrCredit = valuation.netDebitCredit + workspace.stockQuantity * (workspace.underlyingPrice ?? 0);
+  const audit = auditResultReconciliation({
+    currentValue: current?.theoreticalValue ?? null,
+    simulatedValue: valuation.theoreticalValue,
+    changeFromCurrent: difference,
+    initialCostOrCredit,
+    projectedProfitLoss: valuation.profitLoss,
+    priceImpact,
+    timeDecayImpact: timeImpact,
+    ivImpact,
+    deltaEstimate: sensitivity.delta,
+  });
+  const state = profitLossState(valuation.profitLoss);
+  const percentage = safeProfitLossPercent(valuation.profitLoss, basis.amount);
+  const breakEvenValue = valuation.breakEvens
+    .filter(Number.isFinite)
+    .map((value) => `${formatResultMoney(value, currency, usdThbRate)}/หุ้น`)
+    .join(', ') || 'ไม่มีข้อมูล';
+  const reconciled = audit.valueChange.status === 'matched'
+    && audit.projectedProfitLoss.status === 'matched'
+    && audit.impactDecomposition.status === 'matched';
+  const reconciliationMessage = reconciled
+    ? 'ตรวจสอบแล้ว: มูลค่า, กำไร/ขาดทุน และองค์ประกอบผลกระทบสอดคล้องกัน'
+    : audit.impactDecomposition.status === 'unavailable'
+      ? 'ยังตรวจสอบองค์ประกอบผลกระทบไม่ได้ เพราะข้อมูลบางส่วนไม่มี'
+      : 'พบส่วนต่างจากการตรวจสอบ โปรดดู Other Impact และวิธีคำนวณ';
+  return <section className={box} data-testid="what-if-results"><div className="mb-4 flex flex-wrap items-start justify-between gap-3"><div><h2 className="text-lg font-bold">ผลลัพธ์ What-If</h2><p className="text-xs text-slate-400">สรุป Premium และกำไร/ขาดทุนจากสถานการณ์ที่เลือก</p></div><span className="rounded-full border border-slate-700 px-3 py-1 text-xs text-slate-300">สกุลเงินที่เลือก: {currency}</span></div>
+    <ResultCurrencyControl currency={currency} fxQuote={fxQuote} fxState={fxState} onCurrencyChange={onCurrencyChange} />
+    <p className={`mt-4 rounded-xl border p-4 text-sm ${state === 'profit' ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-200' : state === 'loss' ? 'border-red-500/30 bg-red-500/10 text-red-200' : 'border-slate-600 bg-slate-800/60 text-slate-200'}`} role="status">
+      {buildProfitLossSummary(valuation.profitLoss, basis.amount, currency, usdThbRate)}
+    </p>
+
+    <div data-testid="result-summary">
+      <ResultGroup title="สรุปผลสำคัญ" testId="result-group-key-summary">
+        <ExplainedResultMetric title="กำไร/ขาดทุนรวมหลังจำลอง (Projected P&L)" value={formatResultMoney(valuation.profitLoss, currency, usdThbRate, true)} toneClass={profitLossToneClass(state)} helper="ผลต่างระหว่างมูลค่าสถานะหลังจำลองกับต้นทุนหรือเครดิตเริ่มต้นตามนโยบายของพอร์ต รวมค่าธรรมเนียมที่มีอยู่ในข้อมูลคำนวณ" />
+        <ExplainedResultMetric title="กำไร/ขาดทุน (%)" value={formatSignedPercent(percentage)} toneClass={profitLossToneClass(state)} helper="นำกำไรหรือขาดทุนรวมเทียบกับเงินที่เสี่ยงเริ่มต้น ถ้าฐานนี้เป็นศูนย์หรือหาไม่ได้ ระบบจะแสดงว่าคำนวณเปอร์เซ็นต์ไม่ได้" />
+        <ExplainedResultMetric title="จุดคุ้มทุนต่อหุ้น (Break-even)" value={breakEvenValue} helper="ราคาหุ้น ณ วันหมดอายุที่ทำให้กำไร/ขาดทุนของสถานะเท่ากับศูนย์ คำนวณใน USD แล้วแปลงเฉพาะตอนแสดงผลเมื่อเลือก THB" />
+      </ResultGroup>
+
+      <ResultGroup title="มูลค่าสถานะ" testId="result-group-position-value">
+        <ExplainedResultMetric title="มูลค่าสถานะปัจจุบัน (Current Value)" value={current ? formatResultMoney(current.theoreticalValue, currency, usdThbRate) : 'ไม่มีข้อมูล'} helper="มูลค่าตาม pricing engine เมื่อใช้ราคาหุ้น วันที่ และ IV ปัจจุบันของสถานะ ตัวเลขติดลบอาจเกิดกับสถานะขาย" />
+        <ExplainedResultMetric title="มูลค่าสถานะหลังจำลอง (Simulated Value)" value={formatResultMoney(valuation.theoreticalValue, currency, usdThbRate)} helper="มูลค่าตาม pricing engine หลังใช้ Target Price, Target Date และ IV ที่จำลอง ตัวเลขนี้ยังไม่หักต้นทุนเริ่มต้น" />
+        <ExplainedResultMetric title="เปลี่ยนแปลงจากมูลค่าปัจจุบัน (Change from Current)" value={difference === null ? 'ไม่มีข้อมูล' : formatResultMoney(difference, currency, usdThbRate, true)} toneClass={difference === null ? 'text-slate-100' : profitLossToneClass(profitLossState(difference))} helper="มูลค่าสถานะหลังจำลองลบด้วยมูลค่าสถานะปัจจุบัน จึงบอกว่าสถานะมีมูลค่าเพิ่มขึ้นหรือลดลงเท่าไร" />
+      </ResultGroup>
+
+      <ResultGroup title="ความเสี่ยงสูงสุด" testId="result-group-maximum-risk">
+        <ExplainedResultMetric title="กำไรสูงสุด (Max Profit)" value={valuation.unlimitedProfit ? 'ไม่จำกัด (Unlimited)' : formatResultMoney(valuation.maxProfit ?? Number.NaN, currency, usdThbRate, true)} toneClass="text-emerald-400" helper="กำไรสูงสุดของ payoff ณ วันหมดอายุภายในโครงสร้างสถานะ ถ้ากำไรเพิ่มได้ต่อเนื่องจะแสดงว่าไม่จำกัด" />
+        <ExplainedResultMetric title="ขาดทุนสูงสุด (Max Loss)" value={valuation.unlimitedLoss ? 'ไม่จำกัด (Unlimited)' : formatResultMoney(valuation.maxLoss ?? Number.NaN, currency, usdThbRate, true)} toneClass="text-red-400" helper="ขาดทุนสูงสุดของ payoff ณ วันหมดอายุภายในโครงสร้างสถานะ ถ้าขาดทุนเพิ่มได้ต่อเนื่องจะแสดงว่าไม่จำกัด" />
+      </ResultGroup>
+
+      <ResultGroup title="รายละเอียดการประมาณ" testId="result-group-estimate-details" summary="คำนวณแบบลำดับ Price → Time → IV เพื่อให้ผลรวมตรวจสอบกับ Change from Current ได้">
+        <ExplainedResultMetric title="ผลกระทบจากราคา (Price Impact)" value={priceImpact === null ? 'ไม่มีข้อมูล' : formatResultMoney(priceImpact, currency, usdThbRate, true)} helper="เปลี่ยนเฉพาะราคาหุ้นจากค่าปัจจุบันเป็น Target Price โดยยังคงวันที่และ IV ปัจจุบัน" />
+        <ExplainedResultMetric title="ผลกระทบจาก Time Decay" value={timeImpact === null ? 'ไม่มีข้อมูล' : formatResultMoney(timeImpact, currency, usdThbRate, true)} helper="หลังปรับราคาแล้ว จึงเลื่อนเวลาไป Target Date โดยยังคง IV เดิม เพื่อแยกผลของเวลาที่ผ่านไป" />
+        <ExplainedResultMetric title="ผลกระทบจาก IV" value={ivImpact === null ? 'ไม่มีข้อมูล' : formatResultMoney(ivImpact, currency, usdThbRate, true)} helper="หลังปรับราคาและเวลาแล้ว จึงเปลี่ยน IV ตามสถานการณ์ เพื่อแยกผลของความผันผวนโดยนัย" />
+        <ExplainedResultMetric title="ค่าประมาณจาก Delta (ทั้งสถานะ)" value={audit.deltaEstimate === null ? 'ไม่มีข้อมูล' : `${formatResultMoney(audit.deltaEstimate, currency, usdThbRate, true)} ต่อราคาหุ้นเปลี่ยน $1 USD`} helper="Delta ของทั้งสถานะบอกว่ามูลค่าอาจเปลี่ยนประมาณเท่าไรเมื่อราคาหุ้นขยับ $1 ต่อหุ้น เป็นข้อมูลเปรียบเทียบเท่านั้น ไม่ใช่กำไรเพิ่มเติมและไม่นำไปบวกกับ Price Impact" />
+        {audit.impactDecomposition.residual !== null && audit.impactDecomposition.residual !== 0 && <ExplainedResultMetric title="ผลกระทบอื่น (Other Impact)" value={formatResultMoney(audit.impactDecomposition.residual, currency, usdThbRate, true)} helper="ส่วนต่างคงเหลือที่ทำให้ Price Impact, Time Decay และ IV Impact รวมกันตรงกับ Change from Current อาจมาจาก interaction ของปัจจัยหรือข้อจำกัดเชิงตัวเลข" />}
+      </ResultGroup>
+    </div>
+
+    <p className={`mt-4 rounded-lg p-3 text-xs ${reconciled ? 'bg-emerald-500/10 text-emerald-200' : 'bg-amber-500/10 text-amber-200'}`} data-testid="reconciliation-status" role="status">{reconciliationMessage}</p>
+    <details className="mt-3 rounded-xl border border-slate-700 bg-slate-950/40 p-3 text-xs text-slate-300">
+      <summary className="cursor-pointer font-semibold text-[#D4FF00]">วิธีคำนวณ</summary>
+      <div className="mt-3 space-y-2 leading-relaxed">
+        <p>Change from Current = Simulated Value − Current Value</p>
+        <p>Projected P&amp;L = Simulated Value − ต้นทุนหรือเครดิตเริ่มต้นแบบ signed ตามนโยบายเดิมของพอร์ต</p>
+        <p>{profitLossFormula(basis.policy)}</p>
+        <p>Price Impact + Time Decay + IV Impact + Other Impact = Change from Current</p>
+        <p>Delta เป็นข้อมูลเปรียบเทียบเท่านั้น ห้ามนำไปบวกซ้ำในผลรวมข้างต้น</p>
+        <ul className="list-disc space-y-1 pl-5">
+          <li>Value audit: {audit.valueChange.status}</li>
+          <li>P&amp;L audit: {audit.projectedProfitLoss.status}</li>
+          <li>Impact audit: {audit.impactDecomposition.status}</li>
+        </ul>
+      </div>
+    </details>
     <p className="mt-4 text-xs text-slate-500">ผลลัพธ์เป็นค่าประมาณจากโมเดล ไม่ใช่ราคาตลาดจริงหรือคำแนะนำซื้อขาย</p></section>;
 }
-function MonteCarloHighlights({ workspace, result }: { workspace: SimulationWorkspace; result: MonteCarloResult }) {
-  const cash = (value: number) => new Intl.NumberFormat(undefined, { style: 'currency', currency: workspace.currency }).format(value);
-  const pnl = result.histogram.map((bucket) => ({ x: (bucket.lower + bucket.upper) / 2, count: bucket.count }));
-  const terminals = result.samplePaths.map((path) => path[path.length - 1]).sort((a, b) => a - b);
-  const terminalMin = terminals[0] ?? 0, terminalMax = terminals[terminals.length - 1] ?? terminalMin, width = terminalMax === terminalMin ? 1 : (terminalMax - terminalMin) / 12;
-  const terminal = Array.from({ length: 12 }, (_, index) => ({ x: terminalMin + width * (index + 0.5), count: 0 }));
-  terminals.forEach((value) => { terminal[Math.min(terminal.length - 1, Math.max(0, Math.floor((value - terminalMin) / width)))].count += 1; });
-  let breakEvens: number[] = [];
-  try { breakEvens = valuePortfolio(workspace, workspace.scenarios[0]).breakEvens; } catch { /* validation handles incomplete contracts */ }
-  const terminalReferences = [
-    ...(workspace.underlyingPrice === null ? [] : [{ value: workspace.underlyingPrice, color: '#f59e0b' }]),
-    ...workspace.legs.map((leg) => ({ value: leg.strike, color: '#94a3b8' })),
-    ...breakEvens.map((value) => ({ value, color: '#a78bfa' })),
-  ];
-  const samples = Array.from({ length: Math.max(0, ...result.samplePaths.map((path) => path.length)) }, (_, step) => Object.fromEntries([['step', step], ...result.samplePaths.slice(0, 8).map((path, index) => [`path${index}`, path[step] ?? null])]));
-  return <section className={box} data-testid="monte-carlo-results"><h2 className="mb-4 text-lg font-bold">Monte Carlo Results</h2><div className="grid grid-cols-2 gap-3 md:grid-cols-5"><Metric title="Probability of Profit (POP)" value={`${(result.probabilityOfProfit * 100).toFixed(2)}%`} helper="โอกาสที่ผลลัพธ์สุดท้ายมากกว่าต้นทุนรวม" /><Metric title="Probability of ITM" value={`${(result.probabilityItm * 100).toFixed(2)}%`} helper="โอกาสที่ราคาหุ้นจะอยู่เหนือ/ใต้ Strike ตามประเภทสัญญา" /><Metric title="Probability of Reaching Target by Date" value={result.probabilityReachingTarget === undefined ? 'N/A' : `${(result.probabilityReachingTarget * 100).toFixed(2)}%`} helper="เส้นทางแตะหรือผ่าน Target Price อย่างน้อยหนึ่งครั้งก่อนหรือใน Target Date" /><Metric title="Probability of Closing Above Target" value={result.probabilityClosingAboveTarget === undefined ? 'N/A' : `${(result.probabilityClosingAboveTarget * 100).toFixed(2)}%`} helper="ราคาปลายทางมากกว่าหรือเท่ากับ Target Price" /><Metric title="Probability of Closing Below Target" value={result.probabilityClosingBelowTarget === undefined ? 'N/A' : `${(result.probabilityClosingBelowTarget * 100).toFixed(2)}%`} helper="ราคาปลายทางต่ำกว่า Target Price" /><Metric title="Expected P&L" value={cash(result.expectedProfitLoss)} /><Metric title="Median P&L" value={cash(result.medianProfitLoss)} /><Metric title="Expected Value" value={cash(result.expectedProfitLoss)} helper="ค่าเฉลี่ย P&L จากทุกสถานการณ์จำลอง" /><Metric title="5th / 95th percentile" value={`${cash(result.percentiles.p5)} / ${cash(result.percentiles.p95)}`} /><Metric title="1st / 99th percentile" value={`${cash(result.percentiles.p1)} / ${cash(result.percentiles.p99)}`} /><Metric title="VaR 95 / 99" value={`${cash(result.valueAtRisk.p95)} / ${cash(result.valueAtRisk.p99)}`} /><Metric title="Expected Shortfall" value={cash(result.expectedShortfall.p95)} /></div>
-    <p className="mt-3 text-xs text-slate-500">Expected Value ติดลบไม่ได้แปลว่าขาดทุนแน่นอน แต่แปลว่า distribution โดยเฉลี่ยไม่คุ้มต้นทุน</p>
-    <div className="mt-5 grid gap-4 lg:grid-cols-2"><MiniDistribution title="P&L Distribution" data={pnl} referenceXs={[{ value: 0, color: '#94a3b8' }]} /><MiniDistribution title="Terminal Stock Price Distribution" data={terminal} referenceXs={terminalReferences} /><div className="h-64 rounded-xl border border-slate-700 p-3 lg:col-span-2"><h3 className="mb-2 text-sm font-semibold">Sample Price Paths</h3><ResponsiveContainer><LineChart data={samples}><CartesianGrid stroke="#334155" /><XAxis dataKey="step" /><YAxis /><Tooltip />{result.samplePaths.slice(0, 8).map((_, index) => <Line key={index} dataKey={`path${index}`} dot={false} stroke={index === 0 ? '#D4FF00' : '#64748b'} strokeOpacity={index === 0 ? 1 : 0.45} isAnimationActive={false} />)}<ReferenceLine y={workspace.underlyingPrice ?? undefined} stroke="#f59e0b" /></LineChart></ResponsiveContainer></div></div>
+function CallPutScenarioScoreCard({ score }: { score: CallPutScenarioScore | null }) {
+  if (!score || score.status === 'unavailable') {
+    return <section className="mt-4 rounded-xl border border-amber-500/30 bg-amber-500/5 p-4" data-testid="call-put-scenario-score">
+      <h3 className="font-semibold text-slate-100">Call/Put Scenario Score</h3>
+      <p className="mt-2 font-medium text-amber-200">ข้อมูลไม่พอสำหรับเปรียบเทียบ</p>
+      <p className="mt-1 text-xs text-amber-100/80">{score?.reason ?? 'คะแนนเป็นข้อมูล transient และไม่มีอยู่ในผลลัพธ์ที่บันทึกไว้ กรุณารัน Monte Carlo ใหม่'}</p>
+      <p className="mt-3 text-xs text-slate-400">เป็นคะแนนเปรียบเทียบจากสมมติฐาน ไม่ใช่คำแนะนำซื้อขายหรือความน่าจะเป็นว่าหุ้นจะขึ้น/ลง</p>
+    </section>;
+  }
+  return <section className="mt-4 rounded-xl border border-slate-700 bg-slate-950/40 p-4" data-testid="call-put-scenario-score">
+    <div className="flex flex-wrap items-start justify-between gap-2">
+      <div><h3 className="font-semibold text-slate-100">Call/Put Scenario Score</h3><p className="mt-1 text-xs text-slate-400">เปรียบเทียบ Long Call และ Long Put จาก terminal paths ชุดเดียวกัน</p></div>
+      <span className="rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2 py-1 text-[10px] text-emerald-300">audit passed</span>
+    </div>
+    <div className="mt-4 grid gap-3 sm:grid-cols-2">
+      <div className="rounded-xl border border-emerald-500/20 bg-emerald-500/5 p-4"><small className="text-slate-400">น้ำหนักสถานการณ์ขาขึ้น (Call)</small><p className="mt-1 text-3xl font-bold text-emerald-300">{score.callPercent.toFixed(2)}%</p></div>
+      <div className="rounded-xl border border-violet-500/20 bg-violet-500/5 p-4"><small className="text-slate-400">น้ำหนักสถานการณ์ขาลง (Put)</small><p className="mt-1 text-3xl font-bold text-violet-300">{score.putPercent.toFixed(2)}%</p></div>
+    </div>
+    {score.outlook === 'unclear' && <p className="mt-3 rounded-lg bg-amber-500/10 p-3 text-sm font-semibold text-amber-200">มุมมองยังไม่ชัดเจน</p>}
+    <div className="mt-4"><h4 className="text-sm font-semibold text-slate-200">เหตุผลที่ส่งผลต่อคะแนนมากที่สุด</h4><ol className="mt-2 list-decimal space-y-1 pl-5 text-xs text-slate-300">{score.reasons.map((reason) => <li key={reason}>{reason}</li>)}</ol></div>
+    <details className="mt-4 rounded-lg border border-slate-700 p-3 text-xs text-slate-300">
+      <summary className="cursor-pointer font-semibold text-[#D4FF00]">สูตรและสมมติฐานคะแนน</summary>
+      <div className="mt-2 space-y-1 leading-relaxed">
+        <p>40% POP + 30% risk-adjusted Expected P&amp;L + 15% Median P&amp;L + 10% downside protection + 5% target-direction consistency</p>
+        <p>riskAdjustedEV = Expected P&amp;L ÷ initialRisk; downside ใช้ค่าที่แย่น้อยกว่าระหว่าง P5, ES 95% และ Max Loss แล้วหาร initialRisk</p>
+        <p>ทุก metric normalize แบบ symmetric ระหว่าง Call/Put; denominator เป็นศูนย์ให้ 50/50 และ audit ปฏิเสธ NaN/Infinity</p>
+        <p>Current ${formatResultNumber(score.assumptions.currentPrice)} · Target ${formatResultNumber(score.assumptions.targetPrice)} วันที่ {score.assumptions.targetDate} · Expiration {score.assumptions.expiration}</p>
+        <p>IV {formatResultNumber(score.assumptions.volatility * 100)}% · Rate {formatResultNumber(score.assumptions.rate * 100)}% · Dividend {formatResultNumber(score.assumptions.dividendYield * 100)}% · Strike distance ${formatResultNumber(score.assumptions.strikeDistance)}</p>
+        <p>Quantity {score.assumptions.quantity} · Multiplier {score.assumptions.multiplier} · Paths/Seed {score.assumptions.paths.toLocaleString()}/{score.assumptions.seed}</p>
+        <p>Premium จริง: Call ${formatResultNumber(score.assumptions.callPremium)} · Put ${formatResultNumber(score.assumptions.putPremium)} ต่อหุ้น</p>
+      </div>
+    </details>
+    <p className="mt-3 text-xs text-slate-400">เป็นคะแนนเปรียบเทียบจากสมมติฐาน ไม่ใช่คำแนะนำซื้อขายหรือความน่าจะเป็นว่าหุ้นจะขึ้น/ลง</p>
+  </section>;
+}
+
+function MonteCarloHighlights({ workspace, result, scenarioScore, currency, fxQuote, fxState, onCurrencyChange }: { workspace: SimulationWorkspace; result: MonteCarloDisplayResult; scenarioScore: CallPutScenarioScore | null } & ResultDisplayProps) {
+  const usdThbRate = fxQuote ? Number(fxQuote.rate) : null;
+  const basis = portfolioProfitLossBasis(workspace);
+  const validPaths = typeof result.validPaths === 'number' && Number.isFinite(result.validPaths) ? result.validPaths : result.paths;
+  const discardedPaths = typeof result.discardedPaths === 'number' && Number.isFinite(result.discardedPaths) ? result.discardedPaths : Math.max(0, result.paths - validPaths);
+  const pnl = useMemo(() => result.histogram.flatMap((bucket) => {
+    const lower = convertUsdForDisplay(bucket.lower, currency, usdThbRate);
+    const upper = convertUsdForDisplay(bucket.upper, currency, usdThbRate);
+    if (lower === null || upper === null) return [];
+    return [{ x: (lower + upper) / 2, lower, upper, count: bucket.count }];
+  }), [currency, result.histogram, usdThbRate]);
+  const terminal = useMemo(() => (result.terminalPriceHistogram ?? []).map((bucket) => ({
+    x: (bucket.lower + bucket.upper) / 2,
+    lower: bucket.lower,
+    upper: bucket.upper,
+    count: bucket.count,
+  })), [result.terminalPriceHistogram]);
+  const breakEvens = useMemo(() => {
+    try { return valuePortfolio(workspace, workspace.scenarios[0]).breakEvens; } catch { return []; }
+  }, [workspace]);
+  const terminalReferences = useMemo(() => [
+    ...(workspace.underlyingPrice === null ? [] : [{ value: workspace.underlyingPrice, label: 'Current Price', color: '#f59e0b', description: `ราคาปัจจุบัน $${formatResultNumber(workspace.underlyingPrice)}` }]),
+    ...workspace.legs.map((leg, index) => ({ value: leg.strike, label: `Strike L${index + 1}`, color: '#94a3b8', description: `Strike ของ Leg ${index + 1}: $${formatResultNumber(leg.strike)}` })),
+    ...breakEvens.map((value, index) => ({ value, label: breakEvens.length === 1 ? 'Break-even' : `Break-even ${index + 1}`, color: '#a78bfa', description: `จุดคุ้มทุน $${formatResultNumber(value)}` })),
+    ...(result.targetPrice === undefined ? [] : [{ value: result.targetPrice, label: 'Target', color: '#22d3ee', description: `ราคาเป้าหมาย $${formatResultNumber(result.targetPrice)}` }]),
+  ], [breakEvens, result.targetPrice, workspace.legs, workspace.underlyingPrice]);
+  const shownPaths = useMemo(() => result.samplePaths.slice(0, 8), [result.samplePaths]);
+  const samples = useMemo(() => {
+    const pointCount = Math.max(0, ...shownPaths.map((path) => path.length));
+    return Array.from({ length: pointCount }, (_, step) => {
+      const dayOffset = pointCount <= 1 ? 0 : Math.round(step / (pointCount - 1) * workspace.monteCarlo.horizonDays);
+      return Object.fromEntries([['date', addCalendarDays(workspace.valuationDate, dayOffset)], ...shownPaths.map((path, index) => [`path${index}`, path[step] ?? null])]);
+    });
+  }, [shownPaths, workspace.monteCarlo.horizonDays, workspace.valuationDate]);
+  const formatProbability = (value: number | undefined) => value === undefined || !Number.isFinite(value) || value < 0 || value > 1 ? 'ไม่มีข้อมูล' : `${(value * 100).toFixed(2)}%`;
+  const totalFees = workspace.legs.reduce((sum, leg) => sum + leg.fees, 0);
+  const p5Pnl = result.percentiles.p5;
+  const p50Pnl = result.medianProfitLoss;
+  const p95Pnl = result.percentiles.p95;
+  const var95Pnl = -result.valueAtRisk.p95;
+  const es95Pnl = -result.expectedShortfall.p95;
+  const maximumLoss = boundedExpirationProfitFloor(workspace);
+  const closeAboveLabel = formatProbability(result.probabilityClosingAboveTarget);
+  const closeBelowLabel = result.probabilityClosingAboveTarget !== undefined
+    && result.probabilityClosingBelowTarget !== undefined
+    && Number.isFinite(result.probabilityClosingAboveTarget)
+    && Number.isFinite(result.probabilityClosingBelowTarget)
+    && Math.abs(result.probabilityClosingAboveTarget + result.probabilityClosingBelowTarget - 1) <= 1e-10
+    ? `${(100 - Number((result.probabilityClosingAboveTarget * 100).toFixed(2))).toFixed(2)}%`
+    : formatProbability(result.probabilityClosingBelowTarget);
+  return <section className={box} data-testid="monte-carlo-results"><div className="mb-4 flex flex-wrap items-start justify-between gap-3"><div><h2 className="text-lg font-bold">ผลลัพธ์ Monte Carlo</h2><p className="text-xs text-slate-400">สรุปความน่าจะเป็นและการกระจายกำไร/ขาดทุน</p></div><span className="rounded-full border border-slate-700 px-3 py-1 text-xs text-slate-300">สกุลเงินที่เลือก: {currency}</span></div>
+    <ResultCurrencyControl currency={currency} fxQuote={fxQuote} fxState={fxState} onCurrencyChange={onCurrencyChange} />
+    <div className="mt-4 rounded-xl border border-slate-700 bg-slate-950/40 p-4" data-testid="result-summary">
+      <h3 className="font-semibold text-slate-100">สรุปแบบมือใหม่</h3>
+      <p className="mt-2 text-sm leading-relaxed text-slate-200">จาก valid paths ทั้งหมด {validPaths.toLocaleString()} จาก {result.paths.toLocaleString()} paths ผลเฉลี่ยคือ {buildProfitLossSummary(result.expectedProfitLoss, basis.amount, currency, usdThbRate)}, ค่ากลางคือ {buildProfitLossSummary(result.medianProfitLoss, basis.amount, currency, usdThbRate)} และหางล่าง 5% มี Expected Shortfall 95% ที่ {formatResultMoney(es95Pnl, currency, usdThbRate, true)} โดย POP เท่ากับ {formatProbability(result.probabilityOfProfit)}</p>
+      {discardedPaths > 0 && <p className="mt-2 text-xs text-amber-300">ตัด {discardedPaths.toLocaleString()} paths ที่ให้ค่า NaN หรือ Infinity ออกจากตัวหารและสถิติทั้งหมด</p>}
+      <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        <Metric title="ขาดทุนสูงสุด" value={maximumLoss === null ? 'ไม่จำกัด' : formatResultMoney(maximumLoss, currency, usdThbRate, true)} helper="ขอบเขต P&L ต่ำสุดของ payoff ตามโครงสร้างสถานะ ไม่ได้เดาจาก path ที่แย่ที่สุดเพียงเส้นเดียว" />
+        <Metric title="POP" value={formatProbability(result.probabilityOfProfit)} helper="สัดส่วน valid paths ที่ P&L มากกว่า 0 หลังหักต้นทุนและค่าธรรมเนียม" />
+        <ExplainedProfitLossMetric title="Expected P&L" amount={result.expectedProfitLoss} currency={currency} usdThbRate={usdThbRate} helper="ค่าเฉลี่ย P&L จาก valid paths ทั้งหมด" />
+        <ExplainedProfitLossMetric title="Median P&L" amount={result.medianProfitLoss} currency={currency} usdThbRate={usdThbRate} helper="P&L ค่ากลางจาก valid paths ทั้งหมด" />
+        <ExplainedProfitLossMetric title="P5" amount={p5Pnl} currency={currency} usdThbRate={usdThbRate} helper="ประมาณ 5% ของ valid paths มี P&L ต่ำกว่าหรือเท่าค่านี้" />
+        <ExplainedProfitLossMetric title="VaR 95%" amount={var95Pnl} currency={currency} usdThbRate={usdThbRate} helper="P5 ของ lower tail ในรูป P&L ติดลบหรือศูนย์" />
+        <ExplainedProfitLossMetric title="Expected Shortfall 95%" amount={es95Pnl} currency={currency} usdThbRate={usdThbRate} helper="ค่าเฉลี่ย P&L ของ valid paths ในหางล่างที่แย่กว่า VaR 95%" />
+      </div>
+    </div>
+    <CallPutScenarioScoreCard score={scenarioScore} />
+    <ResultGroup title="สรุปผล" testId="monte-carlo-group-summary" summary="ภาพรวมกำไร/ขาดทุนและสถานะสัญญา ณ Target Date">
+      <ProfitLossMetric title="กำไร/ขาดทุนคาดหวัง (Expected P&L)" amount={result.expectedProfitLoss} denominator={basis.amount} currency={currency} usdThbRate={usdThbRate} helper="ค่าเฉลี่ย P&L ของ valid paths ทั้งหมดหลังหักต้นทุนและค่าธรรมเนียม" />
+      <Metric title="โอกาสทำกำไร (POP)" value={formatProbability(result.probabilityOfProfit)} helper="POP = จำนวน valid paths ที่ P&L > 0 หลังหักต้นทุนและค่าธรรมเนียม ÷ valid paths ทั้งหมด" />
+      <ProfitLossMetric title="ค่ากลางของกำไร/ขาดทุน (Median P&L)" amount={result.medianProfitLoss} denominator={basis.amount} currency={currency} usdThbRate={usdThbRate} helper="P&L ค่ากลางหลังเรียงจากน้อยไปมาก; ไม่ใช่ค่าเฉลี่ย" />
+      <Metric title="โอกาสจบแบบ ITM" value={formatProbability(result.probabilityItm)} helper="ITM ดูจากราคาปลายทางเทียบ Strike ตาม Call/Put เท่านั้น; ITM ไม่เท่ากับกำไร เพราะยังมี Premium และค่าธรรมเนียม" />
+    </ResultGroup>
+    <ResultGroup title="ราคาเป้าหมาย" testId="monte-carlo-group-target" summary="Touch ดูทุก time step ส่วน Close ดูเฉพาะราคาปลายทาง ณ Target Date">
+      <Metric title="Touch Target" value={formatProbability(result.probabilityReachingTarget)} helper="เคยแตะหรือผ่าน Target ระหว่างทางอย่างน้อยหนึ่งครั้ง รวมทุก time step จนถึง Target Date" />
+      <Metric title="Close ≥ Target" value={closeAboveLabel} helper="ราคาหุ้นปลายทาง ณ Target Date มากกว่าหรือเท่ากับ Target" />
+      <Metric title="Close < Target" value={closeBelowLabel} helper="ราคาหุ้นปลายทาง ณ Target Date ต่ำกว่า Target; เมื่อรวมกับ Close ≥ Target ต้องเท่ากับ 100% แม้หลังจัดรูปแบบทศนิยม" />
+    </ResultGroup>
+    <ResultGroup title="ช่วงผลลัพธ์/ความเสี่ยง" testId="monte-carlo-group-risk" summary="ทุกค่าเป็น P&L หลังหักต้นทุนและค่าธรรมเนียม โดยคำนวณใน USD ก่อนแปลงเพื่อแสดงผล">
+      <ExplainedProfitLossMetric title="P5" amount={p5Pnl} currency={currency} usdThbRate={usdThbRate} helper="P5 คือระดับที่ประมาณ 5% ของ valid paths มี P&L ต่ำกว่าหรือเท่าค่านี้ ใช้ดูฝั่งผลลัพธ์ที่ค่อนข้างแย่" />
+      <ExplainedProfitLossMetric title="P50" amount={p50Pnl} currency={currency} usdThbRate={usdThbRate} helper="P50 คือ Median P&L: ครึ่งหนึ่งของ valid paths อยู่ต่ำกว่า และอีกครึ่งหนึ่งอยู่สูงกว่า" />
+      <ExplainedProfitLossMetric title="P95" amount={p95Pnl} currency={currency} usdThbRate={usdThbRate} helper="P95 คือระดับที่ประมาณ 95% ของ valid paths มี P&L ต่ำกว่าหรือเท่าค่านี้ ใช้ดูฝั่งผลลัพธ์ที่ค่อนข้างดี" />
+      <ExplainedProfitLossMetric title="VaR 95% (P&L)" amount={var95Pnl} currency={currency} usdThbRate={usdThbRate} helper="VaR 95% ใช้ P5 ของ lower P&L tail แล้วแสดงเป็น P&L ติดลบหรือศูนย์: ประมาณ 5% ของ paths แย่กว่าระดับนี้" />
+      <ExplainedProfitLossMetric title="Expected Shortfall 95% (P&L)" amount={es95Pnl} currency={currency} usdThbRate={usdThbRate} helper="ES 95% คือค่าเฉลี่ย P&L ของ paths ในหางล่างที่แย่กว่า VaR; เมื่อแสดงเป็น P&L ค่า ES ต้องน้อยกว่าหรือเท่ากับ VaR" />
+    </ResultGroup>
+    <section className="mt-4 rounded-xl border border-slate-700 bg-slate-950/30 p-3" data-testid="monte-carlo-group-charts">
+      <h3 className="font-semibold text-slate-100">กราฟและสมมติฐาน</h3>
+      <p className="mt-1 text-xs text-slate-400">Histogram ใช้ valid paths ทั้งหมด ส่วนเส้นราคาแสดงเพียงตัวอย่างเพื่ออธิบายการกระจาย ไม่ใช่คำทำนายหลัก</p>
+      <div className="mt-4 grid gap-4 lg:grid-cols-2">
+        <HistogramChart title={`P&L Distribution (${currency})`} ariaLabel={`ฮิสโตแกรม P&L จาก ${validPaths.toLocaleString()} paths แกน X เป็น P&L ${currency} แกน Y เป็นจำนวน paths`} data={pnl} xAxisLabel={`P&L (${currency})`} referenceXs={[{ value: 0, label: 'Break-even P&L', color: '#94a3b8', description: 'P&L เท่ากับศูนย์' }]} />
+        {terminal.length > 0 ? <HistogramChart title="Terminal Stock Price Distribution (USD)" ariaLabel={`ฮิสโตแกรมราคาหุ้นปลายทางจาก ${validPaths.toLocaleString()} paths แกน X เป็นราคาหุ้นปลายทาง USD แกน Y เป็นจำนวน paths`} data={terminal} xAxisLabel="ราคาหุ้นปลายทาง (USD)" referenceXs={terminalReferences} /> : <div className="min-w-0 rounded-xl border border-slate-700 p-3 text-sm text-amber-300">ผลลัพธ์เดิมไม่มี terminal histogram กรุณารัน Monte Carlo ใหม่เพื่อดูกราฟจากทุก paths</div>}
+        <div className="h-80 min-w-0 rounded-xl border border-slate-700 p-3 lg:col-span-2" role="group" aria-label={`เส้นทางราคาตัวอย่าง ${shownPaths.length} จาก ${validPaths} paths ตั้งแต่ ${workspace.valuationDate} ถึง ${workspace.scenarios[0].valuationDate}`}>
+          <h4 className="text-sm font-semibold">Sample Price Paths (USD)</h4>
+          <p className="mb-2 text-xs text-slate-400">แสดงตัวอย่าง {shownPaths.length.toLocaleString()} จาก {validPaths.toLocaleString()} paths · เส้นทุกเส้นมีน้ำหนักเท่ากันและไม่ใช่เส้นคาดการณ์หลัก</p>
+          <ResponsiveContainer width="100%" height="85%"><LineChart data={samples} margin={{ bottom: 16, left: 4, right: 12 }}><CartesianGrid stroke="#334155" /><XAxis dataKey="date" minTickGap={28} tickFormatter={(value) => new Date(`${value}T00:00:00Z`).toLocaleDateString('th-TH', { day: 'numeric', month: 'short', timeZone: 'UTC' })} label={{ value: 'วัน/วันที่', position: 'insideBottom', offset: -10 }} /><YAxis label={{ value: 'ราคาหุ้น (USD)', angle: -90, position: 'insideLeft' }} /><Tooltip />{shownPaths.map((_, index) => <Line key={index} dataKey={`path${index}`} name={`ตัวอย่าง ${index + 1}`} dot={false} stroke={['#94a3b8', '#7dd3fc', '#c4b5fd', '#86efac'][index % 4]} strokeOpacity={0.55} strokeWidth={1.25} isAnimationActive={false} />)}<ReferenceLine y={workspace.underlyingPrice ?? undefined} stroke="#f59e0b" strokeDasharray="4 4" /></LineChart></ResponsiveContainer>
+        </div>
+      </div>
+      <details className="mt-4 rounded-xl border border-slate-700 bg-slate-950/40 p-3 text-xs text-slate-300" data-testid="monte-carlo-assumptions">
+        <summary className="cursor-pointer font-semibold text-[#D4FF00]">สมมติฐานที่ใช้</summary>
+        <dl className="mt-3 grid gap-x-6 gap-y-2 sm:grid-cols-2 lg:grid-cols-3">
+          <div><dt className="text-slate-500">Model</dt><dd>Geometric Brownian Motion (GBM), options-simulator-v1</dd></div>
+          <div><dt className="text-slate-500">Paths / Seed</dt><dd>{result.paths.toLocaleString()} / {result.seed}</dd></div>
+          <div><dt className="text-slate-500">Current Price</dt><dd>{workspace.underlyingPrice === null ? 'ไม่มีข้อมูล' : `$${formatResultNumber(workspace.underlyingPrice)} USD`}</dd></div>
+          <div><dt className="text-slate-500">Target Date / Days</dt><dd>{workspace.scenarios[0].valuationDate} / {workspace.monteCarlo.horizonDays} วัน</dd></div>
+          <div><dt className="text-slate-500">IV / Drift</dt><dd>{formatResultNumber(workspace.monteCarlo.volatility * 100)}% / {formatResultNumber(workspace.monteCarlo.drift * 100)}%</dd></div>
+          <div><dt className="text-slate-500">Rate / Dividend</dt><dd>{formatResultNumber(workspace.monteCarlo.rate * 100)}% / {formatResultNumber(workspace.monteCarlo.dividendYield * 100)}%</dd></div>
+          <div><dt className="text-slate-500">Quantity</dt><dd>{workspace.legs.map((leg, index) => `L${index + 1}: ${leg.quantity}`).join(' · ')}</dd></div>
+          <div><dt className="text-slate-500">Multiplier</dt><dd>{workspace.legs.map((leg, index) => `L${index + 1}: ${leg.multiplier}`).join(' · ')}</dd></div>
+          <div><dt className="text-slate-500">ค่าธรรมเนียม</dt><dd>รวมใน P&amp;L แล้ว · ${formatResultMoney(totalFees, 'USD', null)}</dd></div>
+        </dl>
+        <p className="mt-3 text-slate-500">GBM paths ใช้ drift, IV และ dividend ตามสูตรของ methodology v1; rate แสดงเพื่อ audit แต่ไม่ถูกนำไปสร้าง paths ในเวอร์ชันนี้</p>
+      </details>
+    </section>
     <p className="mt-4 rounded-xl border border-amber-500/20 bg-amber-500/5 p-3 text-xs text-amber-200">ผลลัพธ์เป็นความน่าจะเป็นจากสมมติฐาน ไม่ใช่การทำนายราคาที่แน่นอน</p></section>;
 }
-function MiniDistribution({ title, data, referenceXs = [] }: { title: string; data: Array<{ x: number; count: number }>; referenceXs?: Array<{ value: number; color: string }> }) { return <div className="h-64 rounded-xl border border-slate-700 p-3"><h3 className="mb-2 text-sm font-semibold">{title}</h3><ResponsiveContainer><LineChart data={data}><CartesianGrid stroke="#334155" /><XAxis dataKey="x" tickFormatter={(value) => Number(value).toFixed(0)} /><YAxis /><Tooltip />{referenceXs.map((reference, index) => <ReferenceLine key={`${reference.value}-${index}`} x={reference.value} stroke={reference.color} />)}<Line dataKey="count" dot={false} stroke="#D4FF00" isAnimationActive={false} /></LineChart></ResponsiveContainer></div>; }
-function Payoff({ valuation, spot }: { valuation: PortfolioValuation; spot: number | null }) { return <section className={box}><div className="mb-2 flex flex-wrap gap-x-4 gap-y-1 text-[10px] text-slate-500"><span><i className="mr-1 inline-block h-0.5 w-3 bg-amber-500" />Current Price — ราคาปัจจุบัน</span><span><i className="mr-1 inline-block h-0.5 w-3 bg-slate-400" />Zero P/L — จุดกำไร/ขาดทุนเป็นศูนย์</span><span><i className="mr-1 inline-block h-0.5 w-3 bg-[#D4FF00]" />At Expiration — ณ วันหมดอายุ</span></div><div className="h-72"><ResponsiveContainer><LineChart data={valuation.payoff}><CartesianGrid stroke="#334155" /><XAxis dataKey="price" /><YAxis /><Tooltip /><ReferenceLine y={0} stroke="#94a3b8" />{spot && <ReferenceLine x={spot} stroke="#f59e0b" />}{valuation.breakEvens.map((value) => <ReferenceLine key={value} x={value} stroke="#a78bfa" />)}<Line dataKey="profitLoss" dot={false} stroke="#D4FF00" isAnimationActive={false} /></LineChart></ResponsiveContainer></div></section>; }
+interface HistogramMarker { value: number; label: string; color: string; description: string }
+function HistogramChart({ title, ariaLabel, data, xAxisLabel, referenceXs = [] }: { title: string; ariaLabel: string; data: Array<{ x: number; lower: number; upper: number; count: number }>; xAxisLabel: string; referenceXs?: HistogramMarker[] }) {
+  return <div className="h-80 min-w-0 rounded-xl border border-slate-700 p-3" role="group" aria-label={ariaLabel}>
+    <h4 className="text-sm font-semibold">{title}</h4>
+    {referenceXs.length > 0 && <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-[10px] text-slate-400" aria-label="Markers">{referenceXs.map((reference, index) => <span key={`${reference.label}-${reference.value}-${index}`} title={reference.description} tabIndex={0}><i className="mr-1 inline-block h-2 w-2 rounded-full" style={{ backgroundColor: reference.color }} />{reference.label}</span>)}</div>}
+    <ResponsiveContainer width="100%" height="82%"><BarChart data={data} margin={{ bottom: 20, left: 4, right: 12, top: 12 }}><CartesianGrid stroke="#334155" /><XAxis dataKey="x" type="number" domain={['dataMin', 'dataMax']} tickFormatter={(value) => formatResultNumber(Number(value), 0)} label={{ value: xAxisLabel, position: 'insideBottom', offset: -12 }} /><YAxis allowDecimals={false} label={{ value: 'จำนวน paths', angle: -90, position: 'insideLeft' }} /><Tooltip labelFormatter={(_, payload) => payload?.[0]?.payload ? `${formatResultNumber(payload[0].payload.lower)} – ${formatResultNumber(payload[0].payload.upper)}` : ''} formatter={(value) => [Number(value).toLocaleString(), 'จำนวน paths']} />{referenceXs.map((reference, index) => <ReferenceLine key={`${reference.label}-${reference.value}-${index}`} x={reference.value} stroke={reference.color} strokeDasharray="4 4" label={{ value: reference.label, fill: reference.color, fontSize: 9, position: 'insideTop' }} />)}<Bar dataKey="count" name="จำนวน paths" fill="#D4FF00" isAnimationActive={false} /></BarChart></ResponsiveContainer>
+  </div>;
+}
+function Payoff({ valuation, spot, currency, usdThbRate }: { valuation: PortfolioValuation; spot: number | null; currency: ResultCurrency; usdThbRate: number | null }) {
+  const payoff = valuation.payoff.map((point) => ({ ...point, profitLoss: convertUsdForDisplay(point.profitLoss, currency, usdThbRate) ?? point.profitLoss }));
+  return <section className={box}><div className="mb-2 flex flex-wrap gap-x-4 gap-y-1 text-[10px] text-slate-500"><span><i className="mr-1 inline-block h-0.5 w-3 bg-amber-500" />Current Price — ราคาปัจจุบัน (USD)</span><span><i className="mr-1 inline-block h-0.5 w-3 bg-slate-400" />Zero P/L — จุดกำไร/ขาดทุนเป็นศูนย์</span><span><i className="mr-1 inline-block h-0.5 w-3 bg-[#D4FF00]" />At Expiration — P/L ณ วันหมดอายุ ({currency})</span></div><div className="h-72 min-w-0"><ResponsiveContainer><LineChart data={payoff}><CartesianGrid stroke="#334155" /><XAxis dataKey="price" /><YAxis /><Tooltip /><ReferenceLine y={0} stroke="#94a3b8" />{spot && <ReferenceLine x={spot} stroke="#f59e0b" />}{valuation.breakEvens.map((value) => <ReferenceLine key={value} x={value} stroke="#a78bfa" />)}<Line dataKey="profitLoss" dot={false} stroke="#D4FF00" isAnimationActive={false} /></LineChart></ResponsiveContainer></div></section>;
+}

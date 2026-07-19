@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 const source = readFileSync(new URL('./SimulatorWorkspace.tsx', import.meta.url), 'utf8');
 const validationSource = readFileSync(new URL('../../lib/options-simulator/validation.ts', import.meta.url), 'utf8');
 const bottomNavSource = readFileSync(new URL('../layout/BottomNav.tsx', import.meta.url), 'utf8');
+const workerSource = readFileSync(new URL('../../workers/optionsMonteCarlo.worker.ts', import.meta.url), 'utf8');
 
 describe('Options Portfolio Simulator copy', () => {
   it('shows the requested beginner-friendly Thai copy', () => {
@@ -61,7 +62,7 @@ describe('Options Portfolio Simulator copy', () => {
     expect(source).toContain('runId !== workerRunId.current');
     expect(source).toContain('Start Simulation');
     expect(source).toContain('BASIC_PATH_OPTIONS.map');
-    expect(source).toContain('ใช้แสดง sensitivity เท่านั้น ไม่ใช้สร้าง GBM paths');
+    expect(source).toContain('ใช้แสดง sensitivity ของทั้งสถานะเท่านั้น ไม่ใช้สร้าง GBM paths');
     expect(source).not.toContain('>Advanced Settings<');
     expect(source).toContain('progress.toLocaleString()} / {workspace.monteCarlo.paths.toLocaleString()');
     expect(source).toContain('worker.current?.terminate()');
@@ -75,10 +76,10 @@ describe('Options Portfolio Simulator copy', () => {
   });
 
   it('keeps Manual Greeks separate from pricing and worker settings', () => {
-    expect(source).toContain('Delta Impact (ประมาณ)');
-    expect(source).toContain('ไม่เปลี่ยน Estimated Premium');
+    expect(source).toContain('ค่าประมาณจาก Delta (ทั้งสถานะ)');
+    expect(source).toContain('Delta เป็นข้อมูลเปรียบเทียบเท่านั้น');
     expect(source).toContain("source === 'manual' ? 'Manual' : 'Model Estimate'");
-    expect(source).toContain('instance.postMessage({ workspace: scoped, settings, targetPrice:');
+    expect(source).toContain('instance.postMessage({ workspace: scoped, comparisonWorkspace: workspace, settings, targetPrice:');
     expect(source).not.toContain('settings: { ...settings, delta');
   });
 
@@ -110,10 +111,184 @@ describe('Options Portfolio Simulator copy', () => {
   });
 
   it('shows distinct target-touch and terminal-close probabilities', () => {
-    expect(source).toContain('Probability of Reaching Target by Date');
-    expect(source).toContain('Probability of Closing Above Target');
-    expect(source).toContain('Probability of Closing Below Target');
+    expect(source).toContain('Touch Target');
+    expect(source).toContain('Close ≥ Target');
+    expect(source).toContain('Close < Target');
+    expect(source).toContain('เคยแตะหรือผ่าน Target ระหว่างทาง');
+    expect(source).toContain('ราคาหุ้นปลายทาง ณ Target Date');
     expect(source).toContain('ผลลัพธ์เป็นความน่าจะเป็นจากสมมติฐาน ไม่ใช่การทำนายราคาที่แน่นอน');
+  });
+
+  it('localizes Result labels while preserving standard options terms', () => {
+    expect(source).toContain('มูลค่าสถานะปัจจุบัน (Current Value)');
+    expect(source).toContain('มูลค่าสถานะหลังจำลอง (Simulated Value)');
+    expect(source).toContain('เปลี่ยนแปลงจากมูลค่าปัจจุบัน (Change from Current)');
+    expect(source).toContain('กำไร/ขาดทุนรวมหลังจำลอง (Projected P&L)');
+    expect(source).toContain('กำไร/ขาดทุน (%)');
+    expect(source).toContain('จุดคุ้มทุนต่อหุ้น (Break-even)');
+    expect(source).toContain('กำไรสูงสุด (Max Profit)');
+    expect(source).toContain('ขาดทุนสูงสุด (Max Loss)');
+    expect(source).toContain('ผลกระทบจากราคา (Price Impact)');
+    expect(source).toContain('ผลกระทบจาก Time Decay');
+    expect(source).toContain('ผลกระทบจาก IV');
+    expect(source).toContain('โอกาสทำกำไร (POP)');
+    expect(source).toContain('โอกาสจบแบบ ITM');
+    expect(source).toContain('กำไร/ขาดทุนคาดหวัง (Expected P&L)');
+    expect(source).toContain('ค่ากลางของกำไร/ขาดทุน (Median P&L)');
+    expect(source).not.toContain('มูลค่าคาดหวัง (Expected Value)');
+    expect(source).not.toContain('Expected Value ติดลบ');
+    expect(source.match(/amount=\{result\.expectedProfitLoss\}/g)).toHaveLength(2);
+  });
+
+  it('groups Monte Carlo metrics and explains the beginner distinctions', () => {
+    expect(source).toContain('testId="monte-carlo-group-summary"');
+    expect(source).toContain('testId="monte-carlo-group-target"');
+    expect(source).toContain('testId="monte-carlo-group-risk"');
+    expect(source).toContain('data-testid="monte-carlo-group-charts"');
+    expect(source).toContain('POP = จำนวน valid paths ที่ P&L > 0 หลังหักต้นทุนและค่าธรรมเนียม');
+    expect(source).toContain('ITM ไม่เท่ากับกำไร');
+    expect(source).toContain('title="P5"');
+    expect(source).toContain('title="P50"');
+    expect(source).toContain('title="P95"');
+    expect(source).toContain('title="VaR 95% (P&L)"');
+    expect(source).toContain('title="Expected Shortfall 95% (P&L)"');
+    expect(source).not.toContain('กำไร · กำไร/ขาดทุน (%)');
+  });
+
+  it('shows the complete beginner summary from all valid paths', () => {
+    expect(source).toContain('สรุปแบบมือใหม่');
+    expect(source).toContain('จาก valid paths ทั้งหมด');
+    expect(source).toContain('title="ขาดทุนสูงสุด"');
+    expect(source).toContain('title="POP"');
+    expect(source).toContain('title="Expected P&L"');
+    expect(source).toContain('title="Median P&L"');
+    expect(source).toContain('title="P5"');
+    expect(source).toContain('title="VaR 95%"');
+    expect(source).toContain('title="Expected Shortfall 95%"');
+  });
+
+  it('renders the audited Call/Put score, top reasons and required disclaimer', () => {
+    expect(source).toContain('data-testid="call-put-scenario-score"');
+    expect(source).toContain('น้ำหนักสถานการณ์ขาขึ้น (Call)');
+    expect(source).toContain('น้ำหนักสถานการณ์ขาลง (Put)');
+    expect(source).toContain('เป็นคะแนนเปรียบเทียบจากสมมติฐาน ไม่ใช่คำแนะนำซื้อขายหรือความน่าจะเป็นว่าหุ้นจะขึ้น/ลง');
+    expect(source).toContain('เหตุผลที่ส่งผลต่อคะแนนมากที่สุด');
+    expect(source).toContain('มุมมองยังไม่ชัดเจน');
+    expect(source).toContain('ข้อมูลไม่พอสำหรับเปรียบเทียบ');
+  });
+
+  it('uses deterministic accessible histograms with audited markers and dated sample paths', () => {
+    expect(source).toContain('<BarChart');
+    expect(source).toContain('<Bar dataKey="count"');
+    expect(source).toContain('Terminal Stock Price Distribution (USD)');
+    expect(source).toContain('ราคาหุ้นปลายทาง (USD)');
+    expect(source).toContain("value: 'จำนวน paths'");
+    expect(source).toContain("label: 'Current Price'");
+    expect(source).toContain('label: `Strike L${index + 1}`');
+    expect(source).toContain("? 'Break-even' : `Break-even ${index + 1}`");
+    expect(source).toContain("label: 'Target'");
+    expect(source).toContain('title={reference.description}');
+    expect(source).toContain('isAnimationActive={false}');
+    expect(source).toContain('แสดงตัวอย่าง {shownPaths.length.toLocaleString()} จาก {validPaths.toLocaleString()} paths');
+    expect(source).toContain('dataKey="date"');
+    expect(source).toContain("value: 'วัน/วันที่'");
+    expect(source).not.toContain('Math.random');
+    expect(source).not.toContain('function MiniDistribution');
+  });
+
+  it('keeps chart audit fields transient and preserves the persisted result contract', () => {
+    expect(source).toContain('function monteCarloSnapshot');
+    expect(source).toContain('delete snapshot.validPaths');
+    expect(source).toContain('delete snapshot.discardedPaths');
+    expect(source).toContain('delete snapshot.terminalPriceHistogram');
+    expect(source).toContain('monteCarlo: monteCarloSnapshot(event.data.result');
+    expect(source).toContain('const [callPutScore, setCallPutScore]');
+    expect(source).not.toMatch(/resultSnapshot:[^\n]+callPutScore/);
+    expect(source).not.toMatch(/resultSnapshot:[^\n]+scenarioScore/);
+    expect(workerSource).toContain('const { terminalPrices, ...result } = auditResult');
+    expect(workerSource).toContain('self.postMessage({ result, scenarioScore })');
+  });
+
+  it('discloses every Monte Carlo assumption and fee treatment', () => {
+    expect(source).toContain('data-testid="monte-carlo-assumptions"');
+    expect(source).toContain('สมมติฐานที่ใช้');
+    expect(source).toContain('Geometric Brownian Motion (GBM)');
+    expect(source).toContain('Paths / Seed');
+    expect(source).toContain('Current Price');
+    expect(source).toContain('Target Date / Days');
+    expect(source).toContain('IV / Drift');
+    expect(source).toContain('Rate / Dividend');
+    expect(source).toContain('Quantity');
+    expect(source).toContain('Multiplier');
+    expect(source).toContain('รวมใน P&amp;L แล้ว');
+    expect(source).toContain('rate แสดงเพื่อ audit แต่ไม่ถูกนำไปสร้าง paths');
+  });
+
+  it('keeps USD results as source of truth and toggles display currency without rerunning either engine', () => {
+    expect(source).toContain('fetchFxRate()');
+    expect(source).toContain('data-testid="result-currency-control"');
+    expect(source).toContain("disabled={item === 'THB' && !thbAvailable}");
+    expect(source).toContain('onClick={() => onCurrencyChange(item)}');
+    expect(source).toContain('ผลคำนวณ USD เป็น source of truth');
+    expect(source).toContain('ไม่รัน pricing หรือ Monte Carlo ใหม่');
+    expect(source).toContain('const analysisWorkspaceValue = useMemo');
+    expect(source).toContain('const sensitivity = useMemo');
+    expect(source).toContain('const summaryLegs = useMemo');
+    expect(source).toContain('const whatIfCalculation = useMemo');
+    expect(source).toContain('const breakEvens = useMemo');
+    expect(source).toContain("fxQuote?.stale ? 'stale'");
+    expect(source).toContain('1 USD = {Number(fxQuote.rate).toFixed(2)} THB');
+    expect(source).toContain('new Date(fxQuote.asOf).toLocaleString');
+    expect(source).toContain('function CallPutScenarioScoreCard({ score }');
+    expect(source).not.toContain('function CallPutScenarioScoreCard({ score, currency }');
+  });
+
+  it('renders accessible signed P&L cards and a mobile-safe result summary', () => {
+    expect(source).toContain('data-testid="result-summary"');
+    expect(source).toContain('role="status" aria-label=');
+    expect(source).toContain('profitLossToneClass(state)');
+    expect(source).toContain('formatSignedPercent(percentage)');
+    expect(source).toContain('grid grid-cols-1 gap-3 sm:grid-cols-2');
+    expect(source).toContain('min-w-0 rounded-xl');
+    expect(source).toContain('คำนวณ % ไม่ได้');
+  });
+
+  it('groups What-If results and gives every value a beginner explanation', () => {
+    expect(source).toContain('testId="result-group-key-summary"');
+    expect(source).toContain('testId="result-group-position-value"');
+    expect(source).toContain('testId="result-group-maximum-risk"');
+    expect(source).toContain('testId="result-group-estimate-details"');
+    expect(source).toContain('สรุปผลสำคัญ');
+    expect(source).toContain('มูลค่าสถานะ');
+    expect(source).toContain('ความเสี่ยงสูงสุด');
+    expect(source).toContain('รายละเอียดการประมาณ');
+    expect(source).toContain('ดูคำอธิบาย');
+    expect(source).toContain('buildProfitLossSummary(');
+  });
+
+  it('hides formulas in a calculation disclosure and reports reconciliation', () => {
+    expect(source).toContain('<summary');
+    expect(source).toContain('วิธีคำนวณ');
+    expect(source).toContain('data-testid="reconciliation-status"');
+    expect(source).toContain('auditResultReconciliation({');
+    expect(source).toContain('priceImpact: afterPrice.theoreticalValue - current.theoreticalValue');
+    expect(source).toContain('timeImpact: afterTime.theoreticalValue - afterPrice.theoreticalValue');
+    expect(source).toContain('ivImpact: valuation.theoreticalValue - afterTime.theoreticalValue');
+    expect(source).toContain('ผลกระทบอื่น (Other Impact)');
+    expect(source).toContain('Price Impact + Time Decay + IV Impact + Other Impact');
+    expect(source).toContain('Delta เป็นข้อมูลเปรียบเทียบเท่านั้น');
+  });
+
+  it('shows Delta as a position sensitivity with an explicit unit and never adds it to impacts', () => {
+    expect(source).toContain('ค่าประมาณจาก Delta (ทั้งสถานะ)');
+    expect(source).toContain('Delta (ทั้งสถานะ)');
+    expect(source).toContain('Delta ต่อหุ้น');
+    expect(source).toContain('ต่อราคาหุ้นเปลี่ยน $1 USD');
+    expect(source).toContain('deltaEstimate: sensitivity.delta');
+    expect(source).not.toContain('sensitivity.delta.toFixed(4)');
+    expect(source).not.toContain('resolved.delta.toFixed(4)');
+    expect(source).not.toContain('deltaApproximation');
+    expect(source).not.toContain('ผลกระทบจาก Theta (ประมาณ)');
   });
 
   it('shows accessible save states, disables both actions, and supports retry feedback', () => {

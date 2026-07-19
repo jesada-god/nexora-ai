@@ -15,6 +15,20 @@ describe('SharedRequestCache', () => {
     expect(result).toEqual({ value: 'old', state: 'stale' }); vi.useRealTimers();
   });
 
+  it('keeps a cached Profile available when its provider later fails', async () => {
+    vi.useFakeTimers();
+    const cache = new SharedRequestCache();
+    const policy = { freshMs: 10, staleMs: 7 * 24 * 60 * 60_000, errorMs: 100 };
+    await cache.resolve('profile:RKLB', async () => ({ symbol: 'RKLB', name: 'Rocket Lab USA, Inc.' }), policy);
+    vi.advanceTimersByTime(11);
+    const result = await cache.resolve<{ symbol: string; name: string }>('profile:RKLB', async () => {
+      throw new Error('provider unavailable');
+    }, policy);
+    expect(result.state).toBe('stale');
+    expect(result.value.name).toBe('Rocket Lab USA, Inc.');
+    vi.useRealTimers();
+  });
+
   it('keeps history ranges in separate cache keys', async () => {
     const cache = new SharedRequestCache(); const operation = vi.fn(async (value: string) => value); const policy = { freshMs: 1000, staleMs: 1000, errorMs: 10 };
     await cache.resolve('history:AAPL:1m', () => operation('1m'), policy); await cache.resolve('history:AAPL:1y', () => operation('1y'), policy);

@@ -1,0 +1,7 @@
+interface:
+  display_name: "Superpowers"
+  short_description: "Disciplined workflow for multi-step coding"
+  default_prompt: "Use $superpowers to investigate and complete this coding task with root-cause analysis, minimal changes, verification, and a final diff audit."
+
+policy:
+  allow_implicit_invocation: true

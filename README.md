@@ -1,5 +1,11 @@
 # Nexora AI
 
+## Phase 10.4 analytics provider
+
+When `ALPHA_VANTAGE_API_KEY` is configured, the server-side fundamentals adapter loads Alpha Vantage `INCOME_STATEMENT`, `BALANCE_SHEET`, and `CASH_FLOW` datasets. It normalizes annual and quarterly periods without converting missing values to zero. Trailing P/E requires four complete quarterly diluted-EPS values, matching quote/reporting currencies, positive EPS, and a quote no older than seven days.
+
+Fundamentals are held in a private in-process cache for 24 hours (stale fallback up to seven days after a transient provider failure), with per-provider/symbol/dataset/period keys and in-flight request deduplication. Provider responses are never publicly cached by the authenticated analytics routes. Missing statements produce structured unavailable results; no production fallback financial values are generated. `FEATURE_OPTIONS_STATISTICS` and `FEATURE_ANALYST_CONSENSUS` must remain disabled until real providers for those capabilities are integrated.
+
 Intelligent Investment Analytics — แพลตฟอร์มวิเคราะห์ ติดตามพอร์ต และจำลองการลงทุนด้วยข้อมูลและ AI
 
 Nexora AI เป็นเว็บแอป Next.js สำหรับติดตาม Watchlist, บันทึกข้อมูลพอร์ตด้วยตนเอง, ตั้ง Price Alert และใช้เครื่องมือ What-If, Price Target และ Monte Carlo โดยไม่มีระบบส่งคำสั่งซื้อขายจริง

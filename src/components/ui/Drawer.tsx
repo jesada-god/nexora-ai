@@ -11,9 +11,10 @@ interface DrawerProps {
   title: string
   children: React.ReactNode
   className?: string
+  id?: string
 }
 
-export function Drawer({ isOpen, onClose, title, children, className }: DrawerProps) {
+export function Drawer({ isOpen, onClose, title, children, className, id }: DrawerProps) {
   const titleId = useId()
   const dialogRef = useDialogA11y(isOpen, onClose)
 
@@ -23,6 +24,7 @@ export function Drawer({ isOpen, onClose, title, children, className }: DrawerPr
     <div className="fixed inset-0 z-50 flex items-end sm:items-stretch sm:justify-end">
       <div className="fixed inset-0 bg-black/60 backdrop-blur-sm" onClick={onClose} />
       <div 
+        id={id}
         ref={dialogRef}
         tabIndex={-1}
         className={cn(

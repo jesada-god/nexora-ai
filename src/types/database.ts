@@ -191,6 +191,24 @@ export interface Database {
         Update: Partial<Database['public']['Tables']['alert_evaluation_runs']['Insert']>;
         Relationships: [];
       };
+      option_simulations: {
+        Row: {
+          id: string; user_id: string; name: string; description: string; symbol: string; company_name: string; currency: string;
+          simulation_type: 'what-if' | 'monte-carlo'; strategy_type: string; inputs_json: Json; assumptions_json: Json;
+          settings_json: Json; results_summary_json: Json | null; methodology_version: string; data_source: string | null;
+          data_status: 'live' | 'delayed' | 'stale' | 'manual' | 'unavailable'; source_timestamp: string | null;
+          version: number; created_at: string; updated_at: string;
+        };
+        Insert: {
+          id?: string; user_id: string; name: string; description?: string; symbol: string; company_name: string; currency: string;
+          simulation_type: 'what-if' | 'monte-carlo'; strategy_type: string; inputs_json: Json; assumptions_json?: Json;
+          settings_json: Json; results_summary_json?: Json | null; methodology_version?: string; data_source?: string | null;
+          data_status: 'live' | 'delayed' | 'stale' | 'manual' | 'unavailable'; source_timestamp?: string | null;
+          version?: number; created_at?: string; updated_at?: string;
+        };
+        Update: Partial<Database['public']['Tables']['option_simulations']['Insert']>;
+        Relationships: [];
+      };
     };
     Views: Record<string, never>;
     Functions: {

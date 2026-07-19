@@ -1,7 +1,12 @@
 import type { DataFreshness, HistoricalPrice } from '@/src/lib/market-data/types';
 
 export type PriceField = 'open' | 'high' | 'low' | 'close';
-export type TechnicalIndicatorId = 'sma' | 'ema' | 'rsi' | 'macd' | 'bollinger' | 'atr' | 'averageVolume';
+export type TechnicalIndicatorId =
+  | 'sma' | 'sma50' | 'sma100' | 'sma200'
+  | 'ema' | 'ema50' | 'ema100' | 'ema200'
+  | 'rsi' | 'macd' | 'bollinger' | 'atr'
+  | 'volume' | 'averageVolume' | 'averageVolume50'
+  | 'stochastic' | 'adx' | 'obv' | 'ichimoku' | 'roc' | 'vwap';
 
 export interface IndicatorPoint {
   date: string;
@@ -19,6 +24,15 @@ export interface BollingerPoint extends IndicatorPoint {
   lower: number;
 }
 
+export interface StochasticPoint extends IndicatorPoint { k: number; d: number | null; }
+export interface AdxPoint extends IndicatorPoint { plusDi: number; minusDi: number; }
+export interface IchimokuPoint extends IndicatorPoint {
+  conversion: number;
+  base: number;
+  leadingA: number | null;
+  leadingB: number | null;
+}
+
 export interface TechnicalParameters {
   priceField: PriceField;
   smaPeriod: number;
@@ -31,6 +45,15 @@ export interface TechnicalParameters {
   bollingerStdDev: number;
   atrPeriod: number;
   averageVolumePeriod: number;
+  stochasticPeriod: number;
+  stochasticSmoothK: number;
+  stochasticSmoothD: number;
+  adxPeriod: number;
+  rocPeriod: number;
+  ichimokuConversionPeriod: number;
+  ichimokuBasePeriod: number;
+  ichimokuSpanPeriod: number;
+  ichimokuDisplacement: number;
 }
 
 export interface TechnicalContext {
@@ -60,6 +83,8 @@ export interface TechnicalAnalysisResult {
   symbol: string;
   input: { priceField: PriceField; candleCount: number; interval: '1d' };
   dataSource: string | null;
+  source: string | null;
+  sourceType: 'provider/cache historical OHLCV';
   dataPoints: number;
   latestDataAt: string;
   calculatedAt: string;
@@ -67,14 +92,29 @@ export interface TechnicalAnalysisResult {
   parameters: TechnicalParameters;
   freshness: DataFreshness;
   limitations: string[];
+  assumptions: string[];
   indicators: {
     sma: IndicatorResult<IndicatorPoint>;
+    sma50: IndicatorResult<IndicatorPoint>;
+    sma100: IndicatorResult<IndicatorPoint>;
+    sma200: IndicatorResult<IndicatorPoint>;
     ema: IndicatorResult<IndicatorPoint>;
+    ema50: IndicatorResult<IndicatorPoint>;
+    ema100: IndicatorResult<IndicatorPoint>;
+    ema200: IndicatorResult<IndicatorPoint>;
     rsi: IndicatorResult<IndicatorPoint>;
     macd: IndicatorResult<MacdPoint>;
     bollinger: IndicatorResult<BollingerPoint>;
     atr: IndicatorResult<IndicatorPoint>;
+    volume: IndicatorResult<IndicatorPoint>;
     averageVolume: IndicatorResult<IndicatorPoint>;
+    averageVolume50: IndicatorResult<IndicatorPoint>;
+    stochastic: IndicatorResult<StochasticPoint>;
+    adx: IndicatorResult<AdxPoint>;
+    obv: IndicatorResult<IndicatorPoint>;
+    ichimoku: IndicatorResult<IchimokuPoint>;
+    roc: IndicatorResult<IndicatorPoint>;
+    vwap: IndicatorResult<IndicatorPoint>;
   };
 }
 
@@ -84,6 +124,8 @@ export interface TechnicalAnalysisUnavailable {
   reason: string;
   input: { priceField: PriceField; candleCount: number; interval: '1d' };
   dataSource: string | null;
+  source: string | null;
+  sourceType: 'provider/cache historical OHLCV';
   dataPoints: number;
   latestDataAt: string | null;
   calculatedAt: string;
@@ -91,8 +133,8 @@ export interface TechnicalAnalysisUnavailable {
   parameters: TechnicalParameters;
   freshness: DataFreshness;
   limitations: string[];
+  assumptions: string[];
 }
 
 export type TechnicalAnalysis = TechnicalAnalysisResult | TechnicalAnalysisUnavailable;
 export type TechnicalCandles = readonly HistoricalPrice[];
-

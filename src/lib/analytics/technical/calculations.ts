@@ -1,9 +1,12 @@
 import type { HistoricalPrice } from '@/src/lib/market-data/types';
 import type {
   BollingerPoint,
+  AdxPoint,
   IndicatorPoint,
   IndicatorResult,
   MacdPoint,
+  StochasticPoint,
+  IchimokuPoint,
   TechnicalAnalysis,
   TechnicalCandles,
   TechnicalContext,
@@ -117,6 +120,84 @@ export function atrWilder(candles: TechnicalCandles, period: number): Array<numb
   return result;
 }
 
+function rollingMidpoint(candles: TechnicalCandles, period: number): Array<number | null> {
+  assertPeriod(period);
+  return candles.map((_, index) => {
+    if (index < period - 1) return null;
+    const window = candles.slice(index - period + 1, index + 1);
+    return (Math.max(...window.map((candle) => candle.high)) + Math.min(...window.map((candle) => candle.low))) / 2;
+  });
+}
+
+export function stochastic(candles: TechnicalCandles, period: number, smoothK: number, smoothD: number) {
+  assertPeriod(period);
+  const rawK = candles.map((candle, index) => {
+    if (index < period - 1) return null;
+    const window = candles.slice(index - period + 1, index + 1);
+    const high = Math.max(...window.map((item) => item.high));
+    const low = Math.min(...window.map((item) => item.low));
+    return high === low ? 50 : ((candle.close - low) / (high - low)) * 100;
+  });
+  const compactK = rawK.slice(period - 1) as number[];
+  const smoothedK = Array<number | null>(period - 1).fill(null).concat(smoothK === 1 ? compactK : sma(compactK, smoothK));
+  const firstK = period + smoothK - 2;
+  const compactD = smoothedK.slice(firstK) as number[];
+  const d = Array<number | null>(firstK).fill(null).concat(smoothD === 1 ? compactD : sma(compactD, smoothD));
+  return { k: smoothedK, d };
+}
+
+export function adxWilder(candles: TechnicalCandles, period: number) {
+  assertPeriod(period);
+  const length = candles.length;
+  const tr = Array<number>(length).fill(0); const plusDm = Array<number>(length).fill(0); const minusDm = Array<number>(length).fill(0);
+  for (let index = 1; index < length; index += 1) {
+    const up = candles[index].high - candles[index - 1].high;
+    const down = candles[index - 1].low - candles[index].low;
+    plusDm[index] = up > down && up > 0 ? up : 0; minusDm[index] = down > up && down > 0 ? down : 0;
+    tr[index] = Math.max(candles[index].high - candles[index].low, Math.abs(candles[index].high - candles[index - 1].close), Math.abs(candles[index].low - candles[index - 1].close));
+  }
+  const plusDi = Array<number | null>(length).fill(null); const minusDi = Array<number | null>(length).fill(null); const dx = Array<number | null>(length).fill(null); const adx = Array<number | null>(length).fill(null);
+  if (length <= period) return { adx, plusDi, minusDi };
+  let smoothedTr = tr.slice(1, period + 1).reduce((a, b) => a + b, 0);
+  let smoothedPlus = plusDm.slice(1, period + 1).reduce((a, b) => a + b, 0);
+  let smoothedMinus = minusDm.slice(1, period + 1).reduce((a, b) => a + b, 0);
+  for (let index = period; index < length; index += 1) {
+    if (index > period) {
+      smoothedTr = smoothedTr - smoothedTr / period + tr[index];
+      smoothedPlus = smoothedPlus - smoothedPlus / period + plusDm[index];
+      smoothedMinus = smoothedMinus - smoothedMinus / period + minusDm[index];
+    }
+    plusDi[index] = smoothedTr === 0 ? 0 : 100 * smoothedPlus / smoothedTr;
+    minusDi[index] = smoothedTr === 0 ? 0 : 100 * smoothedMinus / smoothedTr;
+    const total = (plusDi[index] as number) + (minusDi[index] as number);
+    dx[index] = total === 0 ? 0 : 100 * Math.abs((plusDi[index] as number) - (minusDi[index] as number)) / total;
+  }
+  const firstAdx = period * 2 - 1;
+  if (length > firstAdx) {
+    adx[firstAdx] = (dx.slice(period, firstAdx + 1) as number[]).reduce((a, b) => a + b, 0) / period;
+    for (let index = firstAdx + 1; index < length; index += 1) adx[index] = (((adx[index - 1] as number) * (period - 1)) + (dx[index] as number)) / period;
+  }
+  return { adx, plusDi, minusDi };
+}
+
+export function onBalanceVolume(candles: TechnicalCandles): number[] {
+  const values = Array<number>(candles.length).fill(0);
+  for (let index = 1; index < candles.length; index += 1) values[index] = values[index - 1] + (candles[index].close > candles[index - 1].close ? candles[index].volume : candles[index].close < candles[index - 1].close ? -candles[index].volume : 0);
+  return values;
+}
+
+export function rateOfChange(values: readonly number[], period: number): Array<number | null> {
+  if (!Number.isInteger(period) || period < 1) throw new RangeError('Period must be a positive integer');
+  return values.map((value, index) => index < period || values[index - period] === 0 ? null : ((value / values[index - period]) - 1) * 100);
+}
+
+export function ichimoku(candles: TechnicalCandles, conversionPeriod: number, basePeriod: number, spanPeriod: number, displacement: number) {
+  const conversion = rollingMidpoint(candles, conversionPeriod); const base = rollingMidpoint(candles, basePeriod); const spanBSource = rollingMidpoint(candles, spanPeriod);
+  const leadingA = candles.map((_, index) => index < displacement || conversion[index - displacement] == null || base[index - displacement] == null ? null : ((conversion[index - displacement] as number) + (base[index - displacement] as number)) / 2);
+  const leadingB = candles.map((_, index) => index < displacement ? null : spanBSource[index - displacement]);
+  return { conversion, base, leadingA, leadingB };
+}
+
 function points(candles: TechnicalCandles, values: Array<number | null>): IndicatorPoint[] {
   return values.flatMap((value, index) => value == null || !Number.isFinite(value) ? [] : [{ date: candles[index].date, value }]);
 }
@@ -144,6 +225,8 @@ export function calculateTechnicalAnalysis(
     symbol: context.symbol,
     input: { priceField: parameters.priceField, candleCount: candles.length, interval: '1d' as const },
     dataSource: context.source,
+    source: context.source,
+    sourceType: 'provider/cache historical OHLCV' as const,
     dataPoints: candles.length,
     latestDataAt: candles.at(-1)?.date ?? null,
     calculatedAt,
@@ -151,6 +234,7 @@ export function calculateTechnicalAnalysis(
     parameters,
     freshness: context.freshness,
     limitations: LIMITATIONS,
+    assumptions: ['Candles are chronological daily OHLCV from the selected historical provider/cache response.', 'Price-based indicators use raw close unless the validated priceField parameter explicitly changes it.'],
   };
   if (!candles.length || !candlesAreValid(candles)) {
     return { status: 'unavailable', ...base, reason: candles.length ? 'ข้อมูล OHLCV ไม่ถูกต้องหรือไม่ได้เรียงตามเวลา' : 'ไม่มีข้อมูล OHLCV สำหรับคำนวณ' };
@@ -158,6 +242,9 @@ export function calculateTechnicalAnalysis(
   const values = candles.map((candle) => candle[parameters.priceField]);
   const macdValues = macd(values, parameters.macdFastPeriod, parameters.macdSlowPeriod, parameters.macdSignalPeriod);
   const bandValues = bollingerBands(values, parameters.bollingerPeriod, parameters.bollingerStdDev);
+  const stochasticValues = stochastic(candles, parameters.stochasticPeriod, parameters.stochasticSmoothK, parameters.stochasticSmoothD);
+  const adxValues = adxWilder(candles, parameters.adxPeriod);
+  const ichimokuValues = ichimoku(candles, parameters.ichimokuConversionPeriod, parameters.ichimokuBasePeriod, parameters.ichimokuSpanPeriod, parameters.ichimokuDisplacement);
   const macdMinimum = parameters.macdSlowPeriod + parameters.macdSignalPeriod - 1;
   return {
     status: 'available',
@@ -165,13 +252,26 @@ export function calculateTechnicalAnalysis(
     latestDataAt: candles[candles.length - 1].date,
     indicators: {
       sma: calculate(candles, parameters.smaPeriod, () => points(candles, sma(values, parameters.smaPeriod))),
+      sma50: calculate(candles, 50, () => points(candles, sma(values, 50))),
+      sma100: calculate(candles, 100, () => points(candles, sma(values, 100))),
+      sma200: calculate(candles, 200, () => points(candles, sma(values, 200))),
       ema: calculate(candles, parameters.emaPeriod, () => points(candles, ema(values, parameters.emaPeriod))),
+      ema50: calculate(candles, 50, () => points(candles, ema(values, 50))),
+      ema100: calculate(candles, 100, () => points(candles, ema(values, 100))),
+      ema200: calculate(candles, 200, () => points(candles, ema(values, 200))),
       rsi: calculate(candles, parameters.rsiPeriod + 1, () => points(candles, rsiWilder(values, parameters.rsiPeriod))),
       macd: calculate(candles, macdMinimum, () => macdValues.macd.flatMap((value, index): MacdPoint[] => value == null ? [] : [{ date: candles[index].date, value, signal: macdValues.signal[index], histogram: macdValues.histogram[index] }])),
       bollinger: calculate(candles, parameters.bollingerPeriod, () => bandValues.flatMap((value, index): BollingerPoint[] => value == null ? [] : [{ date: candles[index].date, value: value.middle, ...value }])),
       atr: calculate(candles, parameters.atrPeriod, () => points(candles, atrWilder(candles, parameters.atrPeriod))),
+      volume: available(candles.map((candle) => ({ date: candle.date, value: candle.volume }))),
       averageVolume: calculate(candles, parameters.averageVolumePeriod, () => points(candles, sma(candles.map((candle) => candle.volume), parameters.averageVolumePeriod))),
+      averageVolume50: calculate(candles, 50, () => points(candles, sma(candles.map((candle) => candle.volume), 50))),
+      stochastic: calculate(candles, parameters.stochasticPeriod + parameters.stochasticSmoothK - 1, () => stochasticValues.k.flatMap((value, index): StochasticPoint[] => value == null ? [] : [{ date: candles[index].date, value, k: value, d: stochasticValues.d[index] }])),
+      adx: calculate(candles, parameters.adxPeriod * 2, () => adxValues.adx.flatMap((value, index): AdxPoint[] => value == null ? [] : [{ date: candles[index].date, value, plusDi: adxValues.plusDi[index] as number, minusDi: adxValues.minusDi[index] as number }])),
+      obv: calculate(candles, 2, () => points(candles, onBalanceVolume(candles))),
+      ichimoku: calculate(candles, parameters.ichimokuSpanPeriod + parameters.ichimokuDisplacement, () => ichimokuValues.conversion.flatMap((value, index): IchimokuPoint[] => value == null || ichimokuValues.base[index] == null ? [] : [{ date: candles[index].date, value, conversion: value, base: ichimokuValues.base[index] as number, leadingA: ichimokuValues.leadingA[index], leadingB: ichimokuValues.leadingB[index] }])),
+      roc: calculate(candles, parameters.rocPeriod + 1, () => points(candles, rateOfChange(values, parameters.rocPeriod))),
+      vwap: unavailable(candles.length, 1, 'Unavailable: แหล่งข้อมูลนี้มีเฉพาะ daily OHLCV และไม่มี session boundaries จริง จึงไม่คำนวณ session VWAP'),
     },
   };
 }
-

@@ -12,10 +12,18 @@ export const technicalParametersSchema = z.object({
   bollingerStdDev: z.number().finite().min(0.1).max(10).default(2),
   atrPeriod: z.number().int().min(2).max(100).default(14),
   averageVolumePeriod: z.number().int().min(2).max(250).default(20),
+  stochasticPeriod: z.number().int().min(2).max(100).default(14),
+  stochasticSmoothK: z.number().int().min(1).max(20).default(3),
+  stochasticSmoothD: z.number().int().min(1).max(20).default(3),
+  adxPeriod: z.number().int().min(2).max(100).default(14),
+  rocPeriod: z.number().int().min(1).max(100).default(12),
+  ichimokuConversionPeriod: z.number().int().min(2).max(100).default(9),
+  ichimokuBasePeriod: z.number().int().min(2).max(150).default(26),
+  ichimokuSpanPeriod: z.number().int().min(2).max(250).default(52),
+  ichimokuDisplacement: z.number().int().min(1).max(100).default(26),
 }).refine((value) => value.macdFastPeriod < value.macdSlowPeriod, {
   message: 'MACD fast period must be less than slow period',
   path: ['macdFastPeriod'],
 });
 
 export const DEFAULT_TECHNICAL_PARAMETERS = technicalParametersSchema.parse({});
-

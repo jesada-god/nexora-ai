@@ -1,6 +1,8 @@
 export const BASIC_PATH_OPTIONS = [1_000, 5_000, 10_000, 25_000, 50_000] as const;
 
 export type BasicPathOption = typeof BASIC_PATH_OPTIONS[number];
+export type ResultCurrency = 'USD' | 'THB';
+export type ProfitLossState = 'profit' | 'loss' | 'break-even';
 
 export function isBasicPathOption(value: number): value is BasicPathOption {
   return BASIC_PATH_OPTIONS.includes(value as BasicPathOption);
@@ -121,4 +123,179 @@ export function parseFiniteDraft(value: string): number | null {
   if (!value.trim()) return null;
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : null;
+}
+
+export function convertUsdForDisplay(valueUsd: number, currency: ResultCurrency, usdThbRate: number | null): number | null {
+  if (!Number.isFinite(valueUsd)) return null;
+  const normalized = Object.is(valueUsd, -0) ? 0 : valueUsd;
+  if (currency === 'USD') return normalized;
+  if (usdThbRate === null || !Number.isFinite(usdThbRate) || usdThbRate <= 0) return null;
+  const converted = normalized * usdThbRate;
+  return Object.is(converted, -0) ? 0 : converted;
+}
+
+export function formatResultMoney(valueUsd: number, currency: ResultCurrency, usdThbRate: number | null, showPlus = false): string {
+  const converted = convertUsdForDisplay(valueUsd, currency, usdThbRate);
+  if (converted === null) return 'ไม่มีข้อมูล';
+  const normalized = Object.is(converted, -0) ? 0 : converted;
+  const sign = normalized < 0 ? '-' : showPlus && normalized > 0 ? '+' : '';
+  const symbol = currency === 'USD' ? '$' : '฿';
+  const amount = Math.abs(normalized).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  return `${sign}${symbol}${amount}`;
+}
+
+export function formatResultNumber(value: number, fractionDigits = 2): string {
+  if (!Number.isFinite(value)) return 'ไม่มีข้อมูล';
+  const normalized = Object.is(value, -0) ? 0 : value;
+  return normalized.toLocaleString('en-US', { minimumFractionDigits: fractionDigits, maximumFractionDigits: fractionDigits });
+}
+
+export function safeProfitLossPercent(amount: number, denominator: number | null): number | null {
+  if (!Number.isFinite(amount) || denominator === null || !Number.isFinite(denominator) || denominator <= 0) return null;
+  const percentage = amount / denominator * 100;
+  return Number.isFinite(percentage) ? percentage : null;
+}
+
+export function formatSignedPercent(value: number | null): string {
+  if (value === null || !Number.isFinite(value)) return 'คำนวณ % ไม่ได้';
+  const normalized = Object.is(value, -0) ? 0 : value;
+  return `${normalized > 0 ? '+' : ''}${normalized.toFixed(2)}%`;
+}
+
+export function profitLossState(value: number): ProfitLossState {
+  return value > 0 ? 'profit' : value < 0 ? 'loss' : 'break-even';
+}
+
+export function profitLossStateLabel(state: ProfitLossState): string {
+  return state === 'profit' ? 'กำไร' : state === 'loss' ? 'ขาดทุน' : 'คุ้มทุน';
+}
+
+export function profitLossToneClass(state: ProfitLossState): string {
+  return state === 'profit' ? 'text-emerald-400' : state === 'loss' ? 'text-red-400' : 'text-slate-300';
+}
+
+export function buildProfitLossSummary(
+  amountUsd: number,
+  denominatorUsd: number | null,
+  currency: ResultCurrency,
+  usdThbRate: number | null,
+): string {
+  if (!Number.isFinite(amountUsd)) return 'ไม่มีข้อมูลกำไร/ขาดทุนที่คำนวณได้';
+  const state = profitLossState(amountUsd);
+  const label = profitLossStateLabel(state);
+  const amount = formatResultMoney(Math.abs(amountUsd), currency, usdThbRate);
+  const percentage = safeProfitLossPercent(Math.abs(amountUsd), denominatorUsd);
+  if (percentage === null) {
+    return `${label} ${amount} แต่คำนวณเปอร์เซ็นต์ไม่ได้ เพราะไม่มีฐานเงินที่เสี่ยงเริ่มต้นที่มากกว่า 0`;
+  }
+  return `${label} ${amount} คิดเป็น ${formatResultNumber(percentage)}% ของเงินที่เสี่ยงเริ่มต้น`;
+}
+
+export type ReconciliationStatus = 'matched' | 'mismatch' | 'unavailable';
+
+export interface ResultReconciliationInput {
+  currentValue: number | null;
+  simulatedValue: number;
+  changeFromCurrent: number | null;
+  initialCostOrCredit: number;
+  projectedProfitLoss: number;
+  priceImpact: number | null;
+  timeDecayImpact: number | null;
+  ivImpact: number | null;
+  deltaEstimate: number | null;
+}
+
+interface ReconciliationCheck {
+  status: ReconciliationStatus;
+  residual: number | null;
+}
+
+export interface ResultReconciliationAudit {
+  valueChange: ReconciliationCheck;
+  projectedProfitLoss: ReconciliationCheck;
+  impactDecomposition: ReconciliationCheck & { total: number | null };
+  deltaEstimate: number | null;
+}
+
+function reconciliationTolerance(values: number[]): number {
+  return Math.max(1e-9, Math.max(...values.map((value) => Math.abs(value))) * 1e-10);
+}
+
+function reconciliationCheck(actual: number | null, expected: number | null): ReconciliationCheck {
+  if (actual === null || expected === null || !Number.isFinite(actual) || !Number.isFinite(expected)) {
+    return { status: 'unavailable', residual: null };
+  }
+  const residual = actual - expected;
+  const matched = Math.abs(residual) <= reconciliationTolerance([actual, expected]);
+  return { status: matched ? 'matched' : 'mismatch', residual: matched ? 0 : residual };
+}
+
+export function auditResultReconciliation(input: ResultReconciliationInput): ResultReconciliationAudit {
+  const expectedChange = input.currentValue === null ? null : input.simulatedValue - input.currentValue;
+  const expectedProfitLoss = input.simulatedValue - input.initialCostOrCredit;
+  const impacts = [input.priceImpact, input.timeDecayImpact, input.ivImpact];
+  const impactTotal = impacts.every((value): value is number => value !== null && Number.isFinite(value))
+    ? impacts.reduce<number>((sum, value) => sum + value, 0)
+    : null;
+
+  return {
+    valueChange: reconciliationCheck(input.changeFromCurrent, expectedChange),
+    projectedProfitLoss: reconciliationCheck(input.projectedProfitLoss, expectedProfitLoss),
+    impactDecomposition: {
+      ...reconciliationCheck(input.changeFromCurrent, impactTotal),
+      total: impactTotal,
+    },
+    // Delta is returned for display/audit context but intentionally excluded from impactTotal.
+    deltaEstimate: input.deltaEstimate !== null && Number.isFinite(input.deltaEstimate) ? input.deltaEstimate : null,
+  };
+}
+
+export function validationMessageParts(message: string): { path: string | null; reason: string } {
+  const separator = message.indexOf(':');
+  if (separator < 0) return { path: null, reason: message };
+  return {
+    path: message.slice(0, separator).trim() || null,
+    reason: message.slice(separator + 1).trim(),
+  };
+}
+
+export function validationFieldLabel(path: string): string {
+  const legMatch = /^legs\.(\d+)\.(.+)$/.exec(path);
+  if (legMatch) {
+    const legNumber = Number(legMatch[1]) + 1;
+    const labels: Record<string, string> = {
+      kind: 'Option Type',
+      side: 'Side',
+      quantity: 'Quantity',
+      strike: 'Strike Price',
+      expiration: 'Expiration',
+      entryPremium: 'Premium',
+      impliedVolatility: 'IV',
+      multiplier: 'Contract Multiplier',
+      delta: 'Delta',
+      theta: 'Theta/day',
+    };
+    return `Leg ${legNumber} ${labels[legMatch[2]] ?? legMatch[2]}`;
+  }
+
+  if (/^scenarios\.\d+\.targetPrice$/.test(path)) return 'Target Stock Price';
+  if (/^scenarios\.\d+\.valuationDate$/.test(path)) return 'Target Date';
+  if (path === 'symbol') return 'Stock / ETF';
+  if (path === 'underlyingPrice') return 'Current Stock Price';
+  if (path === 'legs') return 'Contract';
+  if (path === 'scenarios') return 'What-If';
+  return path;
+}
+
+export function displayValidationMessage(message: string): string {
+  const { path, reason } = validationMessageParts(message);
+  return path ? `${validationFieldLabel(path)}: ${reason}` : reason;
+}
+
+export function validationPathUnit(path: string): string {
+  if (/^legs\.\d+\.entryPremium$/.test(path)) return 'USD-per-share';
+  if (/^legs\.\d+\.impliedVolatility$/.test(path)) return 'engine-decimal';
+  if (/^legs\.\d+\.(delta|theta)$/.test(path)) return 'finite-number';
+  if (path === 'valuationDate' || /^legs\.\d+\.expiration$/.test(path) || /^scenarios\.\d+\.valuationDate$/.test(path)) return 'calendar-date';
+  return 'input';
 }

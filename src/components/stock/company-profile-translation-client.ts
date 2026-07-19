@@ -1,0 +1,99 @@
+'use client';
+
+import {
+  companyProfileTranslationResponseSchema,
+  type CompanyProfileTranslationRequest,
+} from '@/src/lib/stock-detail/api-schemas';
+
+type TranslationFetcher = (
+  url: string,
+  init: {
+    method: 'POST';
+    headers: { Accept: string; 'Content-Type': string };
+    body: string;
+    signal: AbortSignal;
+  },
+) => Promise<Response>;
+
+interface InflightEntry {
+  controller: AbortController;
+  promise: Promise<string>;
+  consumers: Set<symbol>;
+}
+
+export class CompanyProfileTranslationClient {
+  private readonly inflight = new Map<string, InflightEntry>();
+
+  constructor(private readonly fetcher: TranslationFetcher) {}
+
+  request(input: CompanyProfileTranslationRequest, signal: AbortSignal): Promise<string> {
+    const key = `${input.symbol}:${input.targetLanguage}:${input.sourceText}`;
+    let entry = this.inflight.get(key);
+    if (!entry) {
+      const controller = new AbortController();
+      const promise = this.fetcher('/api/translate/company-profile', {
+        method: 'POST',
+        headers: {
+          Accept: 'application/json',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(input),
+        signal: controller.signal,
+      }).then(async (response) => {
+        const parsed = companyProfileTranslationResponseSchema.safeParse(await response.json());
+        if (!parsed.success) throw new Error('Translation API returned an invalid response');
+        if (!response.ok || !parsed.data.data) {
+          throw new Error(parsed.data.error?.message ?? 'Translation is unavailable');
+        }
+        return parsed.data.data.translatedText;
+      }).finally(() => this.inflight.delete(key));
+      entry = { controller, promise, consumers: new Set() };
+      this.inflight.set(key, entry);
+    }
+
+    const activeEntry = entry;
+    const consumer = Symbol(key);
+    activeEntry.consumers.add(consumer);
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      const release = () => {
+        activeEntry.consumers.delete(consumer);
+        queueMicrotask(() => {
+          if (activeEntry.consumers.size === 0 && this.inflight.get(key) === activeEntry) {
+            activeEntry.controller.abort();
+          }
+        });
+      };
+      const abort = () => {
+        if (settled) return;
+        settled = true;
+        release();
+        reject(new DOMException('Request aborted', 'AbortError'));
+      };
+      if (signal.aborted) abort();
+      else signal.addEventListener('abort', abort, { once: true });
+      void activeEntry.promise.then(
+        (text) => {
+          if (!settled) {
+            settled = true;
+            signal.removeEventListener('abort', abort);
+            release();
+            resolve(text);
+          }
+        },
+        (error) => {
+          if (!settled) {
+            settled = true;
+            signal.removeEventListener('abort', abort);
+            release();
+            reject(error);
+          }
+        },
+      );
+    });
+  }
+}
+
+export const companyProfileTranslationClient = new CompanyProfileTranslationClient(
+  (url, init) => fetch(url, init),
+);

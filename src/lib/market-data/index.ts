@@ -16,8 +16,15 @@ let providerInstance: MarketDataProvider | undefined;
 let historicalProviderKey: string | undefined;
 let historicalService: HistoricalMarketDataService | undefined;
 
-function cachedResult<T>(result: ProviderResult<T>, stale: boolean): ProviderResult<T> {
-  return stale ? { ...result, freshness: { ...result.freshness, status: 'cached' } } : result;
+function cachedResult<T>(result: ProviderResult<T>, state: 'fresh' | 'cache' | 'stale'): ProviderResult<T> {
+  if (state === 'fresh') return result;
+  return {
+    ...result,
+    freshness: {
+      ...result.freshness,
+      status: state === 'stale' ? 'stale' : 'cached',
+    },
+  };
 }
 
 class CachedMarketDataProvider implements MarketDataProvider {
@@ -25,7 +32,7 @@ class CachedMarketDataProvider implements MarketDataProvider {
   constructor(private readonly source: MarketDataProvider) { this.id = source.id; }
   private async get<T>(key: string, operation: () => Promise<ProviderResult<T>>, freshMs: number, staleMs: number) {
     const result = await cache.resolve(key, operation, { freshMs, staleMs, errorMs: 30_000 });
-    return cachedResult(result.value, result.state === 'stale' || result.state === 'cache');
+    return cachedResult(result.value, result.state);
   }
   search(query: string): Promise<ProviderResult<SymbolSearchResult[]>> { return this.get(`search:${query}`, () => this.source.search(query), 3_600_000, 3_600_000); }
   getQuote(symbol: string): Promise<ProviderResult<Quote>> { return this.get(`quote:${symbol}`, () => this.source.getQuote(symbol), 60_000, 15 * 60_000); }

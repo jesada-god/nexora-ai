@@ -29,6 +29,7 @@ export const symbolSearchResultSchema = z.object({
 
 export const quoteSchema = z.object({
   symbol: z.string(),
+  currency: z.string().nullable().optional(),
   price: finiteNumber,
   open: nullableNumber,
   high: nullableNumber,
