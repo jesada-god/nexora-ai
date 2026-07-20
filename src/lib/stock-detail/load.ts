@@ -100,14 +100,16 @@ function historyResponse(
   };
 }
 
-function quoteFreshnessFromHistory(result: ProviderResult<HistoricalPrices>, latestDate: string): DataFreshness {
+function quoteFreshnessFromHistory(result: ProviderResult<HistoricalPrices>): DataFreshness {
   const status = result.freshness.status === 'realtime'
     ? 'end-of-day'
     : result.freshness.status;
   return {
     ...result.freshness,
     status,
-    asOf: new Date(`${latestDate}T00:00:00.000Z`).toISOString(),
+    // The latest daily bar provides a calendar date, not a quote instant.
+    // The date remains available as Quote.latestTradingDay.
+    asOf: null,
   };
 }
 
@@ -140,7 +142,7 @@ export function resolveQuoteResource(
           volume: latest.volume,
           latestTradingDay: latest.date,
         },
-        freshness: quoteFreshnessFromHistory(historyResult.value, latest.date),
+        freshness: quoteFreshnessFromHistory(historyResult.value),
         provider: historyResult.value.provider ?? defaultProvider,
         reason: failed.reason,
         error: failed.error,

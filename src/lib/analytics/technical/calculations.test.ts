@@ -113,4 +113,18 @@ describe('technical analysis contract', () => {
       expect(result.indicators.vwap).toMatchObject({ status: 'unavailable', reason: expect.stringContaining('session boundaries') });
     }
   });
+
+  it('keeps price indicators available but marks volume-dependent indicators unavailable on a missing-volume slot', () => {
+    const input = candles(60);
+    input[20] = { ...input[20], volume: null };
+    const result = calculateTechnicalAnalysis(input, context);
+    expect(result.status).toBe('available');
+    if (result.status === 'available') {
+      expect(result.indicators.sma.status).toBe('available');
+      expect(result.indicators.ema50.status).toBe('available');
+      expect(result.indicators.volume).toMatchObject({ status: 'unavailable', reason: expect.stringContaining('missing volume') });
+      expect(result.indicators.averageVolume).toMatchObject({ status: 'unavailable' });
+      expect(result.indicators.obv).toMatchObject({ status: 'unavailable' });
+    }
+  });
 });

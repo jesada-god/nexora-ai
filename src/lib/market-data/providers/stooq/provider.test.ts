@@ -49,9 +49,11 @@ describe('Stooq historical normalization', () => {
     throw new Error('Expected parser failure');
   });
 
-  it('rejects insufficient rows and never invents missing candles or volume', () => {
+  it('preserves a price time slot with unavailable volume instead of inventing or dropping it', () => {
     const csv = [header, row('2026-07-17'), row('2026-07-18', '10,12,9,11,')].join('\n');
-    expect(() => normalizeStooqHistory(csv, 'NVDA', 'max')).toThrowError(expect.objectContaining({ failureCode: 'FALLBACK_INSUFFICIENT_ROWS', validRows: 1 }));
+    const result = normalizeStooqHistory(csv, 'NVDA', 'max');
+    expect(result.prices).toHaveLength(2);
+    expect(result.prices[1]).toMatchObject({ date: '2026-07-18', close: 11, volume: null });
   });
 
   it('slices the full dataset to 3m and 1y after parsing', () => {

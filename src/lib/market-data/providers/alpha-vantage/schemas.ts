@@ -41,7 +41,7 @@ export const alphaVantageHistoryResponseSchema = z.object({
     '2. high': numericString,
     '3. low': numericString,
     '4. close': numericString,
-    '5. volume': numericString,
+    '5. volume': numericString.optional(),
   })),
 });
 

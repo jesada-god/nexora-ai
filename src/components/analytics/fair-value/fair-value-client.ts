@@ -1,6 +1,7 @@
 'use client';
 
 import type { FairValueResult } from '@/src/lib/analytics/valuation/types';
+import { fairValueResultSchema } from '@/src/lib/analytics/valuation/schemas';
 
 type FairValueFetcher = (url: string, init: { headers: { Accept: string }; signal: AbortSignal }) => Promise<Response>;
 type InflightEntry = { controller: AbortController; promise: Promise<FairValueResult>; consumers: Set<symbol> };
@@ -10,13 +11,9 @@ function normalizedSymbol(symbol: string): string {
 }
 
 function validatePayload(value: unknown): FairValueResult {
-  if (!value || typeof value !== 'object') throw new Error('Fair Value API returned an invalid response');
-  const candidate = value as Partial<FairValueResult>;
-  if (candidate.status !== 'available' && candidate.status !== 'unavailable') throw new Error('Fair Value API returned an invalid status');
-  if (candidate.status === 'unavailable' && !['provider-unavailable', 'insufficient-data', 'calculation-failure'].includes(candidate.failureKind ?? '')) {
-    throw new Error('Fair Value API returned an invalid failure kind');
-  }
-  return candidate as FairValueResult;
+  const parsed = fairValueResultSchema.safeParse(value);
+  if (!parsed.success) throw new Error('Fair Value API returned an invalid response');
+  return parsed.data as FairValueResult;
 }
 
 /** Follows the stock-history client pattern: shared in-flight work with consumer-aware abort. */
@@ -32,11 +29,12 @@ export class FairValueRequestClient {
       const controller = new AbortController();
       const promise = this.fetcher(`/api/analytics/fair-value/${encodeURIComponent(symbol)}`, { headers: { Accept: 'application/json' }, signal: controller.signal })
         .then(async (response) => {
+          const payload = await response.json() as { data?: unknown };
+          if (payload.data) return validatePayload(payload.data);
           if (!response.ok) {
             if (response.status === 429) throw new Error('ผู้ให้บริการจำกัดคำขอชั่วคราว กรุณาลองใหม่ภายหลัง');
             throw new Error('ไม่สามารถโหลด Fair Value ได้');
           }
-          const payload = await response.json() as { data?: unknown };
           return validatePayload(payload.data);
         })
         .finally(() => this.inflight.delete(symbol));

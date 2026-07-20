@@ -21,6 +21,8 @@ interface InflightEntry {
   consumers: Set<symbol>;
 }
 
+export const COMPANY_PROFILE_TRANSLATION_TIMEOUT_MS = 12_000;
+
 async function sha256(value: string): Promise<string> {
   const bytes = new TextEncoder().encode(value);
   const digest = await crypto.subtle.digest('SHA-256', bytes);
@@ -31,7 +33,10 @@ export class CompanyProfileTranslationClient {
   private readonly inflight = new Map<string, InflightEntry>();
   private readonly completed = new Map<string, string>();
 
-  constructor(private readonly fetcher: TranslationFetcher) {}
+  constructor(
+    private readonly fetcher: TranslationFetcher,
+    private readonly timeoutMs = COMPANY_PROFILE_TRANSLATION_TIMEOUT_MS,
+  ) {}
 
   async request(input: CompanyProfileTranslationRequest, signal: AbortSignal): Promise<string> {
     const sourceHash = await sha256(input.sourceText);
@@ -44,7 +49,8 @@ export class CompanyProfileTranslationClient {
     let entry = this.inflight.get(key);
     if (!entry) {
       const controller = new AbortController();
-      const promise = this.fetcher('/api/translate/company-profile', {
+      let timeoutId: ReturnType<typeof setTimeout> | undefined;
+      const request = this.fetcher('/api/translate/company-profile', {
         method: 'POST',
         headers: {
           Accept: 'application/json',
@@ -52,7 +58,14 @@ export class CompanyProfileTranslationClient {
         },
         body: JSON.stringify(input),
         signal: controller.signal,
-      }).then(async (response) => {
+      });
+      const timeout = new Promise<never>((_resolve, reject) => {
+        timeoutId = setTimeout(() => {
+          controller.abort();
+          reject(new Error('Translation request timed out'));
+        }, this.timeoutMs);
+      });
+      const promise = Promise.race([request, timeout]).then(async (response) => {
         const parsed = companyProfileTranslationResponseSchema.safeParse(await response.json());
         if (!parsed.success) throw new Error('Translation API returned an invalid response');
         if (!response.ok || !parsed.data.data) {
@@ -62,7 +75,10 @@ export class CompanyProfileTranslationClient {
       }).then((text) => {
         this.completed.set(key, text);
         return text;
-      }).finally(() => this.inflight.delete(key));
+      }).finally(() => {
+        if (timeoutId !== undefined) clearTimeout(timeoutId);
+        this.inflight.delete(key);
+      });
       entry = { controller, promise, consumers: new Set() };
       this.inflight.set(key, entry);
     }

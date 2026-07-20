@@ -1,5 +1,5 @@
 import 'server-only';
-import { NextResponse } from 'next/server';
+import { NextResponse, type NextRequest } from 'next/server';
 import { ZodError } from 'zod';
 import { MARKET_DATA_PROVIDER_ID } from './index';
 import { fromZodError, MarketDataError } from './errors';
@@ -61,6 +61,37 @@ export async function marketDataResponse<T>(
     }
     return response;
   }
+}
+
+export async function observedMarketDataResponse<T>(
+  request: Pick<NextRequest, 'headers'>,
+  context: { route: string; symbol: string | null },
+  operation: () => Promise<ProviderResult<T>>,
+): Promise<NextResponse<MarketDataEnvelope<T>>> {
+  const startedAt = Date.now();
+  const suppliedRequestId = request.headers.get('x-request-id');
+  const requestId = suppliedRequestId && /^[A-Za-z0-9._-]{1,80}$/.test(suppliedRequestId)
+    ? suppliedRequestId
+    : crypto.randomUUID();
+  const resolution: { value: ProviderResult<T> | null } = { value: null };
+  const response = await marketDataResponse(async () => {
+    resolution.value = await operation();
+    return resolution.value;
+  });
+  const result = resolution.value;
+  const freshnessStatus = result?.freshness.status;
+  const cacheStatus = freshnessStatus === 'cached' || freshnessStatus === 'stale'
+    ? freshnessStatus
+    : result ? 'provider-or-fresh-cache' : 'none';
+  console.info(JSON.stringify({
+    event: 'market_data_request', requestId, route: context.route,
+    symbol: context.symbol, provider: result?.provider ?? null,
+    durationMs: Date.now() - startedAt, cacheStatus,
+    resultStatus: response.ok ? 'success' : 'error',
+    errorCode: response.ok ? null : `http-${response.status}`,
+  }));
+  response.headers.set('X-Request-Id', requestId);
+  return response;
 }
 
 export async function companyProfileMarketDataResponse(

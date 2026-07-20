@@ -1,15 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
-  requireAnalyticsUser: vi.fn(),
   checkAnalyticsRateLimit: vi.fn(),
   loadFairValue: vi.fn(),
 }));
 
 vi.mock('server-only', () => ({}));
-vi.mock('@/src/lib/analytics/api-auth', () => ({
-  requireAnalyticsUser: mocks.requireAnalyticsUser,
-}));
 vi.mock('@/src/lib/analytics/rate-limit', () => ({
   checkAnalyticsRateLimit: mocks.checkAnalyticsRateLimit,
 }));
@@ -24,9 +20,12 @@ const unavailable = {
   failureKind: 'insufficient-data' as const,
   symbol: 'AAPL',
   currency: 'USD',
+  provider: 'alpha-vantage',
   reason: 'Data Sufficiency Gate rejected the inputs',
+  missingFields: ['historicalFinancials>=3Periods'],
   missingInputs: ['historicalFinancials>=3Periods'],
   staleInputs: [],
+  asOf: '2026-07-20T00:00:00.000Z',
   calculatedAt: '2026-07-20T00:00:00.000Z',
   methodologyVersion: 'nexora-fv-v1' as const,
   limitations: [],
@@ -42,7 +41,6 @@ function request() {
 describe('GET /api/analytics/fair-value/[symbol]', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mocks.requireAnalyticsUser.mockResolvedValue({ user: { id: 'user-1' } });
     mocks.checkAnalyticsRateLimit.mockReturnValue({ allowed: true, retryAfterSeconds: 0 });
     mocks.loadFairValue.mockResolvedValue(unavailable);
   });
@@ -52,17 +50,41 @@ describe('GET /api/analytics/fair-value/[symbol]', () => {
     vi.restoreAllMocks();
   });
 
-  it('returns a typed Fair Value result when enabled', async () => {
+  it('allows an anonymous request and returns a typed unavailable result with missingFields', async () => {
     vi.stubEnv('FEATURE_FAIR_VALUE', 'true');
 
     const response = await request();
 
+    expect(response.status).not.toBe(401);
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toEqual({ data: unavailable });
     expect(mocks.loadFairValue).toHaveBeenCalledWith('AAPL');
+    expect(mocks.checkAnalyticsRateLimit).toHaveBeenCalledWith('fair-value:anonymous', 10);
   });
 
-  it('stops before auth/provider work when explicitly disabled', async () => {
+  it('returns a structured rate-limited unavailable response', async () => {
+    vi.stubEnv('FEATURE_FAIR_VALUE', 'true');
+    mocks.checkAnalyticsRateLimit.mockReturnValue({ allowed: false, retryAfterSeconds: 30 });
+
+    const response = await request();
+    const body = await response.json();
+
+    expect(response.status).toBe(429);
+    expect(response.headers.get('Retry-After')).toBe('30');
+    expect(body.data).toMatchObject({
+      status: 'unavailable',
+      failureKind: 'rate-limited',
+      symbol: 'AAPL',
+      provider: null,
+      missingFields: [],
+      reason: expect.any(String),
+      asOf: expect.any(String),
+      methodologyVersion: 'nexora-fv-v1',
+    });
+    expect(mocks.loadFairValue).not.toHaveBeenCalled();
+  });
+
+  it('stops before rate-limit/provider work when explicitly disabled', async () => {
     vi.stubEnv('FEATURE_FAIR_VALUE', 'false');
     const log = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
 
@@ -76,7 +98,7 @@ describe('GET /api/analytics/fair-value/[symbol]', () => {
         message: 'Fair Value feature is disabled by FEATURE_FAIR_VALUE=false',
       },
     });
-    expect(mocks.requireAnalyticsUser).not.toHaveBeenCalled();
+    expect(mocks.checkAnalyticsRateLimit).not.toHaveBeenCalled();
     expect(mocks.loadFairValue).not.toHaveBeenCalled();
     expect(entry).toEqual({
       event: 'fair_value_evaluation',

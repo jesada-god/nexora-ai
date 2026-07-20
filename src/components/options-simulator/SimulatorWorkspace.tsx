@@ -13,7 +13,9 @@ import { useToast } from '@/src/components/ui/Toast';
 import { fetchFxRate } from '@/src/lib/market-data/fx/client';
 import type { FxQuote } from '@/src/lib/market-data/fx/types';
 import type { MarketDataEnvelope, Quote, SymbolSearchResult } from '@/src/lib/market-data/types';
+import { optionsChainSchema } from '@/src/lib/market-data/options/contracts';
 import { boundedExpirationProfitFloor } from '@/src/lib/options-simulator/monte-carlo';
+import { importOptionContract } from '@/src/lib/options-simulator/contract-import';
 import { detectStrategy, portfolioProfitLossBasis, valuePortfolio } from '@/src/lib/options-simulator/portfolio';
 import { priceOption } from '@/src/lib/options-simulator/pricing';
 import type { CallPutScenarioScore } from '@/src/lib/options-simulator/scenario-score';
@@ -163,6 +165,7 @@ export default function SimulatorWorkspace({ initialType }: { initialType: Simul
   const saveInFlight = useRef(false);
   const lastSaveMode = useRef<'save' | 'copy'>('save');
   const hydrated = useRef(false);
+  const contractImportHandled = useRef(false);
   const analysisWorkspaceValue = useMemo(() => (
     selectedLegId === 'portfolio' || !workspace.legs.some((leg) => leg.id === selectedLegId)
       ? workspace
@@ -213,6 +216,10 @@ export default function SimulatorWorkspace({ initialType }: { initialType: Simul
   }, []);
   useEffect(() => {
     const timer = window.setTimeout(() => {
+      if (new URLSearchParams(window.location.search).has('contract')) {
+        hydrated.current = true;
+        return;
+      }
       const draft = localStorage.getItem('nexora-options-simulator-draft-v1');
       if (draft) try {
         const parsed = normalizeUiWorkspace(JSON.parse(draft) as SimulationWorkspace);
@@ -222,6 +229,41 @@ export default function SimulatorWorkspace({ initialType }: { initialType: Simul
     }, 0);
     return () => window.clearTimeout(timer);
   }, []);
+  useEffect(() => {
+    if (contractImportHandled.current) return;
+    const params = new URLSearchParams(window.location.search);
+    const symbol = params.get('symbol');
+    const expiration = params.get('expiration');
+    const contractSymbol = params.get('contract');
+    if (!symbol || !expiration || !contractSymbol) return;
+    contractImportHandled.current = true;
+    const controller = new AbortController();
+    void (async () => {
+      try {
+        const query = new URLSearchParams({ symbol, expiration });
+        const response = await fetch(`/api/market/options/chain?${query.toString()}`, { signal: controller.signal, headers: { Accept: 'application/json' } });
+        const payload = await response.json() as { data: unknown; error?: { code?: string } };
+        if (!response.ok) throw new Error(`นำเข้าสัญญาไม่ได้ (${payload.error?.code ?? response.status})`);
+        const parsed = optionsChainSchema.safeParse(payload.data);
+        if (!parsed.success) throw new Error('Options chain response ไม่ผ่าน schema validation');
+        let imported = false;
+        setWorkspace((current) => {
+          const next = importOptionContract(current, parsed.data, contractSymbol);
+          imported = Boolean(next);
+          return next ? normalizeUiWorkspace(next) : current;
+        });
+        if (!imported) throw new Error('ไม่พบ contract identity ที่เลือกใน chain snapshot นี้');
+        setSelectedLegId('portfolio');
+        setValuation(null); setMc(null); setCallPutScore(null);
+        setSaveStatus('Unsaved'); setTab('Inputs');
+        addToast({ title: 'นำเข้าสัญญาจริงแล้ว', message: `${contractSymbol} · ${parsed.data.provider}`, type: 'success' });
+      } catch (cause) {
+        if (controller.signal.aborted) return;
+        setOperationError(cause instanceof Error ? cause.message : 'นำเข้าสัญญาจริงไม่ได้');
+      }
+    })();
+    return () => controller.abort();
+  }, [addToast]);
   useEffect(() => {
     if (!hydrated.current || saveStatus !== 'Unsaved') return;
     const timer = setTimeout(() => { localStorage.setItem('nexora-options-simulator-draft-v1', JSON.stringify(workspace)); if (!navigator.onLine) setSaveStatus('Offline draft'); }, 800);
@@ -261,7 +303,12 @@ export default function SimulatorWorkspace({ initialType }: { initialType: Simul
   }
   function choose(asset: SymbolSearchResult) { workspace.symbol && workspace.symbol !== asset.symbol ? setPending(asset) : void setSymbol(asset); }
   function legChange(index: number, patch: Partial<OptionLeg>) {
-    const legs = workspace.legs.map((item, itemIndex) => itemIndex === index ? { ...item, ...patch } : item);
+    const legs = workspace.legs.map((item, itemIndex) => itemIndex === index ? {
+      ...item,
+      ...patch,
+      ...(item.inputMode === 'provider' ? { inputMode: 'custom' as const } : {}),
+      ...('entryPremium' in patch ? { premiumSource: 'manual' as const } : {}),
+    } : item);
     const changedLeg = legs[index];
     const syncsSelectedContract = (selectedLegId === 'portfolio' && index === 0) || workspace.legs[index]?.id === selectedLegId;
     const dte = Math.max(1, calendarDaysBetween(workspace.valuationDate, changedLeg.expiration));
@@ -307,6 +354,7 @@ export default function SimulatorWorkspace({ initialType }: { initialType: Simul
   }
   function analyze() {
     if (!validate()) return;
+    if (analysisWorkspace().legs.some((leg) => leg.contractStatus === 'stale') && !confirm('ข้อมูลสัญญาที่นำเข้ามีสถานะ stale ต้องการคำนวณต่อด้วยสมมติฐานนี้หรือไม่?')) return;
     if (tab === 'Monte Carlo Simulation') return runMonteCarlo();
     const result = valuePortfolio(analysisWorkspace(), workspace.scenarios[0]);
     hasResults.current = true; setResultsOutdated(false); setInputsOutdated(false); setScenarioDirty(false); setValuation(result); setWorkspace((current) => ({ ...current, resultSnapshot: { ...current.resultSnapshot, whatIf: result } })); setSaveStatus('Unsaved');
@@ -441,6 +489,7 @@ export default function SimulatorWorkspace({ initialType }: { initialType: Simul
         <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3"><div><Numeric title="Target Stock Price" placeholder="เช่น 130" helper="ราคาที่ต้องการตรวจสอบว่ามีโอกาสไปถึงมากน้อยเพียงใด" min={0.0000001} externalError={fieldError('scenarios.0.targetPrice')} validationPath="scenarios.0.targetPrice" value={scenario.targetPrice} onChange={(value) => scenarioChange(0, { targetPrice: value })} /><p className="mt-1 text-xs text-slate-400">ต่างจาก Current Price {workspace.underlyingPrice ? `${((scenario.targetPrice / workspace.underlyingPrice - 1) * 100).toFixed(2)}%` : 'N/A'}</p></div>
           <div><FieldLabel title="Target Date" helper="วันที่ต้องการตรวจสอบโอกาสที่ราคาจะไปถึงเป้าหมาย" /><div className="relative"><Input className="cursor-pointer pr-9" type="date" aria-label="Monte Carlo Target Date" min={minimumTargetDate} max={earliestExpiration} value={scenario.valuationDate} data-validation-path="scenarios.0.valuationDate" onChange={(event) => scenarioChange(0, { valuationDate: clampTargetDate(event.target.value, workspace.valuationDate, earliestExpiration) })} /><CalendarDays aria-hidden="true" size={16} className="pointer-events-none absolute right-3 top-3 text-slate-500" /></div><p className="mt-2 text-xs text-slate-400">เหลือ {Math.max(0, calendarDaysBetween(workspace.valuationDate, scenario.valuationDate))} วัน · ไม่เกิน {earliestExpiration}</p>{dateIssue && <p role="alert" className="mt-1 text-xs text-red-300">{dateIssue}</p>}{analysisSelection === 'portfolio' && new Set(scopedLegs.map((leg) => leg.expiration)).size > 1 && <p className="mt-1 text-xs text-amber-300">ทั้งพอร์ตใช้วันหมดอายุที่เร็วที่สุดเป็นขอบเขต</p>}</div>
           <PercentInput title="IV (%)" placeholder="เช่น 114.50" helper="กรอกเป็นเปอร์เซ็นต์ เช่น 114.50 = 114.50%" value={engineVolatilityToPercent(workspace.monteCarlo.volatility)} onChange={(value) => monteCarloChange({ volatility: percentVolatilityToEngine(value) })} />
+          <div><FieldLabel title="Pricing / Forecast Mode" helper="Forecast ใช้ drift ที่เปิดเผย; Risk-neutral ใช้ rate สำหรับความสอดคล้องด้าน pricing และไม่ใช่โอกาสจริง" /><select aria-label="Pricing or forecast mode" className={select} value={workspace.monteCarlo.driftMode ?? 'forecast'} onChange={(event) => monteCarloChange({ driftMode: event.target.value as 'forecast' | 'risk-neutral' })}><option value="forecast">Forecast probability</option><option value="risk-neutral">Risk-neutral probability</option></select></div>
           <div><FieldLabel title="Paths" helper="จำนวนรอบจำลอง ยิ่งมากผลยิ่งนิ่ง แต่ใช้เวลาคำนวณนานขึ้น" /><select aria-label="Paths" className={select} value={workspace.monteCarlo.paths} data-validation-path="monteCarlo.paths" onChange={(event) => monteCarloChange({ paths: Number(event.target.value) })}>{BASIC_PATH_OPTIONS.map((value) => <option key={value} value={value}>{value.toLocaleString()}</option>)}</select>{fieldError('monteCarlo.paths') && <p role="alert" className="mt-1 text-xs text-red-300">{fieldError('monteCarlo.paths')}</p>}</div>
           <Metric title="Delta (ทั้งสถานะ)" value={`${formatResultMoney(sensitivity.delta, 'USD', null, true)} ต่อราคาหุ้นเปลี่ยน $1 USD`} helper="ใช้แสดง sensitivity ของทั้งสถานะเท่านั้น ไม่ใช้สร้าง GBM paths" /><Metric title="Theta/day (ทั้งสถานะ)" value={`${formatResultMoney(sensitivity.theta, 'USD', null, true)}/วัน`} helper="ค่าประมาณ Time Decay ของทั้งสถานะต่อหนึ่งวัน" /><Metric title="Days to Expiration" value={`${monteCarloDte} วัน`} helper="ดึงจาก Expiration ใน Inputs" /><Metric title="Premium Paid" value={formatResultMoney(scopedLegs.reduce((sum, leg) => sum + leg.entryPremium * leg.quantity * leg.multiplier + leg.fees, 0), 'USD', null)} helper="ดึงจาก Inputs" /></div>
         <p className="mt-4 text-xs text-slate-500">ระบบใช้ Random Seed, drift, rates, time steps และ policy เดิมภายในโดยไม่เปิดเป็นช่องกรอก</p>
@@ -452,17 +501,18 @@ export default function SimulatorWorkspace({ initialType }: { initialType: Simul
       {tab === 'Monte Carlo Simulation' && mc && <MonteCarloHighlights workspace={analysisWorkspace()} result={mc} scenarioScore={callPutScore} currency={resultCurrency} fxQuote={fxQuote} fxState={fxState} onCurrencyChange={setResultCurrency} />}
       {tab === 'Inputs' && <section className={box} data-testid="option-legs-form"><div className="grid gap-3 md:grid-cols-3"><Field title="ชื่อแบบจำลอง" placeholder="เช่น Earnings Call" helper="ชื่อสำหรับค้นหาแบบจำลองภายหลัง" value={workspace.name} onChange={(value) => change({ name: value })} /><Field title="Strategy" placeholder="เช่น Long Call" helper="ชื่อกลยุทธ์ที่ตรวจจับจาก Option Legs" value={workspace.strategyType} onChange={(value) => change({ strategyType: value })} /><div><FieldLabel title="Valuation Date" helper="วันที่ฐานสำหรับการคำนวณ" /><Input type="date" aria-label="Valuation Date" value={workspace.valuationDate} onChange={(event) => { if (hasResults.current) setInputsOutdated(true); change({ valuationDate: event.target.value, scenarios: workspace.scenarios.map((item, index) => index === 0 ? { ...item, valuationDate: clampTargetDate(item.valuationDate, event.target.value, workspace.legs.map((leg) => leg.expiration).sort()[0] ?? item.valuationDate) } : item) }); }} /></div></div>
         <div className="my-4"><h2 className="text-lg font-bold">2. Option Legs</h2><p className="text-xs text-slate-400">สร้างและแก้ไขข้อมูลสัญญาที่นี่เพียงจุดเดียว</p></div>
-        <div className="space-y-4">{workspace.legs.map((leg, index) => { const resolved = legSensitivity(workspace, leg); return <article key={leg.id} className="overflow-hidden rounded-2xl border border-slate-700 bg-slate-950/20 p-4"><div className="mb-4 flex items-start justify-between gap-3"><div className="flex flex-wrap items-center gap-2"><strong>Leg {index + 1}</strong><span className="rounded-full bg-violet-500/10 px-2 py-1 text-[10px] font-semibold text-violet-300">{leg.kind === 'call' ? 'Call' : 'Put'}</span><span className={`rounded-full px-2 py-1 text-[10px] font-semibold ${leg.side === 'buy' ? 'bg-emerald-500/10 text-emerald-300' : 'bg-amber-500/10 text-amber-300'}`}>{leg.side === 'buy' ? 'Buy' : 'Sell'}</span></div><div className="flex shrink-0 gap-1"><Button className="min-h-11 px-3" variant="ghost" aria-label={`ทำสำเนา Leg ${index + 1}`} onClick={() => change({ legs: [...workspace.legs.slice(0, index + 1), { ...leg, id: uid() }, ...workspace.legs.slice(index + 1)] })}><Copy size={15} /><span className="sr-only sm:not-sr-only sm:ml-2">Duplicate</span></Button><Button className="min-h-11 min-w-11" variant="danger" aria-label={`ลบ Leg ${index + 1}`} disabled={workspace.legs.length === 1} onClick={() => change({ legs: workspace.legs.filter((_, i) => i !== index) })}><Trash2 size={15} /></Button></div></div>
+        <div className="space-y-4">{workspace.legs.map((leg, index) => { const resolved = legSensitivity(workspace, leg); return <article key={leg.id} className="overflow-hidden rounded-2xl border border-slate-700 bg-slate-950/20 p-4"><div className="mb-4 flex items-start justify-between gap-3"><div className="flex flex-wrap items-center gap-2"><strong>Leg {index + 1}</strong><span className="rounded-full bg-violet-500/10 px-2 py-1 text-[10px] font-semibold text-violet-300">{leg.kind === 'call' ? 'Call' : 'Put'}</span><span className={`rounded-full px-2 py-1 text-[10px] font-semibold ${leg.side === 'buy' ? 'bg-emerald-500/10 text-emerald-300' : 'bg-amber-500/10 text-amber-300'}`}>{leg.side === 'buy' ? 'Buy' : 'Sell'}</span>{leg.inputMode && <span className={`rounded-full px-2 py-1 text-[10px] font-semibold ${leg.inputMode === 'provider' ? 'bg-sky-500/10 text-sky-300' : 'bg-amber-500/10 text-amber-300'}`}>{leg.inputMode === 'provider' ? 'ข้อมูลจริง' : 'กำหนดเอง'}</span>}</div><div className="flex shrink-0 gap-1"><Button className="min-h-11 px-3" variant="ghost" aria-label={`ทำสำเนา Leg ${index + 1}`} onClick={() => change({ legs: [...workspace.legs.slice(0, index + 1), { ...leg, id: uid(), inputMode: 'custom' }, ...workspace.legs.slice(index + 1)] })}><Copy size={15} /><span className="sr-only sm:not-sr-only sm:ml-2">Duplicate</span></Button><Button className="min-h-11 min-w-11" variant="danger" aria-label={`ลบ Leg ${index + 1}`} disabled={workspace.legs.length === 1} onClick={() => change({ legs: workspace.legs.filter((_, i) => i !== index) })}><Trash2 size={15} /></Button></div></div>
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4"><Choice title="Option Type" value={leg.kind} options={['call', 'put']} optionLabels={{ call: 'Call', put: 'Put' }} validationPath={`legs.${index}.kind`} onChange={(value) => legChange(index, { kind: value as OptionLeg['kind'] })} /><Choice title="Side" value={leg.side} options={['buy', 'sell']} optionLabels={{ buy: 'Buy', sell: 'Sell' }} validationPath={`legs.${index}.side`} onChange={(value) => legChange(index, { side: value as OptionLeg['side'] })} /><Numeric title="Quantity" placeholder="เช่น 1" min={1} integer helper="จำนวนสัญญาที่ต้องการวิเคราะห์" externalError={fieldError(`legs.${index}.quantity`)} validationPath={`legs.${index}.quantity`} value={leg.quantity} onChange={(value) => legChange(index, { quantity: value })} /><Numeric title="Strike Price" placeholder="เช่น 120" min={0.0000001} helper="ราคาใช้สิทธิตามสัญญา" externalError={fieldError(`legs.${index}.strike`)} validationPath={`legs.${index}.strike`} value={leg.strike} onChange={(value) => legChange(index, { strike: value })} /></div>
           <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4"><div><FieldLabel title="Expiration" helper="วันหมดอายุของสัญญา" /><Input type="date" aria-label={`Leg ${index + 1} Expiration`} min={addCalendarDays(workspace.valuationDate, 1)} value={leg.expiration} data-validation-path={`legs.${index}.expiration`} onChange={(event) => legChange(index, { expiration: event.target.value })} />{fieldError(`legs.${index}.expiration`) && <p role="alert" className="mt-1 text-xs text-red-300">{fieldError(`legs.${index}.expiration`)}</p>}</div><PremiumInput value={leg.entryPremium} helper="ต้นทุนต่อหุ้น เช่น $1.40" externalError={fieldError(`legs.${index}.entryPremium`)} validationPath={`legs.${index}.entryPremium`} onChange={(value) => legChange(index, { entryPremium: value })} /><PercentInput title="IV (%)" value={engineVolatilityToPercent(leg.impliedVolatility)} placeholder="เช่น 114.50" helper="กรอกเป็นเปอร์เซ็นต์ เช่น 114.50 = 114.50%" externalError={fieldError(`legs.${index}.impliedVolatility`)} validationPath={`legs.${index}.impliedVolatility`} onChange={(value) => legChange(index, { impliedVolatility: percentVolatilityToEngine(value) })} /><Numeric title="Contract Multiplier" placeholder="เช่น 100" min={0.0000001} helper="หุ้นสหรัฐฯ ส่วนใหญ่ 1 สัญญา = 100 หุ้น" externalError={fieldError(`legs.${index}.multiplier`)} validationPath={`legs.${index}.multiplier`} value={leg.multiplier} onChange={(value) => legChange(index, { multiplier: value })} /></div>
           <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:max-w-[50%]"><GreekInput title="Delta" placeholder="เช่น 0.35" helper="Premium เปลี่ยนโดยประมาณเมื่อหุ้นขยับ $1" value={leg.delta ?? null} fallbackValue={resolved.delta} source={leg.deltaSource ?? (leg.delta == null ? 'model' : 'manual')} timestamp={leg.deltaTimestamp} min={-1} max={1} externalError={fieldError(`legs.${index}.delta`)} validationPath={`legs.${index}.delta`} onChange={(value) => legChange(index, { delta: value, deltaSource: value === null ? 'model' : 'manual', deltaTimestamp: null })} /><GreekInput title="Theta/day" placeholder="เช่น -0.04" helper="มูลค่าที่ลดลงโดยประมาณต่อวันจาก Time Decay" value={leg.theta ?? null} fallbackValue={resolved.theta} source={leg.thetaSource ?? (leg.theta == null ? 'model' : 'manual')} timestamp={leg.thetaTimestamp} externalError={fieldError(`legs.${index}.theta`)} validationPath={`legs.${index}.theta`} onChange={(value) => legChange(index, { theta: value, thetaSource: value === null ? 'model' : 'manual', thetaTimestamp: null })} /></div>
+          {leg.contractSymbol && <p className={`mt-3 rounded-lg p-2 text-xs ${leg.contractStatus === 'stale' ? 'bg-amber-500/10 text-amber-200' : 'bg-sky-500/5 text-slate-400'}`}>{leg.contractSymbol} · premium source {leg.premiumSource ?? 'manual'} · {leg.contractProvider ?? 'provider unavailable'} · {leg.contractAsOf ? new Date(leg.contractAsOf).toLocaleString() : 'asOf unavailable'} · {leg.contractStatus ?? 'status unavailable'}{leg.contractStatus === 'stale' ? ' · ระบบจะแจ้งเตือนอีกครั้งก่อนคำนวณ' : ''}</p>}
         </article>; })}</div><Button className="mt-4 min-h-11 w-full border-dashed" variant="outline" onClick={() => change({ legs: [...workspace.legs, newLeg()] })}><Plus size={16} className="mr-2" />เพิ่ม Option Leg</Button></section>}
       {validationErrors.length > 0 && <section role="alert" data-testid="validation-warning" className="rounded-xl border border-red-500/30 bg-red-500/10 p-4"><strong>กรุณาตรวจสอบข้อมูลก่อนคำนวณ:</strong><ul className="list-disc pl-5 text-sm">{[...new Set(validationErrors.map(displayValidationMessage))].map((error) => <li key={error}>{error}</li>)}</ul></section>}
       {operationError && <section role="alert" className="rounded-xl border border-red-500/30 bg-red-500/10 p-4 text-sm">{operationError}</section>}
       {tab === 'Payoff' && valuation && <Payoff valuation={valuation} spot={workspace.underlyingPrice} currency={resultCurrency} usdThbRate={fxQuote ? Number(fxQuote.rate) : null} />}
       {tab === 'Greeks' && valuation && <section className={box}><div className="grid grid-cols-2 gap-3 md:grid-cols-5">{Object.entries(valuation.greeks).map(([key, value]) => <Metric key={key} title={key === 'delta' ? 'Delta (ทั้งสถานะ)' : key[0].toUpperCase() + key.slice(1)} value={key === 'delta' ? `${formatResultMoney(value, 'USD', null, true)} ต่อราคาหุ้นเปลี่ยน $1 USD` : formatResultNumber(value, 4)} helper={greekHelpers[key]} />)}</div></section>}
       <section className={box}><div className="mb-3 flex flex-wrap justify-between gap-2"><h2 className="text-lg font-bold">แบบจำลองของฉัน</h2><div className="flex gap-2"><Input className="w-56" value={savedQuery} onChange={(event) => setSavedQuery(event.target.value)} placeholder="ค้นหาชื่อ Symbol หรือ Strategy" /><Button size="sm" variant="outline" onClick={() => { if (saveStatus === 'Saved' || confirm('Discard unsaved inputs?')) setWorkspace(fresh(initialType)); }}><Plus size={14} /> สร้างใหม่</Button><Button size="sm" variant="danger" onClick={() => { if (confirm('Reset the entire current simulation?')) { setWorkspace(fresh(initialType)); setSaveStatus('Unsaved'); } }}>ล้างข้อมูล</Button></div></div>{savedState === 'loading' ? <div className="h-20 animate-pulse rounded bg-slate-800" /> : savedState === 'error' ? <Button onClick={() => void loadSaved()}>ลองใหม่</Button> : saved.length === 0 ? <p className="text-sm text-slate-400">ยังไม่มีแบบจำลองบนเซิร์ฟเวอร์ เข้าสู่ระบบเพื่อบันทึก โดยระบบจะเก็บฉบับร่างไว้ในเครื่อง</p> : <div className="grid gap-3 md:grid-cols-2">{saved.filter((item) => `${item.name} ${item.symbol} ${item.strategyType} ${item.simulationType}`.toLowerCase().includes(savedQuery.toLowerCase())).map((item) => <article key={item.id} className="rounded-xl border border-slate-700 p-3"><strong>{item.name}</strong><p className="text-xs text-slate-400">{item.symbol} · {item.strategyType} · {item.simulationType} · {new Date(item.updatedAt).toLocaleString()} · {item.dataStatus}</p><div className="mt-2 flex gap-2"><Button size="sm" onClick={() => { if (saveStatus === 'Saved' || confirm('Discard unsaved inputs?')) { setWorkspace(normalizeUiWorkspace(item)); setValuation(item.resultSnapshot?.whatIf ?? null); setMc(item.resultSnapshot?.monteCarlo ?? null); setCallPutScore(null); setSaveStatus('Saved'); } }}>เปิด</Button><Button size="sm" variant="outline" onClick={() => { setWorkspace(normalizeUiWorkspace({ ...item, id: undefined, updatedAt: undefined, name: `${item.name} (copy)`, legs: item.legs.map((leg) => ({ ...leg, id: uid() })), scenarios: item.scenarios.map((scenario) => ({ ...scenario, id: uid() })) })); setSaveStatus('Unsaved'); }}>ทำสำเนา</Button><Button size="sm" variant="danger" onClick={() => void remove(item)}>ลบ</Button></div></article>)}</div>}</section>
-      <p className="rounded-xl border border-slate-800 p-4 text-xs text-slate-500"><strong>Methodology:</strong> Black‑Scholes prices European zero-dividend options. A 200-step binomial tree prices American/dividend cases; Greeks use finite differences. GBM assumes constant user-entered drift/volatility and log-normal returns. Liquidity, spreads, assignment, taxes and volatility smile are excluded. Results are analysis, not advice or a guarantee.</p>
+      <p className="rounded-xl border border-slate-800 p-4 text-xs text-slate-500"><strong>Methodology:</strong> Black‑Scholes with continuous dividend yield prices European options. A 200-step binomial tree prices American options; its Greeks use finite differences. GBM assumes constant disclosed drift/volatility and log-normal returns. Liquidity and spreads affect confidence but the pricing model still excludes assignment, taxes and volatility smile. Results are analysis, not advice or a guarantee.</p>
     </main>{(tab === 'What-If Analysis' || tab === 'Monte Carlo Simulation') && <div data-testid="mobile-calculate-action" className="fixed inset-x-0 bottom-[calc(4rem+env(safe-area-inset-bottom))] z-40 border-t border-slate-800 bg-slate-950/95 p-3 backdrop-blur md:hidden"><Button className="min-h-11 w-full" disabled={running} aria-describedby={calculateDisabledReason ? 'mobile-calculate-disabled-reason' : undefined} onClick={analyze}>{calculateLabel}</Button>{calculateDisabledReason && <p id="mobile-calculate-disabled-reason" className="mt-1 text-center text-xs text-amber-300">{calculateDisabledReason}</p>}</div>}
     <Modal isOpen={Boolean(pending)} onClose={() => setPending(null)} title="Change underlying?"><p className="mb-3 text-sm">Strike, expiry, premium and IV will be reset; they are never carried to a new symbol.</p><div className="space-y-2"><Button className="w-full" onClick={() => pending && void setSymbol(pending)}>Start new</Button><Button className="w-full" variant="outline" onClick={() => pending && void setSymbol(pending, true)}>Duplicate settings and reset contracts</Button><Button className="w-full" variant="ghost" onClick={() => setPending(null)}>Cancel</Button></div></Modal>
   </div>;
@@ -743,36 +793,68 @@ function WhatIfHighlights({ workspace, valuation, sensitivity, currency, fxQuote
 function CallPutScenarioScoreCard({ score }: { score: CallPutScenarioScore | null }) {
   if (!score || score.status === 'unavailable') {
     return <section className="mt-4 rounded-xl border border-amber-500/30 bg-amber-500/5 p-4" data-testid="call-put-scenario-score">
-      <h3 className="font-semibold text-slate-100">Call/Put Scenario Score</h3>
-      <p className="mt-2 font-medium text-amber-200">ข้อมูลไม่พอสำหรับเปรียบเทียบ</p>
-      <p className="mt-1 text-xs text-amber-100/80">{score?.reason ?? 'คะแนนเป็นข้อมูล transient และไม่มีอยู่ในผลลัพธ์ที่บันทึกไว้ กรุณารัน Monte Carlo ใหม่'}</p>
-      <p className="mt-3 text-xs text-slate-400">เป็นคะแนนเปรียบเทียบจากสมมติฐาน ไม่ใช่คำแนะนำซื้อขายหรือความน่าจะเป็นว่าหุ้นจะขึ้น/ลง</p>
+      <h3 className="font-semibold text-slate-100">Option Strategy Edge Score</h3>
+      <p className="mt-2 font-medium text-amber-200">Score Unavailable</p>
+      <p className="mt-1 text-xs text-amber-100/80">{score?.reason ?? 'ผลลัพธ์ที่บันทึกไว้ไม่มี Scenario Score กรุณารัน Monte Carlo ใหม่'}</p>
+      <p className="mt-3 text-xs text-slate-400">คะแนนนี้ประเมินคุณภาพภายใต้สมมติฐานของแบบจำลอง ไม่ใช่คำสั่งหรือการรับประกันผลลัพธ์</p>
     </section>;
   }
+  const tone = (classification: string) => classification.includes('Positive') || classification.includes('Bullish') || classification.includes('Bearish')
+    ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-200'
+    : classification === 'No Positive Edge'
+      ? 'border-red-500/30 bg-red-500/10 text-red-200'
+      : 'border-amber-500/30 bg-amber-500/10 text-amber-200';
+  const summary = score.mode === 'comparison'
+    ? score.comparisonClassification ?? 'Not directly comparable'
+    : score.strategies[0]?.classification ?? 'Score Unavailable';
   return <section className="mt-4 rounded-xl border border-slate-700 bg-slate-950/40 p-4" data-testid="call-put-scenario-score">
     <div className="flex flex-wrap items-start justify-between gap-2">
-      <div><h3 className="font-semibold text-slate-100">Call/Put Scenario Score</h3><p className="mt-1 text-xs text-slate-400">เปรียบเทียบ Long Call และ Long Put จาก terminal paths ชุดเดียวกัน</p></div>
-      <span className="rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2 py-1 text-[10px] text-emerald-300">audit passed</span>
+      <div><h3 className="font-semibold text-slate-100">{score.mode === 'comparison' ? 'Call/Put Comparison' : 'Scenario Quality Score'}</h3><p className="mt-1 text-xs text-slate-400">คะแนน absolute แยกต่อ strategy จากการ reprice บน underlying paths ชุดเดียวกัน จึงไม่บังคับรวมเป็น 100</p></div>
+      <div className="flex flex-wrap gap-2"><span className="rounded-full border border-sky-500/30 bg-sky-500/10 px-2 py-1 text-[10px] text-sky-200">{score.probabilityLabel}</span><span className="rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2 py-1 text-[10px] text-emerald-300">shared path {score.pathSet.id}</span></div>
     </div>
-    <div className="mt-4 grid gap-3 sm:grid-cols-2">
-      <div className="rounded-xl border border-emerald-500/20 bg-emerald-500/5 p-4"><small className="text-slate-400">น้ำหนักสถานการณ์ขาขึ้น (Call)</small><p className="mt-1 text-3xl font-bold text-emerald-300">{score.callPercent.toFixed(2)}%</p></div>
-      <div className="rounded-xl border border-violet-500/20 bg-violet-500/5 p-4"><small className="text-slate-400">น้ำหนักสถานการณ์ขาลง (Put)</small><p className="mt-1 text-3xl font-bold text-violet-300">{score.putPercent.toFixed(2)}%</p></div>
+    <p className={`mt-3 rounded-lg border p-3 text-sm font-semibold ${tone(summary)}`}>{summary}{score.mode === 'comparison' && !score.comparable ? ' · แสดงคะแนนแยกโดยไม่ประกาศฝั่งนำ' : ''}</p>
+    <div className={`mt-4 grid gap-3 ${score.strategies.length > 1 ? 'lg:grid-cols-2' : ''}`}>
+      {score.strategies.map((strategy) => <article key={strategy.id} className="rounded-xl border border-slate-700 bg-slate-900/50 p-4">
+        <div className="flex items-start justify-between gap-3"><div><p className="font-semibold text-slate-100">{strategy.strategy}</p><p className="mt-1 text-xs uppercase text-slate-500">{strategy.side} · {strategy.status}</p></div><div className="text-right"><p className="text-3xl font-bold text-[#D4FF00]">{strategy.edgeScore === null ? 'N/A' : strategy.edgeScore.toFixed(2)}</p><p className="text-[10px] text-slate-500">EdgeScore / 100</p></div></div>
+        <p className={`mt-3 rounded-md border px-2 py-1 text-xs font-semibold ${tone(strategy.classification)}`}>{strategy.classification}</p>
+        {strategy.status === 'available' && strategy.metrics && strategy.confidence && <>
+          <dl className="mt-3 grid grid-cols-2 gap-x-4 gap-y-2 text-xs sm:grid-cols-3">
+            <div><dt className="text-slate-500">POP</dt><dd>{formatResultNumber(strategy.metrics.probabilityOfProfit * 100)}%</dd></div>
+            <div><dt className="text-slate-500">Expected P&amp;L</dt><dd>${formatResultNumber(strategy.metrics.expectedPnL)}</dd></div>
+            <div><dt className="text-slate-500">EVR</dt><dd>{formatResultNumber(strategy.metrics.evr * 100)}%</dd></div>
+            <div><dt className="text-slate-500">MedianR</dt><dd>{formatResultNumber(strategy.metrics.medianR * 100)}%</dd></div>
+            <div><dt className="text-slate-500">ES95R</dt><dd>{formatResultNumber(strategy.metrics.es95R * 100)}%</dd></div>
+            <div><dt className="text-slate-500">ProfitFactor</dt><dd>{strategy.metrics.profitFactor === null ? 'N/A' : formatResultNumber(strategy.metrics.profitFactor)}</dd></div>
+            <div><dt className="text-slate-500">Robustness</dt><dd>{formatResultNumber(strategy.metrics.robustness * 100)}%</dd></div>
+            <div><dt className="text-slate-500">MaxLoss / RiskCapital</dt><dd>${formatResultNumber(strategy.metrics.maxLoss)}</dd></div>
+            <div><dt className="text-slate-500">Confidence</dt><dd>{formatResultNumber(strategy.confidence.score)} / 100</dd></div>
+          </dl>
+          {!strategy.positiveEdge && <p className="mt-3 rounded-md bg-red-500/10 p-2 text-xs text-red-200">Positive-edge gate ไม่ผ่าน: {strategy.positiveEdgeReasons.join('; ')}</p>}
+        </>}
+        {strategy.reason && <p className="mt-3 text-xs text-amber-200">{strategy.reason}</p>}
+        <details className="mt-3 rounded-lg border border-slate-700 p-3 text-xs text-slate-300"><summary className="cursor-pointer font-semibold text-[#D4FF00]">Metrics, confidence และ provenance</summary><div className="mt-2 space-y-2">
+          <p>Premium ${formatResultNumber(strategy.assumptions.premium)} · Fees ${formatResultNumber(strategy.assumptions.fees)} · Multiplier {strategy.assumptions.multiplier.join(', ')} · Quantity {strategy.assumptions.quantity.join(', ')}</p>
+          <p>Premium source {strategy.assumptions.premiumSources.join(', ')} · Provider {strategy.assumptions.source ?? 'unavailable'} · As of {strategy.assumptions.asOf ? new Date(strategy.assumptions.asOf).toLocaleString() : 'unavailable'}</p>
+          {strategy.scoreComponents && <p>Components — POP {formatResultNumber(strategy.scoreComponents.pop)}, EV {formatResultNumber(strategy.scoreComponents.ev)}, Median {formatResultNumber(strategy.scoreComponents.median)}, Tail {formatResultNumber(strategy.scoreComponents.tail)}, Payoff {formatResultNumber(strategy.scoreComponents.payoff)}, Robustness {formatResultNumber(strategy.scoreComponents.robustness)}</p>}
+          {strategy.metrics && <p>Precision — POP SE {formatResultNumber(strategy.metrics.popStandardError * 100, 4)}% · Expected P&amp;L SE ${formatResultNumber(strategy.metrics.expectedPnLStandardError, 4)} · 95% CI ${formatResultNumber(strategy.metrics.expectedPnLConfidence95[0])} to ${formatResultNumber(strategy.metrics.expectedPnLConfidence95[1])}</p>}
+          {strategy.stressScenarios.length > 0 && <p>Stress EVR — {strategy.stressScenarios.map((item) => `${item.id}: ${formatResultNumber(item.evr * 100)}%`).join(' · ')}</p>}
+          {strategy.confidence && <><p>Confidence — Input {formatResultNumber(strategy.confidence.inputQuality.score)}, Stability {formatResultNumber(strategy.confidence.scenarioStability.score)}, Precision {formatResultNumber(strategy.confidence.statisticalPrecision.score)}, Liquidity {formatResultNumber(strategy.confidence.liquidityQuality.score)}</p><ul className="list-disc space-y-1 pl-5">{[...strategy.confidence.inputQuality.reasons, ...strategy.confidence.scenarioStability.reasons, ...strategy.confidence.statisticalPrecision.reasons, ...strategy.confidence.liquidityQuality.reasons].map((reason) => <li key={reason}>{reason}</li>)}</ul></>}
+        </div></details>
+      </article>)}
     </div>
-    {score.outlook === 'unclear' && <p className="mt-3 rounded-lg bg-amber-500/10 p-3 text-sm font-semibold text-amber-200">มุมมองยังไม่ชัดเจน</p>}
-    <div className="mt-4"><h4 className="text-sm font-semibold text-slate-200">เหตุผลที่ส่งผลต่อคะแนนมากที่สุด</h4><ol className="mt-2 list-decimal space-y-1 pl-5 text-xs text-slate-300">{score.reasons.map((reason) => <li key={reason}>{reason}</li>)}</ol></div>
+    {score.mode === 'comparison' && <div className="mt-3 grid gap-2 rounded-lg border border-slate-700 p-3 text-xs sm:grid-cols-3"><p>Comparable: <strong>{score.comparable ? 'yes' : 'no'}</strong></p><p>Score difference: <strong>{score.scoreDifference === null ? 'N/A' : formatResultNumber(score.scoreDifference)}</strong></p><p>Comparison confidence: <strong>{score.comparisonConfidence === null ? 'N/A' : formatResultNumber(score.comparisonConfidence)}</strong></p></div>}
+    <div className="mt-3 rounded-lg border border-slate-700 p-3 text-xs text-slate-300"><p className="font-semibold text-slate-100">Market Direction Probability (แยกจาก Option Edge)</p><p className="mt-1">เหนือ starting spot {formatResultNumber(score.marketDirectionProbability.probabilityAboveStartingSpot * 100)}% · ถึง/เหนือ target ${formatResultNumber(score.marketDirectionProbability.targetPrice)}: {formatResultNumber(score.marketDirectionProbability.probabilityAtOrAboveTarget * 100)}%</p><p className="mt-1 text-slate-500">ค่าชุดนี้มาจาก shared underlying paths และไม่ได้ใช้เป็นส่วนประกอบ EdgeScore</p></div>
     <details className="mt-4 rounded-lg border border-slate-700 p-3 text-xs text-slate-300">
-      <summary className="cursor-pointer font-semibold text-[#D4FF00]">สูตรและสมมติฐานคะแนน</summary>
+      <summary className="cursor-pointer font-semibold text-[#D4FF00]">สูตร, paths และสมมติฐาน</summary>
       <div className="mt-2 space-y-1 leading-relaxed">
-        <p>40% POP + 30% risk-adjusted Expected P&amp;L + 15% Median P&amp;L + 10% downside protection + 5% target-direction consistency</p>
-        <p>riskAdjustedEV = Expected P&amp;L ÷ initialRisk; downside ใช้ค่าที่แย่น้อยกว่าระหว่าง P5, ES 95% และ Max Loss แล้วหาร initialRisk</p>
-        <p>ทุก metric normalize แบบ symmetric ระหว่าง Call/Put; denominator เป็นศูนย์ให้ 50/50 และ audit ปฏิเสธ NaN/Infinity</p>
-        <p>Current ${formatResultNumber(score.assumptions.currentPrice)} · Target ${formatResultNumber(score.assumptions.targetPrice)} วันที่ {score.assumptions.targetDate} · Expiration {score.assumptions.expiration}</p>
-        <p>IV {formatResultNumber(score.assumptions.volatility * 100)}% · Rate {formatResultNumber(score.assumptions.rate * 100)}% · Dividend {formatResultNumber(score.assumptions.dividendYield * 100)}% · Strike distance ${formatResultNumber(score.assumptions.strikeDistance)}</p>
-        <p>Quantity {score.assumptions.quantity} · Multiplier {score.assumptions.multiplier} · Paths/Seed {score.assumptions.paths.toLocaleString()}/{score.assumptions.seed}</p>
-        <p>Premium จริง: Call ${formatResultNumber(score.assumptions.callPremium)} · Put ${formatResultNumber(score.assumptions.putPremium)} ต่อหุ้น</p>
+        <p>EdgeScore = 30% POP + 25% EV + 10% Median + 15% Tail (ES95 เท่านั้น) + 10% Payoff + 10% Robustness</p>
+        <p>EVR, MedianR และ ES95R หารด้วย finite positive MaxLoss; ES95PnL คือค่าเฉลี่ย P&amp;L ของ worst 5% paths</p>
+        <p>Requested / generated / common valid / dropped: {score.pathSet.requestedPaths.toLocaleString()} / {score.pathSet.generatedPaths.toLocaleString()} / {score.pathSet.commonValidPaths.toLocaleString()} / {score.pathSet.droppedPaths.toLocaleString()}</p>
+        <p>Seed {score.pathSet.seed} · Spot ${formatResultNumber(score.assumptions.startingSpot)} · Volatility {formatResultNumber(score.assumptions.volatility * 100)}% · Drift {formatResultNumber(score.assumptions.drift * 100)}% · Rate {formatResultNumber(score.assumptions.rate * 100)}% · Dividend {formatResultNumber(score.assumptions.dividendYield * 100)}%</p>
+        <p>{score.pricingMode === 'risk-neutral' ? 'Risk-neutral valuation ใช้เพื่อ pricing/model consistency ไม่ใช่โอกาสจริง' : 'Forecast mode ขึ้นกับ drift/distribution ที่ระบุและไม่ได้รับประกันผลในอนาคต'}</p>
       </div>
     </details>
-    <p className="mt-3 text-xs text-slate-400">เป็นคะแนนเปรียบเทียบจากสมมติฐาน ไม่ใช่คำแนะนำซื้อขายหรือความน่าจะเป็นว่าหุ้นจะขึ้น/ลง</p>
+    <p className="mt-3 text-xs text-slate-400">เป็นผลจากแบบจำลองภายใต้สมมติฐานที่แสดง ไม่ใช่คำสั่งหรือการรับประกันผลลัพธ์</p>
   </section>;
 }
 

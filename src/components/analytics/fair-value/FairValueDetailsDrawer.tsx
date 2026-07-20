@@ -2,7 +2,8 @@
 
 import { Drawer } from '@/src/components/ui/Drawer';
 import type { FairValueResult } from '@/src/lib/analytics/valuation/types';
-import { modelLabel } from './presentation';
+import { formatBangkokDateTime, formatMarketDataAsOf } from '@/src/lib/presentation/datetime';
+import { fairValueUnavailableLabel, fairValueUnavailableReason, modelLabel } from './presentation';
 
 export function FairValueDetailsDrawer({ id, open, onClose, data, unavailableReason }: {
   id: string;
@@ -21,8 +22,9 @@ export function FairValueDetailsDrawer({ id, open, onClose, data, unavailableRea
         {data?.status === 'unavailable' || !data ? (
           <section>
             <h3 className="font-semibold text-white">เหตุผลที่ยังคำนวณไม่ได้</h3>
-            <p className="mt-1 text-amber-300">{data?.status === 'unavailable' ? data.reason : unavailableReason ?? 'ไม่มีข้อมูล Fair Value ที่ผ่าน validation'}</p>
-            {data?.status === 'unavailable' && <ul className="mt-2 list-disc pl-5 text-xs text-slate-400">{data.missingInputs.map((item) => <li key={item}>{item}</li>)}</ul>}
+            <p className="mt-1 font-semibold text-amber-300">{data?.status === 'unavailable' ? fairValueUnavailableLabel(data.failureKind, 'th') : 'เกิดข้อผิดพลาด'}</p>
+            <p className="mt-1 text-slate-300">{data?.status === 'unavailable' ? fairValueUnavailableReason(data, 'th') : unavailableReason ?? 'ไม่มีข้อมูล Fair Value ที่ผ่าน validation'}</p>
+            {data?.status === 'unavailable' && <><p className="mt-2 text-xs text-slate-500">Provider: {data.provider ?? 'ไม่ทราบ'} · as of {formatBangkokDateTime(data.asOf)}</p><ul className="mt-2 list-disc pl-5 text-xs text-slate-400">{data.missingFields.map((item) => <li key={item}>{item}</li>)}</ul></>}
           </section>
         ) : (
           <>
@@ -56,8 +58,8 @@ export function FairValueDetailsDrawer({ id, open, onClose, data, unavailableRea
               <p className="mt-1">{data.modelReliability.level} · {data.modelReliability.score?.toFixed(1) ?? 'Unavailable'}/100</p>
               <p className="text-xs text-slate-400">{data.modelReliability.explanation}</p>
               <ul className="mt-2 list-disc pl-5 text-xs text-slate-400">{data.reliabilityReasons.map((reason) => <li key={reason}>{reason}</li>)}</ul>
-              <p className="mt-2 text-xs text-slate-400">Provider: {data.sources.map((source) => source.name).join(', ')} · as of {new Date(data.latestDataAt).toLocaleString('th-TH')} · status {data.dataStatus}</p>
-              {data.displayFx && <p className="mt-1 text-xs text-slate-400">FX: 1 USD = {data.displayFx.rate.toFixed(4)} THB · {data.displayFx.provider} · {data.displayFx.status} · {new Date(data.displayFx.asOf).toLocaleString('th-TH')}</p>}
+              <p className="mt-2 text-xs text-slate-400">Provider: {data.sources.map((source) => source.name).join(', ')} · as of {formatMarketDataAsOf(data.latestDataAt)} · status {data.dataStatus}</p>
+              {data.displayFx && <p className="mt-1 text-xs text-slate-400">FX: 1 USD = {data.displayFx.rate.toFixed(4)} THB · {data.displayFx.provider} · {data.displayFx.status} · {formatBangkokDateTime(data.displayFx.asOf)}</p>}
               {!data.displayFx && <p className="mt-1 text-xs text-amber-300">THB: Unavailable — ไม่มีอัตรา USD/THB จริงที่ตรวจสอบได้</p>}
             </section>
           </>

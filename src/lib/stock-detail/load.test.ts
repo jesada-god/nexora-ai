@@ -137,6 +137,8 @@ describe('Stock Detail market loading', () => {
       changePercent: null,
     });
     expect(snapshot.quote.freshness.status).toBe('end-of-day');
+    expect(snapshot.quote.freshness.asOf).toBeNull();
+    expect(snapshot.quote.data?.latestTradingDay).toBe('2026-07-17');
     expect(snapshot.quote.fallbackLabel).toBe('Previous trading day');
   });
 

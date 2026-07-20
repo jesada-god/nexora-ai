@@ -8,6 +8,26 @@ afterEach(() => {
 });
 
 describe('AlphaVantageProvider response validation', () => {
+  it('keeps a GLOBAL_QUOTE date separate from timestamp freshness', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({
+      'Global Quote': {
+        '01. symbol': 'RKLB',
+        '05. price': '51.23',
+        '07. latest trading day': '2026-07-17',
+      },
+    }), {
+      headers: { 'Content-Type': 'application/json' },
+    })));
+
+    const result = await new AlphaVantageProvider('secret').getQuote('RKLB');
+
+    expect(result.data.latestTradingDay).toBe('2026-07-17');
+    expect(result.freshness).toMatchObject({
+      status: 'end-of-day',
+      asOf: null,
+    });
+  });
+
   it('does not retry a 429 response and preserves Retry-After', async () => {
     const fetcher = vi.fn(async () => new Response(
       JSON.stringify({ Note: 'API rate limit reached' }),

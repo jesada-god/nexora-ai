@@ -3,7 +3,12 @@ import type { DataFreshness, HistoricalPrice } from '@/src/lib/market-data/types
 
 export const METHODOLOGY_VERSION = 'nexora-fv-v1' as const;
 export const SECTOR_RULE_VERSION = 'nexora-sector-valuation-v1' as const;
-export type FairValueFailureKind = 'provider-unavailable' | 'insufficient-data' | 'calculation-failure';
+export type FairValueFailureKind =
+  | 'provider-unavailable'
+  | 'insufficient-data'
+  | 'not-meaningful'
+  | 'rate-limited'
+  | 'server-error';
 export type CompanyClassification = 'profitable-growth' | 'mature-dividend-paying' | 'cyclical' | 'financial-institution' | 'reit' | 'early-stage-high-growth' | 'loss-making' | 'asset-heavy' | 'commodity-sensitive';
 export type ModelId = 'fcff-dcf' | 'fcfe' | 'ddm' | 'relative' | 'asset-based' | 'ev-sales' | 'ev-ebitda' | 'pe' | 'peg' | 'pb';
 export type FairValueDataStatus = 'live' | 'delayed' | 'cached' | 'stale' | 'limited' | 'unavailable';
@@ -111,7 +116,20 @@ export interface ValuationAssumptionDisclosure {
 }
 
 export interface FairValueUnavailable {
-  status: 'unavailable'; failureKind: FairValueFailureKind; symbol: string; currency: string | null; reason: string; missingInputs: string[]; staleInputs: string[]; calculatedAt: string; methodologyVersion: typeof METHODOLOGY_VERSION; limitations: string[];
+  status: 'unavailable';
+  failureKind: FairValueFailureKind;
+  symbol: string;
+  currency: string | null;
+  provider: string | null;
+  reason: string;
+  missingFields: string[];
+  /** Backward-compatible alias used by the existing details UI and audit logs. */
+  missingInputs: string[];
+  staleInputs: string[];
+  asOf: string;
+  calculatedAt: string;
+  methodologyVersion: typeof METHODOLOGY_VERSION;
+  limitations: string[];
 }
 
 export interface FairValueAvailable {

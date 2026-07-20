@@ -7,10 +7,12 @@ import type {
   MarketDataApiError,
 } from '@/src/lib/market-data/types';
 import { companyProfileErrorPresentation } from '@/src/lib/stock-detail/error-presentation';
+import { formatMarketDataAsOf } from '@/src/lib/presentation/datetime';
 import {
   companyProfileLabels,
   displayCountry,
   displayFiscalYearEnd,
+  isCompanyProfileTranslationLoading,
   resolvedDescription,
   shouldRequestCompanyProfileTranslation,
   type CompanyProfileLanguage,
@@ -128,9 +130,14 @@ export function CompanyProfileCard({
   }, [activeLanguage, attempt, sourceText, symbol, translationKey]);
 
   const activeTranslation = translation?.key === translationKey ? translation : null;
-  const loadingTranslation = activeLanguage === 'th'
-    && Boolean(sourceText)
-    && (activeTranslation?.attempt !== attempt || (!activeTranslation.text && !activeTranslation.error));
+  const loadingTranslation = isCompanyProfileTranslationLoading({
+    language: activeLanguage,
+    sourceText,
+    attempt,
+    settledAttempt: activeTranslation?.attempt ?? null,
+    translatedText: activeTranslation?.text ?? null,
+    error: activeTranslation?.error ?? null,
+  });
   const description = resolvedDescription({
     language: activeLanguage,
     sourceText,
@@ -171,7 +178,9 @@ export function CompanyProfileCard({
             <span className="break-words">
               {status} · {provider ?? labels.unknownProvider}
               {profileTimestamp
-                ? ` · ${new Date(profileTimestamp).toLocaleString(activeLanguage === 'th' ? 'th-TH' : 'en-US')}`
+                ? ` · ${formatMarketDataAsOf(profileTimestamp, {
+                    dateOnly: !freshness.cachedAt && profileTimestamp === freshness.asOf,
+                  })}`
                 : ''}
             </span>
             {fallbackUsed && (

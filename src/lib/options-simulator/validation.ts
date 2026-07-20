@@ -21,6 +21,21 @@ export const optionLegSchema = z.object({
   thetaSource: z.enum(['provider', 'model', 'manual']).optional(),
   deltaTimestamp: z.iso.datetime().nullable().optional(),
   thetaTimestamp: z.iso.datetime().nullable().optional(),
+  gamma: finite.nullable().optional(),
+  vega: finite.nullable().optional(),
+  rho: finite.nullable().optional(),
+  contractSymbol: z.string().min(1).max(120).nullable().optional(),
+  bid: finite.nonnegative().nullable().optional(),
+  ask: finite.nonnegative().nullable().optional(),
+  mark: finite.nonnegative().nullable().optional(),
+  last: finite.nonnegative().nullable().optional(),
+  volume: z.number().int().nonnegative().nullable().optional(),
+  openInterest: z.number().int().nonnegative().nullable().optional(),
+  premiumSource: z.enum(['bid', 'ask', 'mark', 'last', 'manual']).optional(),
+  inputMode: z.enum(['provider', 'custom']).optional(),
+  contractProvider: z.string().max(120).nullable().optional(),
+  contractAsOf: z.iso.datetime().nullable().optional(),
+  contractStatus: z.enum(['live', 'delayed', 'cached', 'stale']).optional(),
 });
 
 export const scenarioSchema = z.object({
@@ -42,6 +57,7 @@ export const monteCarloSettingsSchema = z.object({
   volatility: finite.positive().max(10),
   rate: finite.min(-1).max(2),
   dividendYield: finite.min(-1).max(2),
+  driftMode: z.enum(['forecast', 'risk-neutral']).optional(),
 });
 
 const calculationOptionLegSchema = z.object({

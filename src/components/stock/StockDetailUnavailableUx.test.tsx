@@ -126,7 +126,7 @@ describe('Stock Detail unavailable UX', () => {
 
     expect(html).toContain('Rocket Lab provides launch services.');
     expect(html).toContain('Stale · alpha-vantage');
-    expect(html).toMatch(/7\/19\/2026/);
+    expect(html).toContain('19 ก.ค. 2569 15:30');
     expect(html).not.toContain('Company profile is temporarily unavailable');
   });
 

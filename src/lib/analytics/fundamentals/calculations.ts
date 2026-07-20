@@ -26,11 +26,12 @@ export function trailingPe(price: number | null, dilutedEpsTtm: number | null, p
   return Number.isFinite(value) ? { status: 'available', value } : { status: 'unavailable', reason: 'P/E result is not a finite number' };
 }
 
-export function averageVolume(volumes: readonly number[], period: number): number | null {
+export function averageVolume(volumes: readonly (number | null)[], period: number): number | null {
   if (!Number.isInteger(period) || period <= 0 || volumes.length < period) return null;
   const window = volumes.slice(-period);
-  if (window.some((value) => !Number.isFinite(value) || value < 0)) return null;
-  return window.reduce((sum, value) => sum + value, 0) / period;
+  const complete = window.filter(finite);
+  if (complete.length !== period || complete.some((value) => value < 0)) return null;
+  return complete.reduce((sum, value) => sum + value, 0) / period;
 }
 
 export function relativeDailyVolume(currentVolume: number | null, average: number | null): number | null {

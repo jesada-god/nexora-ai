@@ -9,6 +9,10 @@ const STATUS_BY_CODE: Record<MarketDataErrorCode, number> = {
   'rate-limited': 429,
   timeout: 504,
   'provider-unauthorized': 502,
+  forbidden: 403,
+  'provider-unavailable': 503,
+  unsupported: 501,
+  'stale-data': 503,
   'upstream-unavailable': 502,
   'invalid-provider-response': 502,
   'insufficient-data': 422,
@@ -19,6 +23,8 @@ const RETRYABLE_CODES = new Set<MarketDataErrorCode>([
   'provider-not-configured',
   'rate-limited',
   'timeout',
+  'provider-unavailable',
+  'stale-data',
   'upstream-unavailable',
   'insufficient-data',
   'internal-error',
@@ -65,6 +71,7 @@ export interface ProviderFailureInput {
 }
 
 function providerMessage(payload: unknown): string | undefined {
+  if (typeof payload === 'string') return payload;
   if (!payload || typeof payload !== 'object') return undefined;
   const record = payload as Record<string, unknown>;
   for (const key of ['Note', 'Information', 'Error Message', 'message']) {
@@ -82,12 +89,15 @@ export function mapProviderFailure(input: ProviderFailureInput): MarketDataError
   if (isAbort) return new MarketDataError('timeout', 'Market data provider timed out');
   // Alpha Vantage quota messages often mention the API key. Quota signals must win
   // over the more general key matcher or exhausted free-tier keys become 502s.
-  if (input.status === 429 || /frequency|rate limit|call volume|requests per|calls per|premium endpoint|daily.*limit/i.test(message ?? '')) {
+  if (input.status === 429 || /frequency|rate limit|call volume|requests per|calls per|daily.*limit/i.test(message ?? '')) {
     return new MarketDataError(
       'rate-limited',
       'Market data provider rate limit exceeded',
       input.retryAfterSeconds,
     );
+  }
+  if (input.status === 402 || /premium endpoint|subscription|current plan|upgrade.*plan/i.test(message ?? '')) {
+    return new MarketDataError('forbidden', 'The configured provider plan does not authorize this market data operation');
   }
   if (input.status === 401 || input.status === 403 || /invalid api key|invalid apikey|api key is invalid|apikey is invalid/i.test(message ?? '')) {
     return new MarketDataError('provider-unauthorized', 'Market data provider rejected the API key');
@@ -101,7 +111,7 @@ export function mapProviderFailure(input: ProviderFailureInput): MarketDataError
   if (input.cause instanceof TypeError) {
     return new MarketDataError('upstream-unavailable', 'Could not reach market data provider');
   }
-  if (message) return new MarketDataError('invalid-provider-response', message);
+  if (message) return new MarketDataError('invalid-provider-response', 'Market data provider returned an unrecognized response');
   return new MarketDataError('invalid-provider-response', 'Market data provider returned an invalid response');
 }
 

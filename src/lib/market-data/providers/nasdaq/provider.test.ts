@@ -29,9 +29,11 @@ describe('Nasdaq historical fallback', () => {
     await expect(provider.getHistoricalPrices('NVDA', '1y')).resolves.toMatchObject({ provider: 'nasdaq' });
   });
 
-  it('skips invalid rows without fabricating replacement candles', () => {
+  it('preserves valid price rows with unavailable volume without fabricating a value', () => {
     const withInvalid = structuredClone(payload);
     withInvalid.data.tradesTable.rows.push({ date: '07/16/2026', close: '$11.00', volume: '', open: '$10.00', high: '$12.00', low: '$9.00' });
-    expect(normalizeNasdaqHistory(withInvalid, 'NVDA', '1y').prices).toHaveLength(2);
+    const result = normalizeNasdaqHistory(withInvalid, 'NVDA', '1y');
+    expect(result.prices).toHaveLength(3);
+    expect(result.prices[0]).toMatchObject({ date: '2026-07-16', close: 11, volume: null });
   });
 });

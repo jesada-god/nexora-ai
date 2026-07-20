@@ -29,7 +29,7 @@ function toWrite(workspace: SimulationWorkspace) {
     currency: workspace.currency, simulation_type: workspace.simulationType, strategy_type: workspace.strategyType,
     inputs_json: asJson({ exchange: workspace.exchange, underlyingPrice: workspace.underlyingPrice, stockQuantity: workspace.stockQuantity,
       cashPosition: workspace.cashPosition, entryDate: workspace.entryDate, valuationDate: workspace.valuationDate, legs: workspace.legs, scenarios: workspace.scenarios }),
-    assumptions_json: asJson({ pricing: 'Black-Scholes for European non-dividend options; binomial otherwise', monteCarlo: 'Geometric Brownian motion' }),
+    assumptions_json: asJson({ pricing: 'Black-Scholes with continuous dividend yield for European options; binomial for American options', monteCarlo: 'Geometric Brownian motion' }),
     settings_json: asJson(workspace.monteCarlo), methodology_version: workspace.methodologyVersion,
     results_summary_json: workspace.resultSnapshot === null ? null : asJson(workspace.resultSnapshot),
     data_source: workspace.dataSource, data_status: workspace.dataStatus, source_timestamp: workspace.dataTimestamp,

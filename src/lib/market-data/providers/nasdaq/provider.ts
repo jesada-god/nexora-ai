@@ -53,8 +53,8 @@ export function normalizeNasdaqHistory(input: unknown, symbol: string, range: Hi
     const date = parseNasdaqDate(source.date);
     const open = parseNumber(source.open); const high = parseNumber(source.high); const low = parseNumber(source.low);
     const close = parseNumber(source.close); const volume = parseNumber(source.volume);
-    if (!date || open === null || high === null || low === null || close === null || volume === null) continue;
-    if (open <= 0 || high <= 0 || low <= 0 || close <= 0 || volume < 0 || !Number.isInteger(volume)) continue;
+    if (!date || open === null || high === null || low === null || close === null) continue;
+    if (open <= 0 || high <= 0 || low <= 0 || close <= 0 || (volume !== null && (volume < 0 || !Number.isInteger(volume)))) continue;
     if (high < Math.max(open, close, low) || low > Math.min(open, close, high)) continue;
     byDate.set(date, { date, open, high, low, close, volume });
   }

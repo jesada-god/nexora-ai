@@ -5,7 +5,7 @@ import type { FairValueResult } from '@/src/lib/analytics/valuation/types';
 import type { CompanyProfileLanguage } from '@/src/lib/stock-detail/profile-presentation';
 import { FairValueDetailsDrawer } from './FairValueDetailsDrawer';
 import { requestFairValue } from './fair-value-client';
-import { convertUsdForDisplay, displayStatus, fairValueUnavailableLabel, formatFairValueMoney, formatUpsidePercent, modelLabel, upsideTone, type DisplayCurrency } from './presentation';
+import { convertUsdForDisplay, displayStatus, fairValueUnavailableLabel, fairValueUnavailableReason, formatFairValueMoney, formatUpsidePercent, modelLabel, upsideTone, type DisplayCurrency } from './presentation';
 
 export function FairValueCard({
   symbol,
@@ -46,7 +46,9 @@ export function FairValueCard({
   const loading = enabled && currentResult === null;
   const unavailableLabel = data?.status === 'unavailable'
     ? fairValueUnavailableLabel(data.failureKind, language)
-    : language === 'th' ? 'ไม่พร้อมใช้งาน' : 'Unavailable';
+    : currentResult?.error
+      ? language === 'th' ? 'เกิดข้อผิดพลาด' : 'Error'
+      : language === 'th' ? 'ไม่พร้อมใช้งาน' : 'Unavailable';
   const error = enabled
     ? currentResult?.error ?? null
     : language === 'th' ? 'ระบบ Fair Value ถูกปิดอยู่' : 'Fair Value feature is disabled';
@@ -57,7 +59,9 @@ export function FairValueCard({
   const base = available ? convertUsdForDisplay(available.fundamentalFairValue.centralEstimate, displayCurrency, fxRate) : null;
   const tone = upsideTone(available?.upsidePercent ?? null);
   const toneClass = tone === 'success' ? 'text-emerald-400' : tone === 'danger' ? 'text-red-400' : 'text-slate-400';
-  const unavailableReason = error ?? (data?.status === 'unavailable' ? data.reason : null);
+  const unavailableReason = error ?? (data?.status === 'unavailable'
+    ? fairValueUnavailableReason(data, language)
+    : null);
 
   return (
     <>
@@ -68,7 +72,7 @@ export function FairValueCard({
             <span aria-hidden="true" className="flex h-5 w-5 items-center justify-center rounded-full border border-current text-[11px] font-bold">?</span>
           </button>
         </div>
-        {loading ? <div data-testid="fair-value-skeleton" className="space-y-2"><div className="h-4 w-20 animate-pulse rounded bg-slate-800" /><div className="h-3 w-28 animate-pulse rounded bg-slate-800" /></div> : available ? (
+        {loading ? <div data-testid="fair-value-skeleton" className="space-y-2"><p className="text-xs text-slate-400">{language === 'th' ? 'กำลังโหลด Fair Value…' : 'Loading Fair Value…'}</p><div className="h-3 w-28 animate-pulse rounded bg-slate-800" /></div> : available ? (
           <>
             <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
               <p className="font-mono text-sm font-semibold tabular-nums text-white">{formatFairValueMoney(base, displayCurrency)}</p>

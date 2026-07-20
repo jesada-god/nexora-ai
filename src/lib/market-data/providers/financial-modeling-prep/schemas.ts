@@ -15,6 +15,7 @@ export const financialModelingPrepProfileSchema = z.object({
   exchangeShortName: z.string().nullable().optional(),
   marketCap: nullableScalar,
   fullTimeEmployees: nullableScalar,
+  fiscalYearEnd: z.string().nullable().optional(),
 });
 
 export const financialModelingPrepProfileResponseSchema = z

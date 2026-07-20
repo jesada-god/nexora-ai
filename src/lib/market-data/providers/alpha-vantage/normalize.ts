@@ -110,7 +110,7 @@ export function normalizeHistoryResponse(
       high: Number(price['2. high']),
       low: Number(price['3. low']),
       close: Number(price['4. close']),
-      volume: Number(price['5. volume']),
+      volume: nullableInteger(price['5. volume']),
     }))
     .sort((a, b) => a.date.localeCompare(b.date));
 

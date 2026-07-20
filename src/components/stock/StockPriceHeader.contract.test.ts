@@ -22,7 +22,7 @@ describe('StockPriceHeader integration contract', () => {
   it('shows provider disclosure and the previous-close comparison base', () => {
     expect(header).toContain('<Detail label="Provider"');
     expect(header).toContain('<Detail label="Session"');
-    expect(header).toContain('<Detail label="Timestamp"');
+    expect(header).toContain("label={quoteDate ? 'Trading date' : 'Timestamp'}");
     expect(header).toContain("value={extendedQuote && extendedChange ? 'Official Regular Close' : 'Previous Close'}");
   });
 

@@ -3,6 +3,7 @@ import { calculateSupportResistance } from '../support-resistance/calculations';
 import { classifyCompany } from './classification';
 import { compositeValuation } from './formulas';
 import { fundamentalQuality, modelReliability } from './quality';
+import { createFairValueUnavailable } from './result';
 import { selectSectorModels } from './sector-selection';
 import {
   METHODOLOGY_VERSION,
@@ -53,34 +54,34 @@ export function calculateFairValue(input: ValuationInput, now = Date.now()): Fai
   const calculatedAt = input.calculatedAt ?? new Date(now).toISOString();
   const gate = dataSufficiency(input, now);
   if (!gate.ok) {
-    return {
-      status: 'unavailable',
+    return createFairValueUnavailable({
       failureKind: 'insufficient-data',
       symbol: input.symbol,
       currency: input.currency || null,
+      provider: input.source || null,
       reason: 'ข้อมูลจริงไม่เพียงพอหรือไม่ผ่าน Data Sufficiency Gate จึงไม่สร้าง Fair Value',
-      missingInputs: gate.missingInputs,
+      missingFields: gate.missingInputs,
       staleInputs: gate.staleInputs,
+      asOf: input.priceAsOf || calculatedAt,
       calculatedAt,
-      methodologyVersion: METHODOLOGY_VERSION,
       limitations: ['No defaults or synthetic financial statements are inserted.'],
-    };
+    });
   }
 
   const selection = selectSectorModels(input);
   if (!selection.models.length) {
-    return {
-      status: 'unavailable',
-      failureKind: 'insufficient-data',
+    return createFairValueUnavailable({
+      failureKind: 'not-meaningful',
       symbol: input.symbol,
       currency: input.currency,
-      reason: 'ไม่มี valuation model ที่เหมาะสมและผ่าน validation',
-      missingInputs: selection.excludedModels.map((item) => `${item.model}: ${item.reason}`),
+      provider: input.source,
+      reason: 'ข้อมูลจริงผ่านเกณฑ์พื้นฐาน แต่ไม่มี valuation model ที่มีความหมายและผ่าน validation สำหรับบริษัทนี้',
+      missingFields: selection.excludedModels.map((item) => `${item.model}: ${item.reason}`),
       staleInputs: gate.staleInputs,
+      asOf: input.priceAsOf,
       calculatedAt,
-      methodologyVersion: METHODOLOGY_VERSION,
       limitations: ['A model is never forced onto an unsuitable company.'],
-    };
+    });
   }
 
   const baseClassification = classifyCompany(input.sector, input.industry, input.periods);
@@ -125,18 +126,18 @@ export function calculateFairValue(input: ValuationInput, now = Date.now()): Fai
   const base = blendedScenario('base');
   const optimistic = blendedScenario('optimistic');
   if (!(conservative <= base && base <= optimistic) || ![conservative, base, optimistic].every(Number.isFinite)) {
-    return {
-      status: 'unavailable',
-      failureKind: 'calculation-failure',
+    return createFairValueUnavailable({
+      failureKind: 'server-error',
       symbol: input.symbol,
       currency: input.currency,
+      provider: input.source,
       reason: 'Scenario validation failed; Fair Value was not published.',
-      missingInputs: ['conservative<=base<=optimistic'],
+      missingFields: ['conservative<=base<=optimistic'],
       staleInputs: gate.staleInputs,
+      asOf: input.priceAsOf,
       calculatedAt,
-      methodologyVersion: METHODOLOGY_VERSION,
       limitations: ['Scenario results are validated, never silently sorted.'],
-    };
+    });
   }
   const range = (scenario: 'conservative' | 'base' | 'optimistic') => ({
     low: Math.min(...composite.models.map((model, index) => scenarioFor(index)[scenario])),
@@ -272,7 +273,7 @@ function technicalMarketContext(input: ValuationInput, fairValue: { low: number;
     macd: metric('macd'),
     atr: metric('atr'),
     realizedVolatility: Number.isFinite(volatility) ? volatility : null,
-    relativeVolume: averageVolume && averageVolume > 0 ? latest.volume / averageVolume : null,
+    relativeVolume: averageVolume && averageVolume > 0 && latest.volume != null ? latest.volume / averageVolume : null,
     drawdown: peak > 0 ? latest.close / peak - 1 : 0,
     fiftyTwoWeekHigh: high,
     fiftyTwoWeekLow: low,

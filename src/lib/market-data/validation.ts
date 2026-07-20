@@ -20,6 +20,28 @@ export const historyQuerySchema = z.object({
   range: historicalRangeSchema.default('3m'),
 });
 
+export const optionExpirationSchema = z.iso.date();
+
+export const optionExpirationsQuerySchema = z.object({
+  symbol: symbolSchema,
+});
+
+export const optionsChainQuerySchema = z.object({
+  symbol: symbolSchema,
+  expiration: optionExpirationSchema,
+});
+
+export const intradayIntervalSchema = z.enum(['1m', '5m', '15m', '30m', '60m']);
+export const intradayRangeSchema = z.enum(['1d', '5d', '1m']);
+export const intradaySessionModeSchema = z.enum(['regular', 'extended']);
+
+export const intradayQuerySchema = z.object({
+  symbol: symbolSchema,
+  interval: intradayIntervalSchema,
+  range: intradayRangeSchema.default('5d'),
+  session: intradaySessionModeSchema.default('regular'),
+});
+
 export const searchParamsSchema = z.object({
   q: searchQuerySchema,
   assetType: z.enum(['Stock', 'ETF']).optional(),

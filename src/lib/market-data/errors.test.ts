@@ -29,6 +29,18 @@ describe('market data provider error mapping', () => {
     expect(error.status).toBe(502);
   });
 
+  it('maps plan entitlements to forbidden before generic 403 handling', () => {
+    const error = mapProviderFailure({ status: 403, payload: { message: 'Upgrade your current plan or subscription.' } });
+    expect(error.code).toBe('forbidden');
+    expect(error.status).toBe(403);
+  });
+
+  it('never exposes an unrecognized raw provider message', () => {
+    const error = mapProviderFailure({ payload: { message: 'internal vendor detail with request token' } });
+    expect(error.code).toBe('invalid-provider-response');
+    expect(error.message).not.toContain('request token');
+  });
+
   it('maps invalid symbols separately', () => {
     const error = mapProviderFailure({ payload: { 'Error Message': 'Invalid API call. Please retry or visit the documentation.' } });
     expect(error.code).toBe('invalid-symbol'); expect(error.status).toBe(404);

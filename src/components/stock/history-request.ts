@@ -6,8 +6,16 @@ type CachedHistory = { response: HistoryResponse; savedAt: number };
 type InflightEntry = { controller: AbortController; promise: Promise<HistoryResponse>; consumers: Set<symbol> };
 
 const CLIENT_CACHE_MS = 15 * 60_000;
+const RANGE_CAPACITY: Record<HistoricalRange, number> = { '1m': 23, '3m': 66, '6m': 132, '1y': 252, '5y': 1_260, max: Number.POSITIVE_INFINITY };
+const RANGE_ORDER: HistoricalRange[] = ['1m', '3m', '6m', '1y', '5y', 'max'];
 export function historyRequestKey(symbol: string, range: HistoricalRange) { return `history:${symbol}:${range}`; }
 export function canRetryHistory(cooldownUntil: number, now: number, loading: boolean) { return !loading && now >= cooldownUntil; }
+export function rangeCovers(loaded: HistoricalRange, requested: HistoricalRange) { return RANGE_ORDER.indexOf(loaded) >= RANGE_ORDER.indexOf(requested); }
+export function historyRangeForIndicator(minimumDataPoints: number): HistoricalRange {
+  const requiredWithWarmup = Math.max(2, Math.ceil(minimumDataPoints * 1.25));
+  return RANGE_ORDER.find((range) => RANGE_CAPACITY[range] >= requiredWithWarmup) ?? 'max';
+}
+export function visibleBarsForRange(range: HistoricalRange) { return RANGE_CAPACITY[range]; }
 
 export class HistoryRequestClient {
   private readonly data = new Map<string, CachedHistory>();

@@ -4,6 +4,8 @@ export type ExerciseStyle = 'european' | 'american';
 export type SimulationType = 'what-if' | 'monte-carlo';
 export type DataStatus = 'live' | 'delayed' | 'stale' | 'manual' | 'unavailable';
 export type GreekDataSource = 'provider' | 'model' | 'manual';
+export type ContractInputMode = 'provider' | 'custom';
+export type PremiumSource = 'bid' | 'ask' | 'mark' | 'last' | 'manual';
 
 export interface OptionLeg {
   id: string;
@@ -23,6 +25,21 @@ export interface OptionLeg {
   thetaSource?: GreekDataSource;
   deltaTimestamp?: string | null;
   thetaTimestamp?: string | null;
+  gamma?: number | null;
+  vega?: number | null;
+  rho?: number | null;
+  contractSymbol?: string | null;
+  bid?: number | null;
+  ask?: number | null;
+  mark?: number | null;
+  last?: number | null;
+  volume?: number | null;
+  openInterest?: number | null;
+  premiumSource?: PremiumSource;
+  inputMode?: ContractInputMode;
+  contractProvider?: string | null;
+  contractAsOf?: string | null;
+  contractStatus?: 'live' | 'delayed' | 'cached' | 'stale';
 }
 
 export interface ScenarioInput {
@@ -44,6 +61,7 @@ export interface MonteCarloSettings {
   volatility: number;
   rate: number;
   dividendYield: number;
+  driftMode?: 'forecast' | 'risk-neutral';
 }
 
 export interface SimulationWorkspace {
@@ -124,4 +142,6 @@ export interface MonteCarloResult {
   probabilityClosingBelowTarget?: number;
   histogram: Array<{ lower: number; upper: number; count: number }>;
   samplePaths: number[][];
+  pathSetId?: string;
+  generatedPaths?: number;
 }

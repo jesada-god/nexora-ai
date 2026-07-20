@@ -67,8 +67,8 @@ function parseRow(line: string): HistoricalPrice | null {
   const low = parseNumber(columns[3]);
   const close = parseNumber(columns[4]);
   const volume = parseNumber(columns[5]);
-  if (!date || open === null || high === null || low === null || close === null || volume === null) return null;
-  if (open <= 0 || high <= 0 || low <= 0 || close <= 0 || volume < 0 || !Number.isInteger(volume)) return null;
+  if (!date || open === null || high === null || low === null || close === null) return null;
+  if (open <= 0 || high <= 0 || low <= 0 || close <= 0 || (volume !== null && (volume < 0 || !Number.isInteger(volume)))) return null;
   if (high < Math.max(open, close, low) || low > Math.min(open, close, high)) return null;
   return { date, open, high, low, close, volume };
 }

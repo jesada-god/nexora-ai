@@ -3,7 +3,14 @@ import { calculateSupportResistance } from './calculations';
 
 const freshness = { status: 'end-of-day' as const, asOf: '2026-01-30T00:00:00.000Z', maxAgeSeconds: 86_400 };
 const context = { symbol: 'TEST', source: 'fixture', freshness, calculatedAt: '2026-02-01T00:00:00.000Z' };
-function fixture(length = 80) {
+function fixture(length = 80): Array<{
+  date: string;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number | null;
+}> {
   return Array.from({ length }, (_, index) => {
     const close = 100 + Math.sin(index * Math.PI / 4) * 10;
     return { date: new Date(Date.UTC(2026, 0, index + 1)).toISOString().slice(0, 10), open: close - 0.5, high: close + 1, low: close - 1, close, volume: 1_000 + (index % 8) * 20 };
@@ -34,5 +41,15 @@ describe('support/resistance engine', () => {
     expect(normal.status).not.toBe(undefined);
     expect(calculateSupportResistance(base.slice(0, 5), context).status).toBe('unavailable');
     expect(calculateSupportResistance([...base].reverse(), context).status).toBe('unavailable');
+  });
+
+  it('does not fabricate volume confirmation when a canonical slot has no volume', () => {
+    const input = fixture();
+    input[10] = { ...input[10], volume: null };
+    const result = calculateSupportResistance(input, context, { pivotWindow: 2, atrTolerance: 1 });
+    expect(result.status).toBe('available');
+    if (result.status === 'available') {
+      expect(result.zones.every((zone) => zone.scoreComponents.relativeVolume == null || Number.isFinite(zone.scoreComponents.relativeVolume))).toBe(true);
+    }
   });
 });

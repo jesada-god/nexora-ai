@@ -45,6 +45,23 @@ const input = {
 };
 
 describe('Company Profile translation client', () => {
+  it('times out and aborts a translation that never settles', async () => {
+    let browserSignal!: AbortSignal;
+    const fetcher = vi.fn((
+      _url: string,
+      init: { signal: AbortSignal },
+    ) => {
+      browserSignal = init.signal;
+      return new Promise<Response>(() => undefined);
+    });
+    const client = new CompanyProfileTranslationClient(fetcher, 5);
+
+    await expect(client.request(input, new AbortController().signal)).rejects.toThrow(
+      'Translation request timed out',
+    );
+    expect(browserSignal.aborted).toBe(true);
+  });
+
   it('reuses the same in-flight request across Strict Mode cleanup and setup', async () => {
     let resolve!: (value: Response) => void;
     const fetcher = vi.fn(() => new Promise<Response>((done) => {

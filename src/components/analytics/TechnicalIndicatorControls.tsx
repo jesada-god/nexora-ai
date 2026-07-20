@@ -13,6 +13,8 @@ import { toggleFairValueLayer } from './fair-value/load-policy';
 import { calculateVolumeProfile } from '@/src/lib/analytics/volume-profile/calculations';
 import { calculateFibonacci } from '@/src/lib/analytics/fibonacci/calculations';
 import { DEFAULT_CHART_LAYERS, parseChartLayers, parseChartType, parseIndicatorIds, type ChartLayerPreferences } from '@/src/lib/analytics/chart-layers/preferences';
+import { formatBangkokDateTime } from '@/src/lib/presentation/datetime';
+import { normalizeOhlcvTimeline } from '@/src/lib/analytics/chart-data/timeline';
 
 const Chart = dynamic(() => import('@/src/components/stock/HistoricalChart'), { ssr: false });
 const INDICATOR_STORAGE_KEY = 'nexora:technical-indicators:v2';
@@ -39,8 +41,8 @@ const CHART_TYPES: Array<{ id: AdvancedChartType; label: string }> = [
   { id: 'ohlc', label: 'OHLC Bar' }, { id: 'hollow-candles', label: 'Hollow Candles' },
 ];
 const PRESETS: Record<string, TechnicalIndicatorId[]> = {
-  Trend: ['ema', 'ema50', 'ema200'], 'Long-term': ['sma50', 'sma200', 'volume'],
-  Momentum: ['rsi', 'macd', 'volume'], Volatility: ['bollinger', 'atr', 'volume'],
+  Trend: ['sma', 'ema', 'ema50', 'macd'], 'Long-term': ['sma50', 'sma200', 'ema200'],
+  Momentum: ['rsi', 'stochastic', 'roc'], Volatility: ['bollinger', 'atr'],
 };
 
 interface Props {
@@ -51,9 +53,11 @@ interface Props {
   extendedIndicatorsEnabled: boolean;
   supportResistanceEnabled: boolean;
   fairValueEnabled: boolean;
+  visibleBarCount: number;
+  onRequestMoreHistory?: (minimumDataPoints: number) => void;
 }
 
-export function TechnicalIndicatorControls({ history, meta, technicalIndicatorsEnabled, advancedChartTypesEnabled, extendedIndicatorsEnabled, supportResistanceEnabled, fairValueEnabled }: Props) {
+export function TechnicalIndicatorControls({ history, meta, technicalIndicatorsEnabled, advancedChartTypesEnabled, extendedIndicatorsEnabled, supportResistanceEnabled, fairValueEnabled, visibleBarCount, onRequestMoreHistory }: Props) {
   const indicators = useMemo(() => [...(technicalIndicatorsEnabled ? BASE_INDICATORS : []), ...(extendedIndicatorsEnabled ? EXTENDED_INDICATORS : [])], [extendedIndicatorsEnabled, technicalIndicatorsEnabled]);
   const [enabled, setEnabled] = useState<TechnicalIndicatorId[]>([]);
   const [chartType, setChartType] = useState<AdvancedChartType>(advancedChartTypesEnabled ? 'candlestick' : 'area');
@@ -81,10 +85,12 @@ export function TechnicalIndicatorControls({ history, meta, technicalIndicatorsE
   }, [advancedChartTypesEnabled, indicators]);
 
   const context = useMemo(() => ({ symbol: history.symbol, source: meta.provider, freshness: meta.freshness }), [history.symbol, meta.freshness, meta.provider]);
-  const analysis = useMemo(() => calculateTechnicalAnalysis(history.prices, context), [context, history.prices]);
-  const supportResistance = useMemo(() => supportResistanceEnabled ? calculateSupportResistance(history.prices, context) : undefined, [context, history.prices, supportResistanceEnabled]);
-  const volumeProfile = useMemo(() => layers.vpvr || layers.smartSupportResistance ? calculateVolumeProfile(history.prices) : undefined, [history.prices, layers.smartSupportResistance, layers.vpvr]);
-  const fibonacci = useMemo(() => layers.fibonacci || layers.smartSupportResistance ? calculateFibonacci(history.prices) : undefined, [history.prices, layers.fibonacci, layers.smartSupportResistance]);
+  const canonicalBars = useMemo(() => normalizeOhlcvTimeline(history.prices), [history.prices]);
+  const analyticalPrices = useMemo(() => canonicalBars.map((bar) => ({ date: bar.time, open: bar.open, high: bar.high, low: bar.low, close: bar.close, volume: bar.volume })), [canonicalBars]);
+  const analysis = useMemo(() => calculateTechnicalAnalysis(analyticalPrices, context), [analyticalPrices, context]);
+  const supportResistance = useMemo(() => supportResistanceEnabled ? calculateSupportResistance(analyticalPrices, context) : undefined, [analyticalPrices, context, supportResistanceEnabled]);
+  const volumeProfile = useMemo(() => layers.vpvr || layers.smartSupportResistance ? calculateVolumeProfile(analyticalPrices) : undefined, [analyticalPrices, layers.smartSupportResistance, layers.vpvr]);
+  const fibonacci = useMemo(() => layers.fibonacci || layers.smartSupportResistance ? calculateFibonacci(analyticalPrices) : undefined, [analyticalPrices, layers.fibonacci, layers.smartSupportResistance]);
 
   const saveEnabled = (next: TechnicalIndicatorId[]) => {
     setEnabled(next);
@@ -96,6 +102,10 @@ export function TechnicalIndicatorControls({ history, meta, technicalIndicatorsE
       addToast({ title: 'เปิดได้สูงสุด 3 layers บนมือถือ', message: 'ปิด layer อื่นก่อนแล้วลองอีกครั้ง', type: 'info' });
       return;
     }
+    if (!enabled.includes(id) && analysis.status === 'available') {
+      const result = analysis.indicators[id];
+      if (result.status === 'unavailable') onRequestMoreHistory?.(result.minimumDataPoints);
+    }
     saveEnabled(next);
   };
   const applyPreset = (name: string) => {
@@ -103,6 +113,13 @@ export function TechnicalIndicatorControls({ history, meta, technicalIndicatorsE
     if (isMobile && next.length > 3) {
       addToast({ title: 'Preset นี้เกินขีดจำกัดมือถือ', message: 'เปิดได้พร้อมกันสูงสุด 3 layers', type: 'info' });
       return;
+    }
+    if (analysis.status === 'available') {
+      const required = next.flatMap((id) => {
+        const result = analysis.indicators[id];
+        return result.status === 'unavailable' ? [result.minimumDataPoints] : [];
+      });
+      if (required.length) onRequestMoreHistory?.(Math.max(...required));
     }
     saveEnabled(next);
   };
@@ -128,16 +145,16 @@ export function TechnicalIndicatorControls({ history, meta, technicalIndicatorsE
       {indicators.length > 0 && <div className="mt-3 space-y-3">{[...new Set(indicators.map((item) => item.category))].map((category) => <fieldset key={category}><legend className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">{category}</legend><div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">{indicators.filter((item) => item.category === category).map((item) => {
         const result = analysis.status === 'available' ? analysis.indicators[item.id] : null;
         const unavailable = result?.status === 'unavailable';
-        const disabled = !enabled.includes(item.id) && (unavailable || (isMobile && enabled.length >= 3));
-        return <label key={item.id} className={`flex min-h-11 items-center gap-2 rounded-lg border px-3 text-sm ${disabled ? 'border-slate-800 text-slate-600' : 'border-slate-700 text-slate-200'}`} title={unavailable ? result.reason : undefined}><input type="checkbox" checked={enabled.includes(item.id)} disabled={disabled} onChange={() => toggle(item.id)} className="accent-[#D4FF00]"/><span>{item.label}</span>{result?.status === 'available' && <span className="ml-auto font-mono text-[10px] text-slate-500">{result.latest.value.toLocaleString(undefined, { maximumFractionDigits: 2 })}</span>}{unavailable && <span className="ml-auto max-w-36 text-right text-[10px] text-amber-400">Unavailable · ต้องการ {result.minimumDataPoints} จุด</span>}</label>;
+        const disabled = !enabled.includes(item.id) && isMobile && enabled.length >= 3;
+        return <div key={item.id} className={`flex min-h-11 items-center gap-2 rounded-lg border px-3 text-sm ${disabled ? 'border-slate-800 text-slate-600' : 'border-slate-700 text-slate-200'}`} title={unavailable ? result.reason : undefined}><label className="flex flex-1 items-center gap-2"><input type="checkbox" checked={enabled.includes(item.id)} disabled={disabled} onChange={() => toggle(item.id)} className="accent-[#D4FF00]"/><span>{item.label}</span>{result?.status === 'available' && <span className="ml-auto font-mono text-[10px] text-slate-500">{result.latest.value.toLocaleString(undefined, { maximumFractionDigits: 2 })}</span>}</label>{unavailable && <button type="button" onClick={() => onRequestMoreHistory?.(result.minimumDataPoints)} className="min-h-11 max-w-36 text-right text-[10px] text-amber-400">ต้องการ {result.minimumDataPoints} จุด · โหลดย้อนหลังเพิ่ม</button>}</div>;
       })}</div></fieldset>)}</div>}
       {isMobile && <p className="mt-2 text-xs text-slate-500">บนมือถือเปิดได้สูงสุด 3 layers พร้อมกัน</p>}
       <fieldset className="mt-4 border-t border-slate-800 pt-3"><legend className="text-xs font-semibold uppercase tracking-wide text-slate-500">Chart layers</legend><div className="mt-2 flex flex-wrap gap-2">{([['volume', 'Volume'], ['vpvr', 'VPVR'], ['fibonacci', 'Fibonacci']] as const).map(([id, label]) => <button key={id} type="button" aria-label={`${layers[id] ? 'ปิด' : 'เปิด'} ${label}`} aria-pressed={layers[id]} onClick={() => toggleLayer(id)} className={`min-h-10 rounded-lg border px-3 text-xs ${layers[id] ? 'border-[#D4FF00] text-[#D4FF00]' : 'border-slate-700 text-slate-300'}`}>{label}</button>)}{supportResistanceEnabled && <button type="button" aria-label={`${layers.smartSupportResistance ? 'ปิด' : 'เปิด'} Smart Support/Resistance`} aria-pressed={layers.smartSupportResistance} onClick={() => toggleLayer('smartSupportResistance')} className={`min-h-10 rounded-lg border px-3 text-xs ${layers.smartSupportResistance ? 'border-emerald-400 text-emerald-300' : 'border-slate-700 text-slate-300'}`}>Smart S/R</button>}</div>{supportResistance?.status === 'unavailable' && layers.smartSupportResistance && <p className="mt-2 text-xs text-amber-300">Smart S/R unavailable: {supportResistance.reason}</p>}{layers.vpvr && volumeProfile?.status === 'unavailable' && <p className="mt-2 text-xs text-amber-300">VPVR unavailable: {volumeProfile.reason}</p>}{layers.fibonacci && fibonacci?.status === 'unavailable' && <p className="mt-2 text-xs text-amber-300">Fibonacci unavailable: {fibonacci.reason}</p>}<p className="mt-2 text-xs text-slate-500">ทุก layer คำนวณจาก history.prices ชุดเดิม การเปิด/ปิดไม่เรียก provider และไม่เปลี่ยน timeframe</p></fieldset>
       <fieldset className="mt-4 border-t border-slate-800 pt-3"><legend className="text-xs font-semibold uppercase tracking-wide text-slate-500">Options-derived levels</legend><p className="mt-2 text-xs text-amber-300">Options levels unavailable</p><p className="text-xs text-slate-500">ไม่มี normalized options chain ถูกส่งให้ chart จึงไม่สร้าง Call Wall, Put Wall หรือ Max Pain และ chart ไม่เรียก options provider เพิ่ม</p></fieldset>
       {fairValueEnabled && <fieldset className="mt-4 border-t border-slate-800 pt-3"><legend className="text-xs font-semibold uppercase tracking-wide text-slate-500">Fundamental Fair Value</legend><button type="button" aria-pressed={showFairValue} onClick={() => setShowFairValue(toggleFairValueLayer)} className={`mt-2 min-h-10 rounded-lg border px-3 text-xs ${showFairValue ? 'border-[#D4FF00] text-[#D4FF00]' : 'border-slate-700 text-slate-300'}`}>Fundamental Fair Value Zone</button>{showFairValue && <p className="mt-2 text-xs text-amber-300">Unavailable จนกว่าจะมีงบการเงินจริงและผล valuation ที่ผ่าน validation การเปิด/ปิด layer นี้ไม่เรียก provider เพิ่ม</p>}</fieldset>}
-      <details className="mt-3 border-t border-slate-800 pt-3 text-xs text-slate-400"><summary className="cursor-pointer text-slate-300">รายละเอียดวิธีคำนวณและแหล่งข้อมูล</summary><dl className="mt-2 grid gap-1 sm:grid-cols-2"><div>Symbol: <span className="text-slate-200">{analysis.symbol}</span></div><div>Source: <span className="text-slate-200">{analysis.dataSource ?? 'unavailable'}</span></div><div>Data points: <span className="text-slate-200">{analysis.dataPoints}</span></div><div>Latest data: <span className="text-slate-200">{analysis.latestDataAt ?? 'unavailable'}</span></div><div>Calculated: <span className="text-slate-200">{new Date(analysis.calculatedAt).toLocaleString('th-TH')}</span></div><div>Freshness: <span className="text-slate-200">{analysis.freshness.status}</span></div><div className="sm:col-span-2">Method: <span className="text-slate-200">{analysis.methodology}; raw OHLCV, close field</span></div></dl><ul className="mt-2 list-disc space-y-1 pl-4">{analysis.limitations.map((limitation) => <li key={limitation}>{limitation}</li>)}</ul><p className="mt-2 text-amber-300">ค่าทั้งหมดคำนวณจากข้อมูลย้อนหลัง ไม่ใช่คำแนะนำหรือการรับประกันผลตอบแทน</p></details>
+      <details className="mt-3 border-t border-slate-800 pt-3 text-xs text-slate-400"><summary className="cursor-pointer text-slate-300">รายละเอียดวิธีคำนวณและแหล่งข้อมูล</summary><dl className="mt-2 grid gap-1 sm:grid-cols-2"><div>Symbol: <span className="text-slate-200">{analysis.symbol}</span></div><div>Source: <span className="text-slate-200">{analysis.dataSource ?? 'unavailable'}</span></div><div>Data points: <span className="text-slate-200">{analysis.dataPoints}</span></div><div>Latest data: <span className="text-slate-200">{analysis.latestDataAt ?? 'unavailable'}</span></div><div>Calculated: <span className="text-slate-200">{formatBangkokDateTime(analysis.calculatedAt)}</span></div><div>Freshness: <span className="text-slate-200">{analysis.freshness.status}</span></div><div className="sm:col-span-2">Method: <span className="text-slate-200">{analysis.methodology}; raw OHLCV, close field</span></div></dl><ul className="mt-2 list-disc space-y-1 pl-4">{analysis.limitations.map((limitation) => <li key={limitation}>{limitation}</li>)}</ul><p className="mt-2 text-amber-300">ค่าทั้งหมดคำนวณจากข้อมูลย้อนหลัง ไม่ใช่คำแนะนำหรือการรับประกันผลตอบแทน</p></details>
     </details>
     {chartType === 'heikin-ashi' && <p role="note" className="rounded-lg border border-amber-500/20 bg-amber-500/5 p-3 text-xs text-amber-200">Heikin Ashi เป็นค่าที่แปลงจาก OHLC ไม่ใช่ราคาซื้อขายจริง</p>}
-    <Chart prices={history.prices} technical={analysis} enabledIndicators={enabled} chartType={chartType} supportResistance={supportResistance} volumeProfile={volumeProfile} fibonacci={fibonacci} showVolume={layers.volume} showVpvr={layers.vpvr} showFibonacci={layers.fibonacci} showSmartSupportResistance={layers.smartSupportResistance}/>
+    <Chart symbol={history.symbol} prices={history.prices} visibleBarCount={visibleBarCount} technical={analysis} enabledIndicators={enabled} chartType={chartType} supportResistance={supportResistance} volumeProfile={volumeProfile} fibonacci={fibonacci} showVolume={layers.volume} showVpvr={layers.vpvr} showFibonacci={layers.fibonacci} showSmartSupportResistance={layers.smartSupportResistance}/>
   </div>;
 }

@@ -56,26 +56,29 @@ describe('Alpha Vantage normalization', () => {
       'Time Series (Daily)': {
         '2026-07-17': { '1. open': '10', '2. high': '12', '3. low': '9', '4. close': '11', '5. volume': '100' },
         '2026-05-01': { '1. open': '8', '2. high': '9', '3. low': '7', '4. close': '8', '5. volume': '80' },
-        '2026-07-01': { '1. open': '9', '2. high': '11', '3. low': '8', '4. close': '10', '5. volume': '90' },
+        '2026-07-01': { '1. open': '9', '2. high': '11', '3. low': '8', '4. close': '10' },
       },
     }, 'IBM', '1m', new Date('2026-07-18T00:00:00.000Z'));
 
     expect(result.prices.map((price) => price.date)).toEqual(['2026-07-01', '2026-07-17']);
+    expect(result.prices[0].volume).toBeNull();
   });
 
   it('normalizes a company profile and invalid optional URLs', () => {
     const result = normalizeProfileResponse({
-      Symbol: 'IBM',
-      Name: 'International Business Machines',
+      Symbol: 'RKLB',
+      Name: 'Rocket Lab USA, Inc.',
       OfficialSite: 'not-a-url',
-      MarketCapitalization: '250000000000',
-      FullTimeEmployees: '270000',
+      MarketCapitalization: '20000000000',
+      FullTimeEmployees: '2100',
+      FiscalYearEnd: 'December',
       LatestQuarter: '2026-06-30',
     });
 
     expect(result.website).toBeNull();
-    expect(result.marketCapitalization).toBe(250000000000);
-    expect(result.employees).toBe(270000);
+    expect(result.marketCapitalization).toBe(20000000000);
+    expect(result.employees).toBe(2100);
+    expect(result.fiscalYearEnd).toBe('December');
   });
 
   it('normalizes global market status', () => {

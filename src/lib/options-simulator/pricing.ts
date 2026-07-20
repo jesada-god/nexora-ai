@@ -94,7 +94,7 @@ function finiteDifferenceGreeks(input: PricingInput): Greeks {
 }
 
 export function priceOption(input: PricingInput): { value: number; greeks: Greeks; methodology: 'black-scholes' | 'binomial' } {
-  if (input.style === 'european' && input.dividendYield === 0) {
+  if (input.style === 'european') {
     return { ...blackScholes(input), methodology: 'black-scholes' };
   }
   return { value: binomialValue(input), greeks: finiteDifferenceGreeks(input), methodology: 'binomial' };

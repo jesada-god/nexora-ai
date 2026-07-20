@@ -47,7 +47,7 @@ export const historicalPriceSchema = z.object({
   high: finiteNumber,
   low: finiteNumber,
   close: finiteNumber,
-  volume: z.number().int().nonnegative(),
+  volume: z.number().int().nonnegative().nullable(),
 });
 
 export const historicalPricesSchema = z.object({
@@ -102,6 +102,21 @@ export type HistoricalRange = HistoricalPrices['range'];
 export type CompanyProfile = z.infer<typeof companyProfileSchema>;
 export type MarketOverview = z.infer<typeof marketOverviewSchema>;
 
+export type {
+  MarketDataStatus,
+  OptionContract,
+  OptionsChain,
+  OptionsExpirations,
+} from './options/contracts';
+export type {
+  CanonicalIntradayBar,
+  CanonicalIntradaySeries,
+  IntradayInterval,
+  IntradayRange,
+  IntradaySessionMode,
+  IntradaySessionType,
+} from './intraday/contracts';
+
 export interface ProviderResult<T> {
   data: T;
   freshness: DataFreshness;
@@ -125,6 +140,10 @@ export const marketDataErrorCodeSchema = z.enum([
   'rate-limited',
   'timeout',
   'provider-unauthorized',
+  'forbidden',
+  'provider-unavailable',
+  'unsupported',
+  'stale-data',
   'upstream-unavailable',
   'invalid-provider-response',
   'insufficient-data',

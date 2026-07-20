@@ -127,7 +127,7 @@ export class FinancialModelingPrepProfileProvider {
           country: nullableText(raw.country),
           employees: nullableInteger(raw.fullTimeEmployees),
           currency: nullableText(raw.currency),
-          fiscalYearEnd: null,
+          fiscalYearEnd: nullableText(raw.fiscalYearEnd),
           sector: nullableText(raw.sector),
           industry: nullableText(raw.industry),
           marketCapitalization: nullableNumber(raw.marketCap),

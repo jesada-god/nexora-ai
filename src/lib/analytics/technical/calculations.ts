@@ -182,7 +182,7 @@ export function adxWilder(candles: TechnicalCandles, period: number) {
 
 export function onBalanceVolume(candles: TechnicalCandles): number[] {
   const values = Array<number>(candles.length).fill(0);
-  for (let index = 1; index < candles.length; index += 1) values[index] = values[index - 1] + (candles[index].close > candles[index - 1].close ? candles[index].volume : candles[index].close < candles[index - 1].close ? -candles[index].volume : 0);
+  for (let index = 1; index < candles.length; index += 1) values[index] = values[index - 1] + (candles[index].close > candles[index - 1].close ? candles[index].volume as number : candles[index].close < candles[index - 1].close ? -(candles[index].volume as number) : 0);
   return values;
 }
 
@@ -209,8 +209,9 @@ function calculate<T>(candles: TechnicalCandles, minimum: number, build: () => T
 
 function candlesAreValid(candles: TechnicalCandles) {
   return candles.every((candle, index) =>
-    [candle.open, candle.high, candle.low, candle.close, candle.volume].every(Number.isFinite)
-    && candle.high >= candle.low && candle.volume >= 0
+    [candle.open, candle.high, candle.low, candle.close].every(Number.isFinite)
+    && candle.high >= candle.low
+    && (candle.volume == null || (Number.isFinite(candle.volume) && candle.volume >= 0))
     && (index === 0 || candle.date > candles[index - 1].date));
 }
 
@@ -246,6 +247,9 @@ export function calculateTechnicalAnalysis(
   const adxValues = adxWilder(candles, parameters.adxPeriod);
   const ichimokuValues = ichimoku(candles, parameters.ichimokuConversionPeriod, parameters.ichimokuBasePeriod, parameters.ichimokuSpanPeriod, parameters.ichimokuDisplacement);
   const macdMinimum = parameters.macdSlowPeriod + parameters.macdSignalPeriod - 1;
+  const volumeComplete = candles.every((candle) => candle.volume != null);
+  const volumes = volumeComplete ? candles.map((candle) => candle.volume as number) : [];
+  const volumeUnavailable = (minimum: number) => unavailable(candles.length, minimum, 'Volume unavailable: provider data is missing volume for one or more canonical time slots');
   return {
     status: 'available',
     ...base,
@@ -263,12 +267,12 @@ export function calculateTechnicalAnalysis(
       macd: calculate(candles, macdMinimum, () => macdValues.macd.flatMap((value, index): MacdPoint[] => value == null ? [] : [{ date: candles[index].date, value, signal: macdValues.signal[index], histogram: macdValues.histogram[index] }])),
       bollinger: calculate(candles, parameters.bollingerPeriod, () => bandValues.flatMap((value, index): BollingerPoint[] => value == null ? [] : [{ date: candles[index].date, value: value.middle, ...value }])),
       atr: calculate(candles, parameters.atrPeriod, () => points(candles, atrWilder(candles, parameters.atrPeriod))),
-      volume: available(candles.map((candle) => ({ date: candle.date, value: candle.volume }))),
-      averageVolume: calculate(candles, parameters.averageVolumePeriod, () => points(candles, sma(candles.map((candle) => candle.volume), parameters.averageVolumePeriod))),
-      averageVolume50: calculate(candles, 50, () => points(candles, sma(candles.map((candle) => candle.volume), 50))),
+      volume: volumeComplete ? available(candles.map((candle) => ({ date: candle.date, value: candle.volume as number }))) : volumeUnavailable(1),
+      averageVolume: volumeComplete ? calculate(candles, parameters.averageVolumePeriod, () => points(candles, sma(volumes, parameters.averageVolumePeriod))) : volumeUnavailable(parameters.averageVolumePeriod),
+      averageVolume50: volumeComplete ? calculate(candles, 50, () => points(candles, sma(volumes, 50))) : volumeUnavailable(50),
       stochastic: calculate(candles, parameters.stochasticPeriod + parameters.stochasticSmoothK - 1, () => stochasticValues.k.flatMap((value, index): StochasticPoint[] => value == null ? [] : [{ date: candles[index].date, value, k: value, d: stochasticValues.d[index] }])),
       adx: calculate(candles, parameters.adxPeriod * 2, () => adxValues.adx.flatMap((value, index): AdxPoint[] => value == null ? [] : [{ date: candles[index].date, value, plusDi: adxValues.plusDi[index] as number, minusDi: adxValues.minusDi[index] as number }])),
-      obv: calculate(candles, 2, () => points(candles, onBalanceVolume(candles))),
+      obv: volumeComplete ? calculate(candles, 2, () => points(candles, onBalanceVolume(candles))) : volumeUnavailable(2),
       ichimoku: calculate(candles, parameters.ichimokuSpanPeriod + parameters.ichimokuDisplacement, () => ichimokuValues.conversion.flatMap((value, index): IchimokuPoint[] => value == null || ichimokuValues.base[index] == null ? [] : [{ date: candles[index].date, value, conversion: value, base: ichimokuValues.base[index] as number, leadingA: ichimokuValues.leadingA[index], leadingB: ichimokuValues.leadingB[index] }])),
       roc: calculate(candles, parameters.rocPeriod + 1, () => points(candles, rateOfChange(values, parameters.rocPeriod))),
       vwap: unavailable(candles.length, 1, 'Unavailable: แหล่งข้อมูลนี้มีเฉพาะ daily OHLCV และไม่มี session boundaries จริง จึงไม่คำนวณ session VWAP'),

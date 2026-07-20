@@ -24,6 +24,7 @@ describe('Financial Modeling Prep Company Profile provider', () => {
       exchange: 'NASDAQ',
       marketCap: 20_000_000_000,
       fullTimeEmployees: null,
+      fiscalYearEnd: 'December',
     }]), {
       headers: { 'Content-Type': 'application/json' },
     }));
@@ -40,7 +41,7 @@ describe('Financial Modeling Prep Company Profile provider', () => {
       country: 'US',
       employees: null,
       currency: 'USD',
-      fiscalYearEnd: null,
+      fiscalYearEnd: 'December',
       sector: 'Industrials',
       industry: 'Aerospace & Defense',
       marketCapitalization: 20_000_000_000,

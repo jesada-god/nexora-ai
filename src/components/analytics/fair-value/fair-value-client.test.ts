@@ -6,9 +6,12 @@ const unavailable = {
   failureKind: 'insufficient-data' as const,
   symbol: 'RKLB',
   currency: 'USD',
+  provider: 'alpha-vantage',
   reason: 'insufficient real data',
+  missingFields: ['forwardEstimate'],
   missingInputs: ['forwardEstimate'],
   staleInputs: [],
+  asOf: '2026-01-01T00:00:00.000Z',
   calculatedAt: '2026-01-01T00:00:00.000Z',
   methodologyVersion: 'nexora-fv-v1' as const,
   limitations: [],
@@ -55,5 +58,26 @@ describe('Fair Value request coordinator', () => {
     await expect(request).rejects.toMatchObject({ name: 'AbortError' });
     await Promise.resolve();
     expect(browserSignal.aborted).toBe(true);
+  });
+
+  it('preserves a structured rate-limited response instead of replacing it with a generic error', async () => {
+    const rateLimited = {
+      ...unavailable,
+      failureKind: 'rate-limited' as const,
+      provider: null,
+      missingFields: [],
+      missingInputs: [],
+      reason: 'try later',
+    };
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(
+      JSON.stringify({ data: rateLimited }),
+      { status: 429 },
+    )));
+
+    await expect(requestFairValue('RKLB', new AbortController().signal)).resolves.toMatchObject({
+      status: 'unavailable',
+      failureKind: 'rate-limited',
+      missingFields: [],
+    });
   });
 });

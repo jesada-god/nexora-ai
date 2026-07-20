@@ -133,7 +133,9 @@ export class AlphaVantageProvider implements MarketDataProvider {
       data,
       freshness: {
         status: 'end-of-day',
-        asOf: asOfDate(data.latestTradingDay),
+        // GLOBAL_QUOTE exposes a trading date, not an instant. Keep the
+        // date on Quote.latestTradingDay instead of fabricating midnight.
+        asOf: null,
         maxAgeSeconds: REVALIDATE_SECONDS.quote,
       },
     };

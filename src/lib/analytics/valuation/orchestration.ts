@@ -9,34 +9,35 @@ import {
   type FairValueLogger,
 } from './logging';
 import {
-  METHODOLOGY_VERSION,
   type FairValueFailureKind,
   type FairValueResult,
   type FairValueUnavailable,
   type FinancialPeriod,
   type ValuationInput,
 } from './types';
+import { createFairValueUnavailable } from './result';
 
 function unavailable(
   failureKind: FairValueFailureKind,
   symbol: string,
   calculatedAt: string,
   reason: string,
-  missingInputs: string[],
+  missingFields: string[],
   currency: string | null = null,
+  provider: string | null = null,
+  asOf: string = calculatedAt,
 ): FairValueUnavailable {
-  return {
-    status: 'unavailable',
+  return createFairValueUnavailable({
     failureKind,
     symbol,
     currency,
+    provider,
     reason,
-    missingInputs,
-    staleInputs: [],
+    missingFields,
+    asOf,
     calculatedAt,
-    methodologyVersion: METHODOLOGY_VERSION,
     limitations: ['No financial values, estimates, FX rates, peer observations, or fair values are fabricated.'],
-  };
+  });
 }
 
 function logUnavailable(
@@ -49,7 +50,7 @@ function logUnavailable(
     event: 'fair_value_evaluation',
     status: 'unavailable',
     symbol: result.symbol,
-    provider,
+    provider: provider ?? result.provider ?? undefined,
     failureKind: result.failureKind,
     missingInputCount: result.missingInputs.length,
     errorCode,
@@ -79,12 +80,14 @@ export function calculateFairValueSafely(
     const errorCode = safeFairValueErrorCode(cause);
     return logUnavailable(
       unavailable(
-        'calculation-failure',
+        'server-error',
         input.symbol,
         input.calculatedAt ?? new Date().toISOString(),
         'การคำนวณหรือ validation ของ Fair Value ล้มเหลว จึงไม่เผยแพร่ค่าประเมิน',
         ['valuationCalculation'],
         input.currency || null,
+        input.source || null,
+        input.priceAsOf || input.calculatedAt || new Date().toISOString(),
       ),
       input.source,
       errorCode,
@@ -135,43 +138,109 @@ export async function loadFairValue(symbol: string): Promise<FairValueResult> {
     );
   }
 
-  const market = getMarketDataProvider();
-  const loadProviderData = () => Promise.all([
-    market.getQuote(symbol),
-    market.getCompanyProfile(symbol),
-    fundamentals.getFinancialPeriods(symbol),
-    getHistoricalMarketDataService().getHistoricalPrices(symbol, '1y'),
-    getFxRate('USD', 'THB'),
-  ] as const);
-
-  let providerData: Awaited<ReturnType<typeof loadProviderData>>;
+  let market: ReturnType<typeof getMarketDataProvider>;
   try {
-    providerData = await loadProviderData();
+    market = getMarketDataProvider();
   } catch (cause) {
     const errorCode = safeFairValueErrorCode(cause);
     return logUnavailable(
       unavailable(
-        'provider-unavailable',
+        errorCode === 'rate-limited' ? 'rate-limited' : 'provider-unavailable',
         symbol,
         calculatedAt,
-        `provider ส่งข้อมูลที่จำเป็นไม่สำเร็จ (${errorCode}) จึงไม่คำนวณ Fair Value`,
-        ['quote', 'companyProfile', 'financialStatements', 'historicalOHLCV'],
+        errorCode === 'rate-limited'
+          ? 'ผู้ให้บริการจำกัดคำขอชั่วคราว จึงยังไม่คำนวณ Fair Value'
+          : 'ไม่สามารถเริ่มต้น market-data provider ที่จำเป็นต่อ Fair Value ได้',
+        ['quote', 'companyProfile'],
+        null,
+        null,
       ),
-      fundamentals.id,
+      undefined,
       errorCode,
     );
   }
 
-  const [quote, profile, financials, history, fxResult] = providerData;
+  const [quoteResult, profileResult, financialsResult, historyResult, fxOutcome] =
+    await Promise.allSettled([
+      market.getQuote(symbol),
+      market.getCompanyProfile(symbol),
+      fundamentals.getFinancialPeriods(symbol),
+      getHistoricalMarketDataService().getHistoricalPrices(symbol, '1y'),
+      getFxRate('USD', 'THB'),
+    ] as const);
+  const requiredFailures = [
+    { field: 'quote', provider: market.id, result: quoteResult },
+    { field: 'companyProfile', provider: market.id, result: profileResult },
+    { field: 'financialStatements', provider: fundamentals.id, result: financialsResult },
+    { field: 'historicalOHLCV', provider: null, result: historyResult },
+  ];
+  const failed = requiredFailures.find((item) => item.result.status === 'rejected');
+  if (failed?.result.status === 'rejected') {
+    const errorCode = safeFairValueErrorCode(failed.result.reason);
+    const failureKind: FairValueFailureKind = errorCode === 'rate-limited'
+      ? 'rate-limited'
+      : ['internal-error', 'Error', 'RangeError', 'unknown-error'].includes(errorCode)
+        ? 'server-error'
+        : 'provider-unavailable';
+    return logUnavailable(
+      unavailable(
+        failureKind,
+        symbol,
+        calculatedAt,
+        failureKind === 'rate-limited'
+          ? 'ผู้ให้บริการจำกัดคำขอชั่วคราว จึงยังไม่คำนวณ Fair Value'
+          : failureKind === 'server-error'
+            ? 'เซิร์ฟเวอร์ไม่สามารถเตรียมข้อมูล Fair Value ได้อย่างปลอดภัย'
+            : 'ผู้ให้บริการส่งข้อมูลที่จำเป็นไม่สำเร็จ จึงยังไม่คำนวณ Fair Value',
+        [failed.field],
+        null,
+        failed.provider,
+      ),
+      failed.provider ?? undefined,
+      errorCode,
+    );
+  }
+  if (
+    quoteResult.status !== 'fulfilled'
+    || profileResult.status !== 'fulfilled'
+    || financialsResult.status !== 'fulfilled'
+    || historyResult.status !== 'fulfilled'
+  ) {
+    return logUnavailable(
+      unavailable(
+        'server-error',
+        symbol,
+        calculatedAt,
+        'เซิร์ฟเวอร์ไม่สามารถยืนยันผลจาก provider ได้อย่างปลอดภัย',
+        ['providerResult'],
+      ),
+      undefined,
+      'unknown-error',
+    );
+  }
+
+  const quote = quoteResult.value;
+  const profile = profileResult.value;
+  const financials = financialsResult.value;
+  const history = historyResult.value;
+  const fxResult = fxOutcome.status === 'fulfilled'
+    ? fxOutcome.value
+    : { quote: null, unavailable: true };
   if (!financials.periods.length) {
+    const missingFields = [
+      ...financials.missingInputs,
+      'historicalFinancials>=3Periods',
+    ];
     return logUnavailable(
       unavailable(
         'provider-unavailable',
         symbol,
         calculatedAt,
         'provider ที่ตั้งค่าไว้ไม่มีงบการเงินจริงครบพอ จึงไม่คำนวณ Fair Value',
-        financials.missingInputs,
+        missingFields,
         financials.currency || null,
+        fundamentals.id,
+        financials.asOf || calculatedAt,
       ),
       fundamentals.id,
     );
@@ -188,6 +257,8 @@ export async function loadFairValue(symbol: string): Promise<FairValueResult> {
         'Market quote and financial statements do not share a verified currency.',
         ['currencyConsistency'],
         sourceCurrency,
+        fundamentals.id,
+        financials.asOf || calculatedAt,
       ),
       fundamentals.id,
     );
@@ -201,6 +272,8 @@ export async function loadFairValue(symbol: string): Promise<FairValueResult> {
         `Currency ${sourceCurrency} cannot be normalized to USD by the configured FX service.`,
         ['supportedFxPair'],
         sourceCurrency,
+        fundamentals.id,
+        financials.asOf || calculatedAt,
       ),
       fundamentals.id,
     );
@@ -216,6 +289,8 @@ export async function loadFairValue(symbol: string): Promise<FairValueResult> {
         'ไม่มีอัตรา USD/THB จริงที่ตรวจสอบได้ จึงไม่แปลงข้อมูล THB เพื่อคำนวณ Fair Value',
         ['verifiedUsdThbFx'],
         sourceCurrency,
+        fxResult.quote?.source ?? null,
+        fxResult.quote?.asOf ?? calculatedAt,
       ),
       fxResult.quote?.source,
     );

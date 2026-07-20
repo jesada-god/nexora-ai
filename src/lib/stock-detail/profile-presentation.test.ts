@@ -3,6 +3,7 @@ import {
   displayCountry,
   displayFiscalYearEnd,
   formatMarketCapitalization,
+  isCompanyProfileTranslationLoading,
   resolvedDescription,
   shouldRequestCompanyProfileTranslation,
 } from './profile-presentation';
@@ -44,5 +45,25 @@ describe('Company Profile presentation', () => {
     expect(shouldRequestCompanyProfileTranslation('en', 'Rocket Lab provides launch services.')).toBe(false);
     expect(shouldRequestCompanyProfileTranslation('th', null)).toBe(false);
     expect(shouldRequestCompanyProfileTranslation('th', '   ')).toBe(false);
+  });
+
+  it('leaves loading and falls back after the active translation attempt fails', () => {
+    expect(isCompanyProfileTranslationLoading({
+      language: 'th',
+      sourceText: 'Rocket Lab provides launch services.',
+      attempt: 1,
+      settledAttempt: 1,
+      translatedText: null,
+      error: 'Translation request timed out',
+    })).toBe(false);
+    expect(resolvedDescription({
+      language: 'th',
+      sourceText: 'Rocket Lab provides launch services.',
+      translatedText: null,
+      translationFailed: true,
+    })).toEqual({
+      text: 'Rocket Lab provides launch services.',
+      fellBackToEnglish: true,
+    });
   });
 });

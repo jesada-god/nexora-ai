@@ -15,16 +15,23 @@ const THAI_MONTHS: Record<string, string> = {
   December: 'ธันวาคม',
 };
 
-const COUNTRY_CODES: Record<string, string> = {
-  USA: 'US',
-  'United States': 'US',
-  'United States of America': 'US',
-  Thailand: 'TH',
-  Canada: 'CA',
-  China: 'CN',
-  Japan: 'JP',
-  Singapore: 'SG',
-  'United Kingdom': 'GB',
+const THAI_COUNTRIES: Record<string, string> = {
+  US: 'สหรัฐอเมริกา',
+  USA: 'สหรัฐอเมริกา',
+  'United States': 'สหรัฐอเมริกา',
+  'United States of America': 'สหรัฐอเมริกา',
+  TH: 'ไทย',
+  Thailand: 'ไทย',
+  CA: 'แคนาดา',
+  Canada: 'แคนาดา',
+  CN: 'จีน',
+  China: 'จีน',
+  JP: 'ญี่ปุ่น',
+  Japan: 'ญี่ปุ่น',
+  SG: 'สิงคโปร์',
+  Singapore: 'สิงคโปร์',
+  GB: 'สหราชอาณาจักร',
+  'United Kingdom': 'สหราชอาณาจักร',
 };
 
 export const companyProfileLabels = {
@@ -75,9 +82,7 @@ export function shouldRequestCompanyProfileTranslation(
 
 export function displayCountry(source: string | null, language: CompanyProfileLanguage): string | null {
   if (!source || language === 'en') return source;
-  const code = COUNTRY_CODES[source];
-  if (!code) return source;
-  return new Intl.DisplayNames(['th'], { type: 'region' }).of(code) ?? source;
+  return THAI_COUNTRIES[source] ?? source;
 }
 
 export function displayFiscalYearEnd(source: string | null, language: CompanyProfileLanguage): string | null {
@@ -117,4 +122,20 @@ export function resolvedDescription(input: {
     text: input.sourceText,
     fellBackToEnglish: input.translationFailed && Boolean(input.sourceText),
   };
+}
+
+export function isCompanyProfileTranslationLoading(input: {
+  language: CompanyProfileLanguage;
+  sourceText: string | null;
+  attempt: number;
+  settledAttempt: number | null;
+  translatedText: string | null;
+  error: string | null;
+}): boolean {
+  return input.language === 'th'
+    && Boolean(input.sourceText)
+    && (
+      input.settledAttempt !== input.attempt
+      || (!input.translatedText && !input.error)
+    );
 }

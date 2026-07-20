@@ -45,6 +45,13 @@ const NewsFeed = dynamic(
     loading: () => <div className="h-72 animate-pulse rounded-xl bg-slate-800/50" />,
   },
 );
+const OptionsChainPanel = dynamic(
+  () => import('./OptionsChainPanel').then((module) => module.OptionsChainPanel),
+  {
+    ssr: false,
+    loading: () => <div className="h-72 animate-pulse rounded-xl bg-slate-800/50" />,
+  },
+);
 
 const tabs = ['Overview', 'Chart', 'Financials', 'News', 'Analysis'];
 
@@ -399,12 +406,13 @@ export function StockDetailClient({
               : <ComingSoon title="Financials" />
           )}
           {tab === 'Analysis' && (
-            <div className="rounded-2xl border border-amber-500/20 bg-[#151B28] p-8 text-center">
-              <Activity className="mx-auto mb-3 text-amber-300" />
-              <h2 className="font-bold text-white">Analysis · Experimental / Coming Soon</h2>
-              <p className="mt-2 text-sm text-slate-400">
-                AI analysis ยังไม่ได้คำนวณจริง และจะไม่แสดงเป็นคำแนะนำลงทุน
-              </p>
+            <div className="space-y-4">
+              <OptionsChainPanel symbol={symbol} />
+              <div className="rounded-2xl border border-amber-500/20 bg-[#151B28] p-5 text-center">
+                <Activity className="mx-auto mb-3 text-amber-300" />
+                <h2 className="font-bold text-white">AI analysis · Coming Soon</h2>
+                <p className="mt-2 text-sm text-slate-400">ส่วน Options ด้านบนเป็น analytics ตามสูตรจากข้อมูลตลาดจริง ไม่ใช่คำสั่งหรือการรับประกันผลลัพธ์</p>
+              </div>
             </div>
           )}
         </section>

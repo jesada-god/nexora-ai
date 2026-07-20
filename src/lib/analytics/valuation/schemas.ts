@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { symbolSchema } from '@/src/lib/market-data/validation';
+import { METHODOLOGY_VERSION, SECTOR_RULE_VERSION } from './types';
 
 const finite = z.number().finite();
 export const dcfAssumptionsSchema = z.object({
@@ -7,3 +8,160 @@ export const dcfAssumptionsSchema = z.object({
 }).refine((value) => value.wacc > value.terminalGrowth, { message: 'WACC must be greater than terminal growth', path: ['wacc'] });
 
 export const fairValueRequestSchema = z.object({ symbol: symbolSchema, scenario: z.enum(['conservative', 'base', 'optimistic', 'user-defined']), assumptions: dcfAssumptionsSchema.optional() }).refine((value) => value.scenario !== 'user-defined' || Boolean(value.assumptions), { message: 'User-defined scenario requires explicit assumptions', path: ['assumptions'] });
+
+export const fairValueFailureKindSchema = z.enum([
+  'provider-unavailable',
+  'insufficient-data',
+  'not-meaningful',
+  'rate-limited',
+  'server-error',
+]);
+
+const modelIdSchema = z.enum([
+  'fcff-dcf',
+  'fcfe',
+  'ddm',
+  'relative',
+  'asset-based',
+  'ev-sales',
+  'ev-ebitda',
+  'pe',
+  'peg',
+  'pb',
+]);
+const analyticsSourceTypeSchema = z.enum([
+  'provider-supplied',
+  'calculated',
+  'estimated',
+  'user-provided',
+]);
+const rangeSchema = z.object({ low: finite, high: finite });
+const excludedModelSchema = z.object({
+  model: modelIdSchema,
+  reason: z.string(),
+});
+const unavailableSchema = z.object({
+  status: z.literal('unavailable'),
+  failureKind: fairValueFailureKindSchema,
+  symbol: symbolSchema,
+  currency: z.string().nullable(),
+  provider: z.string().nullable(),
+  reason: z.string().min(1),
+  missingFields: z.array(z.string()),
+  missingInputs: z.array(z.string()),
+  staleInputs: z.array(z.string()),
+  asOf: z.string().min(1),
+  calculatedAt: z.iso.datetime(),
+  methodologyVersion: z.literal(METHODOLOGY_VERSION),
+  limitations: z.array(z.string()),
+});
+const availableSchema = z.object({
+  status: z.literal('available'),
+  symbol: symbolSchema,
+  currency: z.string(),
+  marketPrice: z.object({
+    value: finite,
+    asOf: z.string(),
+    source: z.string(),
+    sourceType: analyticsSourceTypeSchema,
+  }),
+  companyClassification: z.object({
+    classification: z.array(z.string()),
+    evidence: z.array(z.string()),
+    eligibleModels: z.array(modelIdSchema),
+    excludedModels: z.array(excludedModelSchema),
+  }),
+  modelResults: z.array(z.object({
+    model: modelIdSchema,
+    fairValue: finite,
+    weight: finite,
+    configuredWeight: finite.optional(),
+    normalizedWeight: finite.optional(),
+    scenarios: z.object({
+      conservative: finite,
+      base: finite,
+      optimistic: finite,
+    }).optional(),
+    reason: z.string().optional(),
+    methodology: z.string(),
+    inputs: z.record(z.string(), z.union([z.number(), z.string()])),
+    assumptions: z.record(z.string(), z.union([z.number(), z.string()])),
+    limitations: z.array(z.string()),
+  })),
+  excludedModels: z.array(excludedModelSchema),
+  fundamentalFairValue: z.object({
+    conservative: rangeSchema,
+    base: rangeSchema,
+    optimistic: rangeSchema,
+    centralEstimate: finite,
+    dispersion: finite,
+  }),
+  technicalContext: z.unknown(),
+  fundamentalQuality: z.object({
+    score: finite,
+    categories: z.array(z.unknown()),
+    limitation: z.string(),
+  }),
+  dataQuality: z.object({
+    score: finite,
+    completeness: finite,
+    freshness: finite,
+    periodConsistency: finite,
+    currencyConsistency: finite,
+  }),
+  modelReliability: z.object({
+    level: z.enum(['High', 'Moderate', 'Low', 'Unavailable']),
+    score: finite.nullable(),
+    components: z.record(z.string(), finite),
+    explanation: z.string(),
+  }),
+  reliabilityReasons: z.array(z.string()),
+  missingInputs: z.array(z.string()),
+  dataStatus: z.enum(['live', 'delayed', 'cached', 'stale', 'limited']),
+  selectedModel: z.union([modelIdSchema, z.literal('blended')]),
+  upsideAmount: finite,
+  upsidePercent: finite,
+  sector: z.string(),
+  industry: z.string(),
+  sectorRuleId: z.string(),
+  sectorRuleVersion: z.literal(SECTOR_RULE_VERSION),
+  inputDetails: z.array(z.object({
+    field: z.string(),
+    value: z.union([z.number(), z.string()]),
+    currency: z.string().nullable(),
+    period: z.string(),
+    provider: z.string(),
+    asOf: z.string(),
+    status: z.enum(['available', 'limited', 'stale']),
+    origin: z.enum(['provider', 'derived']),
+  })),
+  assumptionDetails: z.array(z.object({
+    field: z.string(),
+    value: z.union([z.number(), z.string()]),
+    source: z.enum(['model-assumption', 'provider', 'historical-derived']),
+    ruleVersion: z.literal(SECTOR_RULE_VERSION),
+  })),
+  displayFx: z.object({
+    rate: finite,
+    asOf: z.string(),
+    provider: z.string(),
+    status: z.enum(['live', 'cached', 'stale']),
+  }).nullable().optional(),
+  inputs: z.record(z.string(), z.unknown()),
+  assumptions: z.record(z.string(), z.unknown()),
+  sources: z.array(z.object({
+    name: z.string(),
+    asOf: z.string(),
+    sourceType: analyticsSourceTypeSchema,
+  })),
+  latestDataAt: z.string(),
+  calculatedAt: z.iso.datetime(),
+  methodologyVersion: z.literal(METHODOLOGY_VERSION),
+  limitations: z.array(z.string()),
+});
+
+/** Runtime contract shared by the API boundary and browser request client. */
+export const fairValueResultSchema = z.discriminatedUnion('status', [
+  availableSchema,
+  unavailableSchema,
+]);

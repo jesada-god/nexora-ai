@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { HistoricalRange } from '@/src/lib/market-data/types';
-import { canRetryHistory, HistoryRequestClient, HistoryRequestSession, type HistoryResponse } from './history-request';
+import { canRetryHistory, historyRangeForIndicator, HistoryRequestClient, HistoryRequestSession, rangeCovers, visibleBarsForRange, type HistoryResponse } from './history-request';
 
 function response(code?: string): HistoryResponse {
   return {
@@ -12,6 +12,14 @@ function response(code?: string): HistoryResponse {
 function jsonResult(value: HistoryResponse) { return { json: async () => value }; }
 
 describe('chart history request coordination', () => {
+  it('separates visible range from calculation warm-up range', () => {
+    expect(historyRangeForIndicator(200)).toBe('1y');
+    expect(historyRangeForIndicator(1_000)).toBe('5y');
+    expect(rangeCovers('1y', '1m')).toBe(true);
+    expect(rangeCovers('3m', '1y')).toBe(false);
+    expect(visibleBarsForRange('1m')).toBe(23);
+  });
+
   it('clicking Retry once creates one fetch', async () => {
     const fetcher = vi.fn(async () => jsonResult(response())); const session = new HistoryRequestSession(new HistoryRequestClient(fetcher));
     await session.begin('RKLB', '3m', true).promise; expect(fetcher).toHaveBeenCalledTimes(1);

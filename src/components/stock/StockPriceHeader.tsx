@@ -9,6 +9,7 @@ import type {
   Quote,
 } from '@/src/lib/market-data/types';
 import type { FxQuote } from '@/src/lib/market-data/fx/types';
+import { formatMarketDataAsOf } from '@/src/lib/presentation/datetime';
 import { stockDetailErrorMessage } from '@/src/lib/stock-detail/error-presentation';
 import {
   calculatePriceChange,
@@ -75,15 +76,10 @@ function formatPercent(value: number | null): string {
   return value > 0 ? `(+${formatted}%)` : value < 0 ? `(-${formatted}%)` : `(${formatted}%)`;
 }
 
-function formatProviderTimestamp(value: string | null): string {
+function formatProviderTimestamp(value: string | null, dateOnly = false): string {
   if (!value) return 'ไม่ทราบเวลาข้อมูล';
-  const parsed = new Date(value);
-  if (Number.isNaN(parsed.valueOf())) return 'ไม่ทราบเวลาข้อมูล';
-  return new Intl.DateTimeFormat('th-TH', {
-    dateStyle: 'medium',
-    timeStyle: 'short',
-    timeZone: 'UTC',
-  }).format(parsed);
+  const formatted = formatMarketDataAsOf(value, { dateOnly });
+  return formatted === '—' ? 'ไม่ทราบเวลาข้อมูล' : formatted;
 }
 
 function directionClass(direction: PriceDirection | null): string {
@@ -163,6 +159,8 @@ export function StockPriceHeader({
   const extendedDirection = extendedChange?.direction ?? null;
   const thbUnavailable = !verifiedUsdSource || fxRate === null || !Number.isFinite(fxRate) || fxRate <= 0;
   const quoteCoolingDown = quoteRetryAt > 0;
+  const quoteDate = quote?.latestTradingDay ?? null;
+  const displayedQuoteAsOf = quoteDate ?? freshness.asOf;
   const combinedStatus = market
     ? `${sessionView.label} · ${dataStatusView.label}`
     : 'ไม่สามารถตรวจสอบสถานะตลาดได้';
@@ -188,7 +186,7 @@ export function StockPriceHeader({
           <div className="mt-3 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-sm text-text-muted">
             {fallbackLabel && <span className="text-amber-300">ข้อมูลจากวันซื้อขายก่อนหน้า</span>}
             {fallbackLabel && <span aria-hidden="true">·</span>}
-            <span>{formatProviderTimestamp(freshness.asOf)}</span>
+            <span>{formatProviderTimestamp(displayedQuoteAsOf, Boolean(quoteDate))}</span>
             <span aria-hidden="true">·</span>
             <span className="inline-flex min-w-0 items-center gap-1.5">
               <StatusEmoji value={market ? sessionView.emoji : '⚠️'}/>
@@ -225,7 +223,7 @@ export function StockPriceHeader({
         </span>
         <span className="break-all text-text-main">{formatNumber(displayExtendedPrice)} {displayedCurrency}</span>
         <span className={`break-all ${directionClass(extendedDirection)}`}>{formatSigned(displayExtendedChange)} {formatPercent(extendedChange.percent)} {directionMark(extendedDirection)}</span>
-        <span className="text-text-muted">{formatProviderTimestamp(extendedQuote.asOf)}</span>
+        <span className="text-text-muted">{formatProviderTimestamp(extendedQuote.asOf, extendedQuote.freshness.status === 'end-of-day')}</span>
         {extendedDataStatusView && <span className="inline-flex items-center gap-1.5 text-text-muted">{extendedDataStatusView.emoji && <StatusEmoji value={extendedDataStatusView.emoji}/>} {extendedDataStatusView.label}</span>}
       </div>}
 
@@ -243,8 +241,11 @@ export function StockPriceHeader({
         {extendedQuote && extendedChange && <Detail label="Extended Price" value={`${formatNumber(extendedQuote.price)} ${normalizedSourceCurrency ?? 'ไม่ทราบสกุลเงิน'} · ${extendedQuote.provider}`}/>}
         {!fallbackLabel && <Detail label="Comparison Base" value={extendedQuote && extendedChange ? 'Official Regular Close' : 'Previous Close'}/>}
         <Detail label="Display Currency" value={displayedCurrency}/>
-        <Detail label="Timestamp" value={`${freshness.asOf ?? 'ไม่พบข้อมูล'} (${formatProviderTimestamp(freshness.asOf)})`}/>
-        <Detail label="Market Timezone" value="ผู้ให้บริการไม่ได้ระบุเขตเวลา; timestamp แสดงด้วย UTC"/>
+        <Detail
+          label={quoteDate ? 'Trading date' : 'Timestamp'}
+          value={`${displayedQuoteAsOf ?? 'ไม่พบข้อมูล'} (${formatProviderTimestamp(displayedQuoteAsOf, Boolean(quoteDate))})`}
+        />
+        <Detail label="Display Timezone" value="Asia/Bangkok; ข้อมูลแบบ date-only แสดงเฉพาะวันที่"/>
         <Detail label="Data Status" value={dataStatusView.label}/>
         <Detail label="Delay Duration" value="Provider ไม่ได้ระบุ"/>
         {selectedCurrency === 'THB' && <Detail label="FX" value={fxQuote ? `1 USD = ${fxQuote.rate} THB · ${fxQuote.source} · ณ ${fxQuote.asOf}${fxQuote.stale ? ' · ข้อมูลเก่า' : fxQuote.cached ? ' · ข้อมูลแคช' : ''}` : 'ไม่พบข้อมูล'}/>}

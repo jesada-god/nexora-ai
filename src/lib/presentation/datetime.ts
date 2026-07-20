@@ -1,6 +1,10 @@
 export const THAI_LOCALE = 'th-TH';
 export const BANGKOK_TIME_ZONE = 'Asia/Bangkok';
 
+export function isDateOnlyValue(value: string | null | undefined): boolean {
+  return Boolean(value && /^\d{4}-\d{2}-\d{2}$/.test(value));
+}
+
 export function formatBangkokDateTime(value: string | Date | null | undefined): string {
   if (!value) return '—';
   const date = value instanceof Date ? value : new Date(value);
@@ -10,6 +14,29 @@ export function formatBangkokDateTime(value: string | Date | null | undefined): 
     timeStyle: 'short',
     timeZone: BANGKOK_TIME_ZONE,
   }).format(date);
+}
+
+export function formatThaiDateOnly(value: string | null | undefined): string {
+  const datePart = value?.match(/^(\d{4}-\d{2}-\d{2})(?:T00:00:00(?:\.000)?Z)?$/)?.[1];
+  if (!datePart) return '—';
+  const date = new Date(`${datePart}T12:00:00.000Z`);
+  if (Number.isNaN(date.valueOf())) return '—';
+  return new Intl.DateTimeFormat(THAI_LOCALE, {
+    dateStyle: 'medium',
+    timeZone: BANGKOK_TIME_ZONE,
+  }).format(date);
+}
+
+export function formatMarketDataAsOf(
+  value: string | null | undefined,
+  options: { dateOnly?: boolean } = {},
+): string {
+  if (!value) return '—';
+  if (options.dateOnly || isDateOnlyValue(value)) {
+    const formatted = formatThaiDateOnly(value);
+    return formatted === '—' ? formatted : `ข้อมูล ณ ${formatted}`;
+  }
+  return formatBangkokDateTime(value);
 }
 
 export function isStaleAt(

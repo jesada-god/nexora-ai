@@ -13,7 +13,7 @@ const LIMITATIONS = [
   'Daily OHLCV cannot show intraday order flow; VPVR is an estimate and no order-book data is used.',
 ];
 
-interface Pivot { index: number; confirmedAtIndex: number; price: number; kind: 'high' | 'low'; rejection: number; volume: number; }
+interface Pivot { index: number; confirmedAtIndex: number; price: number; kind: 'high' | 'low'; rejection: number; volume: number | null; }
 interface Cluster { pivots: Pivot[]; midpoint: number; tolerance: number; }
 
 const round = (value: number, digits = 6) => Number(value.toFixed(digits));
@@ -46,8 +46,12 @@ function scoreCluster(cluster: Cluster, candles: SupportResistanceCandles, param
   const latestIndex = candles.length - 1; const latest = cluster.pivots.reduce((best, pivot) => pivot.index > best.index ? pivot : best);
   const touches = Math.min(cluster.pivots.length / 5, 1); const recency = Math.max(0, 1 - (latestIndex - latest.index) / Math.max(latestIndex, 1));
   const rejection = cluster.pivots.reduce((sum, pivot) => sum + pivot.rejection, 0) / cluster.pivots.length;
-  const averageVolume = candles.reduce((sum, candle) => sum + candle.volume, 0) / candles.length;
-  const relativeVolume = parameters.useVolumeConfirmation && averageVolume > 0 ? Math.min(cluster.pivots.reduce((sum, pivot) => sum + pivot.volume, 0) / cluster.pivots.length / averageVolume, 2) / 2 : null;
+  const availableVolumes = candles.flatMap((candle) => candle.volume == null ? [] : [candle.volume]);
+  const pivotVolumes = cluster.pivots.flatMap((pivot) => pivot.volume == null ? [] : [pivot.volume]);
+  const averageVolume = availableVolumes.length ? availableVolumes.reduce((sum, volume) => sum + volume, 0) / availableVolumes.length : null;
+  const relativeVolume = parameters.useVolumeConfirmation && averageVolume != null && averageVolume > 0 && pivotVolumes.length
+    ? Math.min(pivotVolumes.reduce((sum, volume) => sum + volume, 0) / pivotVolumes.length / averageVolume, 2) / 2
+    : null;
   const overallRange = candles.reduce((sum, candle) => sum + candle.high - candle.low, 0) / candles.length;
   const localRange = cluster.pivots.reduce((sum, pivot) => { const slice = candles.slice(Math.max(0, pivot.index - 2), pivot.index + 3); return sum + slice.reduce((total, candle) => total + candle.high - candle.low, 0) / slice.length; }, 0) / cluster.pivots.length;
   const consolidation = parameters.useConsolidation && overallRange > 0 ? Math.max(0, 1 - localRange / overallRange) : null;

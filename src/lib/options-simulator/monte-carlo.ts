@@ -6,15 +6,39 @@ const ALLOWED_PATHS = new Set([1_000, 5_000, 10_000, 25_000, 50_000]);
 export interface MonteCarloRunOptions {
   targetPrice?: number;
   onProgress?: (completed: number, total: number) => void;
+  pathSet?: SimulationPathSet;
 }
 
 type HistogramBucket = { lower: number; upper: number; count: number };
+
+export interface SimulationPathSet {
+  id: string;
+  requestedPaths: number;
+  generatedPaths: number;
+  validPaths: number;
+  droppedPaths: number;
+  seed: number;
+  startingSpot: number;
+  horizonDays: number;
+  steps: number;
+  drift: number;
+  volatility: number;
+  rate: number;
+  dividendYield: number;
+  driftMode: 'forecast' | 'risk-neutral';
+  targetPrice?: number;
+  terminalPrices: number[];
+  drawdowns: number[];
+  reachedTarget: boolean[];
+  samplePaths: number[][];
+}
 
 export interface MonteCarloAuditResult extends MonteCarloResult {
   validPaths: number;
   discardedPaths: number;
   terminalPriceHistogram: HistogramBucket[];
   terminalPrices: number[];
+  pathSet: SimulationPathSet;
 }
 
 function finiteNumber(value: number): number {
@@ -76,15 +100,44 @@ function normalPair(random: () => number): [number, number] {
   return [radius * Math.cos(2 * Math.PI * u2), radius * Math.sin(2 * Math.PI * u2)];
 }
 
-export function percentile(sorted: number[], probability: number): number {
+export function percentile(sorted: number[], requestedProbability: number): number {
   if (!sorted.length) throw new Error('Cannot calculate percentile of an empty sample');
-  const position = (sorted.length - 1) * probability;
+  const position = (sorted.length - 1) * requestedProbability;
   const lower = Math.floor(position);
   const weight = position - lower;
   return sorted[lower + 1] === undefined ? sorted[lower] : sorted[lower] * (1 - weight) + sorted[lower + 1] * weight;
 }
 
-export function runMonteCarlo(workspace: SimulationWorkspace, settings: MonteCarloSettings, options: MonteCarloRunOptions = {}): MonteCarloAuditResult {
+function pathSetId(workspace: SimulationWorkspace, settings: MonteCarloSettings, targetPrice?: number): string {
+  const source = JSON.stringify({
+    symbol: workspace.symbol,
+    valuationDate: workspace.valuationDate,
+    targetDate: workspace.scenarios[0]?.valuationDate ?? null,
+    spot: workspace.underlyingPrice,
+    targetPrice: targetPrice ?? null,
+    paths: settings.paths,
+    seed: settings.seed,
+    horizonDays: settings.horizonDays,
+    steps: settings.steps,
+    drift: settings.drift,
+    volatility: settings.volatility,
+    rate: settings.rate,
+    dividendYield: settings.dividendYield,
+    driftMode: settings.driftMode ?? 'forecast',
+  });
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < source.length; index += 1) {
+    hash ^= source.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return `pathset-${(hash >>> 0).toString(16).padStart(8, '0')}`;
+}
+
+export function generateMonteCarloPathSet(
+  workspace: SimulationWorkspace,
+  settings: MonteCarloSettings,
+  options: Omit<MonteCarloRunOptions, 'pathSet'> = {},
+): SimulationPathSet {
   if (!workspace.underlyingPrice) throw new Error('A real or manually entered underlying price is required');
   if (!ALLOWED_PATHS.has(settings.paths)) throw new Error('Paths must be one of 1,000, 5,000, 10,000, 25,000 or 50,000');
   const targetPrice = options.targetPrice;
@@ -93,21 +146,22 @@ export function runMonteCarlo(workspace: SimulationWorkspace, settings: MonteCar
   const horizon = settings.horizonDays / 365;
   const steps = Math.max(1, Math.min(settings.steps, settings.horizonDays));
   const dt = horizon / steps;
-  const drift = (settings.drift - settings.dividendYield - 0.5 * settings.volatility ** 2) * dt;
+  const driftRate = settings.driftMode === 'risk-neutral'
+    ? settings.rate
+    : settings.drift;
+  const drift = (driftRate - settings.dividendYield - 0.5 * settings.volatility ** 2) * dt;
   const diffusion = settings.volatility * Math.sqrt(dt);
-  const profits: number[] = [];
   const terminalPrices: number[] = [];
   const drawdowns: number[] = [];
+  const reachedTarget: boolean[] = [];
   const samplePaths: number[][] = [];
-  let itm = 0;
-  let reachedTarget = 0;
-  let closedAboveTarget = 0;
   let spare: number | null = null;
-  let discardedPaths = 0;
+  let droppedPaths = 0;
   const nextNormal = () => {
     if (spare !== null) { const value = spare; spare = null; return value; }
     const pair = normalPair(random); spare = pair[1]; return pair[0];
   };
+
   for (let pathIndex = 0; pathIndex < settings.paths; pathIndex += 1) {
     let price = workspace.underlyingPrice;
     let touchedTarget = targetPrice === undefined || targetPrice === price;
@@ -121,50 +175,113 @@ export function runMonteCarlo(workspace: SimulationWorkspace, settings: MonteCar
       maxDrawdown = Math.max(maxDrawdown, (peak - price) / peak);
       sample?.push(price);
     }
-    const profit = portfolioExpirationProfit(workspace, price);
-    if (![price, profit, maxDrawdown].every(Number.isFinite) || sample?.some((value) => !Number.isFinite(value))) {
-      discardedPaths += 1;
+    if (![price, maxDrawdown].every(Number.isFinite) || sample?.some((value) => !Number.isFinite(value))) {
+      droppedPaths += 1;
     } else {
-      if (workspace.legs.some((leg) => isOptionInTheMoney(price, leg))) itm += 1;
-      if (targetPrice !== undefined) {
-        if (touchedTarget) reachedTarget += 1;
-        if (price >= targetPrice) closedAboveTarget += 1;
-      }
-      profits.push(finiteNumber(profit));
       terminalPrices.push(finiteNumber(price));
       drawdowns.push(finiteNumber(maxDrawdown));
+      reachedTarget.push(touchedTarget);
       if (sample) samplePaths.push(sample.map(finiteNumber));
     }
     const completed = pathIndex + 1;
     if (completed === settings.paths || completed % 250 === 0) options.onProgress?.(completed, settings.paths);
   }
+  if (!terminalPrices.length) throw new Error('Monte Carlo produced no valid finite underlying paths');
+  return {
+    id: pathSetId(workspace, settings, targetPrice),
+    requestedPaths: settings.paths,
+    generatedPaths: settings.paths,
+    validPaths: terminalPrices.length,
+    droppedPaths,
+    seed: settings.seed,
+    startingSpot: workspace.underlyingPrice,
+    horizonDays: settings.horizonDays,
+    steps,
+    drift: driftRate,
+    volatility: settings.volatility,
+    rate: settings.rate,
+    dividendYield: settings.dividendYield,
+    driftMode: settings.driftMode ?? 'forecast',
+    ...(targetPrice === undefined ? {} : { targetPrice }),
+    terminalPrices,
+    drawdowns,
+    reachedTarget,
+    samplePaths,
+  };
+}
+
+function validatePathSet(pathSet: SimulationPathSet, workspace: SimulationWorkspace, settings: MonteCarloSettings): void {
+  if (pathSet.seed !== settings.seed || pathSet.requestedPaths !== settings.paths) throw new Error('Shared path set seed/path count mismatch');
+  if (pathSet.startingSpot !== workspace.underlyingPrice) throw new Error('Shared path set starting spot mismatch');
+  if (
+    pathSet.horizonDays !== settings.horizonDays || pathSet.volatility !== settings.volatility
+    || pathSet.rate !== settings.rate || pathSet.dividendYield !== settings.dividendYield
+    || pathSet.driftMode !== (settings.driftMode ?? 'forecast')
+  ) throw new Error('Shared path set market assumptions mismatch');
+}
+
+export function runMonteCarlo(
+  workspace: SimulationWorkspace,
+  settings: MonteCarloSettings,
+  options: MonteCarloRunOptions = {},
+): MonteCarloAuditResult {
+  const pathSet = options.pathSet ?? generateMonteCarloPathSet(workspace, settings, options);
+  validatePathSet(pathSet, workspace, settings);
+  const profits: number[] = [];
+  const terminalPrices: number[] = [];
+  const drawdowns: number[] = [];
+  const reachedTarget: boolean[] = [];
+  let itm = 0;
+  let discardedPaths = pathSet.droppedPaths;
+  pathSet.terminalPrices.forEach((price, index) => {
+    const profit = portfolioExpirationProfit(workspace, price);
+    if (!Number.isFinite(profit)) {
+      discardedPaths += 1;
+      return;
+    }
+    if (workspace.legs.some((leg) => isOptionInTheMoney(price, leg))) itm += 1;
+    profits.push(finiteNumber(profit));
+    terminalPrices.push(price);
+    drawdowns.push(pathSet.drawdowns[index]);
+    reachedTarget.push(pathSet.reachedTarget[index]);
+  });
   const validPaths = profits.length;
-  if (validPaths === 0) throw new Error('Monte Carlo produced no valid finite paths');
-  profits.sort((a, b) => a - b);
+  if (!validPaths) throw new Error('Monte Carlo produced no valid finite strategy paths');
+  profits.sort((left, right) => left - right);
   const boundedFloor = boundedExpirationProfitFloor(workspace);
   if (boundedFloor !== null) {
     const tolerance = Math.max(1, Math.abs(boundedFloor)) * 1e-10;
     if (profits[0] < boundedFloor - tolerance) throw new Error('Bounded-loss invariant failed');
   }
-  const p1 = percentile(profits, 0.01), p5 = percentile(profits, 0.05), p95 = percentile(profits, 0.95), p99 = percentile(profits, 0.99);
-  const tail95 = profits.filter((value) => value <= p5);
-  const tail99 = profits.filter((value) => value <= p1);
+  const p1 = percentile(profits, 0.01);
+  const p5 = percentile(profits, 0.05);
+  const p95 = percentile(profits, 0.95);
+  const p99 = percentile(profits, 0.99);
+  const tail95Count = Math.max(1, Math.ceil(profits.length * 0.05));
+  const tail99Count = Math.max(1, Math.ceil(profits.length * 0.01));
   const mean = (values: number[]) => values.reduce((sum, value) => sum + value, 0) / values.length;
   const medianProfitLoss = percentile(profits, 0.5);
   const valueAtRisk95 = Math.max(0, -p5);
   const valueAtRisk99 = Math.max(0, -p1);
-  const expectedShortfall95 = Math.max(0, -mean(tail95));
-  const expectedShortfall99 = Math.max(0, -mean(tail99));
+  const expectedShortfall95 = Math.max(0, -mean(profits.slice(0, tail95Count)));
+  const expectedShortfall99 = Math.max(0, -mean(profits.slice(0, tail99Count)));
   if (!(p5 <= medianProfitLoss && medianProfitLoss <= p95)) throw new Error('Percentile ordering invariant failed');
   if (expectedShortfall95 < valueAtRisk95 || expectedShortfall99 < valueAtRisk99) throw new Error('Lower-tail risk invariant failed');
-  if (targetPrice !== undefined && targetPrice >= workspace.underlyingPrice && reachedTarget < closedAboveTarget) {
-    throw new Error('Upward target-touch invariant failed');
-  }
+  const targetPrice = options.targetPrice ?? pathSet.targetPrice;
+  const reachedCount = reachedTarget.filter(Boolean).length;
+  const closedAbove = targetPrice === undefined ? 0 : terminalPrices.filter((price) => price >= targetPrice).length;
   return {
-    paths: settings.paths, validPaths, discardedPaths, seed: settings.seed,
+    paths: settings.paths,
+    generatedPaths: pathSet.generatedPaths,
+    validPaths,
+    discardedPaths,
+    seed: settings.seed,
+    pathSetId: pathSet.id,
     probabilityOfProfit: probability(profits.filter((value) => value > 0).length, validPaths),
-    probabilityItm: probability(itm, validPaths), probabilityOtm: probability(validPaths - itm, validPaths),
-    expectedProfitLoss: finiteNumber(mean(profits)), medianProfitLoss: finiteNumber(medianProfitLoss),
+    probabilityItm: probability(itm, validPaths),
+    probabilityOtm: probability(validPaths - itm, validPaths),
+    expectedProfitLoss: finiteNumber(mean(profits)),
+    medianProfitLoss: finiteNumber(medianProfitLoss),
     percentiles: { p1: finiteNumber(p1), p5: finiteNumber(p5), p95: finiteNumber(p95), p99: finiteNumber(p99) },
     confidenceIntervals: { p95: [finiteNumber(p5), finiteNumber(p95)], p99: [finiteNumber(p1), finiteNumber(p99)] },
     expectedDrawdown: finiteNumber(mean(drawdowns)),
@@ -172,13 +289,14 @@ export function runMonteCarlo(workspace: SimulationWorkspace, settings: MonteCar
     expectedShortfall: { p95: finiteNumber(expectedShortfall95), p99: finiteNumber(expectedShortfall99) },
     ...(targetPrice === undefined ? {} : {
       targetPrice,
-      probabilityReachingTarget: probability(reachedTarget, validPaths),
-      probabilityClosingAboveTarget: probability(closedAboveTarget, validPaths),
-      probabilityClosingBelowTarget: probability(validPaths - closedAboveTarget, validPaths),
+      probabilityReachingTarget: probability(reachedCount, validPaths),
+      probabilityClosingAboveTarget: probability(closedAbove, validPaths),
+      probabilityClosingBelowTarget: probability(validPaths - closedAbove, validPaths),
     }),
     histogram: buildHistogram(profits),
     terminalPriceHistogram: buildHistogram(terminalPrices),
     terminalPrices,
-    samplePaths,
+    samplePaths: pathSet.samplePaths,
+    pathSet,
   };
 }

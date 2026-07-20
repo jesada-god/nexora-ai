@@ -167,14 +167,16 @@ describe('Options Portfolio Simulator copy', () => {
     expect(source).toContain('title="Expected Shortfall 95%"');
   });
 
-  it('renders the audited Call/Put score, top reasons and required disclaimer', () => {
+  it('renders independent single-side/comparison scores, gates and the required disclaimer', () => {
     expect(source).toContain('data-testid="call-put-scenario-score"');
-    expect(source).toContain('น้ำหนักสถานการณ์ขาขึ้น (Call)');
-    expect(source).toContain('น้ำหนักสถานการณ์ขาลง (Put)');
-    expect(source).toContain('เป็นคะแนนเปรียบเทียบจากสมมติฐาน ไม่ใช่คำแนะนำซื้อขายหรือความน่าจะเป็นว่าหุ้นจะขึ้น/ลง');
-    expect(source).toContain('เหตุผลที่ส่งผลต่อคะแนนมากที่สุด');
-    expect(source).toContain('มุมมองยังไม่ชัดเจน');
-    expect(source).toContain('ข้อมูลไม่พอสำหรับเปรียบเทียบ');
+    expect(source).toContain("'Call/Put Comparison' : 'Scenario Quality Score'");
+    expect(source).toContain('จึงไม่บังคับรวมเป็น 100');
+    expect(source).toContain('Positive-edge gate ไม่ผ่าน');
+    expect(source).toContain('Market Direction Probability (แยกจาก Option Edge)');
+    expect(source).toContain('ES95 เท่านั้น');
+    expect(source).toContain('ไม่ใช่คำสั่งหรือการรับประกันผลลัพธ์');
+    expect(source).not.toContain('callPercent');
+    expect(source).not.toContain('putPercent');
   });
 
   it('uses deterministic accessible histograms with audited markers and dated sample paths', () => {
@@ -205,7 +207,8 @@ describe('Options Portfolio Simulator copy', () => {
     expect(source).toContain('const [callPutScore, setCallPutScore]');
     expect(source).not.toMatch(/resultSnapshot:[^\n]+callPutScore/);
     expect(source).not.toMatch(/resultSnapshot:[^\n]+scenarioScore/);
-    expect(workerSource).toContain('const { terminalPrices, ...result } = auditResult');
+    expect(workerSource).toContain('const { terminalPrices, pathSet: transientPathSet, ...result } = auditResult');
+    expect(workerSource).toContain('transientPathSet');
     expect(workerSource).toContain('self.postMessage({ result, scenarioScore })');
   });
 

@@ -23,6 +23,92 @@ vi.mock('../fundamentals/provider', () => ({
 
 import { calculateFairValueSafely, loadFairValue } from './orchestration';
 
+const periods = [2023, 2024, 2025].map((year, index) => ({
+  periodEnd: `${year}-12-31`,
+  currency: 'USD',
+  revenue: 800 + index * 100,
+  operatingIncome: -20,
+  netIncome: -30,
+  depreciationAmortization: 10,
+  capitalExpenditure: -40,
+  changeInWorkingCapital: 5,
+  operatingCashFlow: -5,
+  freeCashFlow: -45,
+  dividendsPaid: null,
+  interestExpense: 10,
+  totalDebt: 200,
+  cash: 100,
+  totalAssets: 1200,
+  totalLiabilities: 700,
+  dilutedShares: 100,
+  ebitda: -10,
+  dilutedEps: -0.3,
+  totalEquity: 500,
+}));
+const history = Array.from({ length: 60 }, (_, index) => ({
+  date: new Date(Date.UTC(2026, 0, index + 1)).toISOString().slice(0, 10),
+  open: 10,
+  high: 11,
+  low: 9,
+  close: 10,
+  volume: 1_000,
+}));
+
+function arrangeRequiredProviderData() {
+  mocks.getFundamentalsProvider.mockReturnValue({
+    id: 'alpha-vantage',
+    getFinancialPeriods: vi.fn().mockResolvedValue({
+      symbol: 'RKLB',
+      periods,
+      quarterlyPeriods: [],
+      annualRecords: [],
+      quarterlyRecords: [],
+      asOf: '2025-12-31',
+      fetchedAt: '2026-07-20T00:00:00.000Z',
+      currency: 'USD',
+      dilutedEpsTtm: null,
+      dilutedEpsAsOf: null,
+      missingInputs: [],
+      diagnostics: {
+        provider: 'alpha-vantage',
+        capabilities: [],
+        datasets: {},
+        cache: { income: 'miss', balance: 'miss', cashFlow: 'miss' },
+        datasetFetchedAt: {},
+        latencyMs: 1,
+        normalizedPeriodCount: { annual: 3, quarterly: 0 },
+      },
+    }),
+  });
+  mocks.getMarketDataProvider.mockReturnValue({
+    id: 'alpha-vantage',
+    getQuote: vi.fn().mockResolvedValue({
+      data: { symbol: 'RKLB', price: 10, volume: 1_000 },
+      freshness: { status: 'end-of-day', asOf: '2026-07-17T00:00:00.000Z', maxAgeSeconds: 86_400 },
+      provider: 'alpha-vantage',
+    }),
+    getCompanyProfile: vi.fn().mockResolvedValue({
+      data: {
+        symbol: 'RKLB',
+        name: 'Rocket Lab USA, Inc.',
+        currency: 'USD',
+        sector: 'Industrials',
+        industry: 'Aerospace & Defense',
+        marketCapitalization: 1_000,
+      },
+      freshness: { status: 'cached', asOf: '2025-12-31T00:00:00.000Z', maxAgeSeconds: 86_400 },
+      provider: 'alpha-vantage',
+    }),
+  });
+  mocks.getHistoricalMarketDataService.mockReturnValue({
+    getHistoricalPrices: vi.fn().mockResolvedValue({
+      data: { symbol: 'RKLB', range: '1y', prices: history },
+      freshness: { status: 'end-of-day', asOf: '2026-03-01T00:00:00.000Z', maxAgeSeconds: 86_400 },
+      provider: 'nasdaq',
+    }),
+  });
+}
+
 describe('Fair Value orchestration failures', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -38,7 +124,10 @@ describe('Fair Value orchestration failures', () => {
     expect(result).toMatchObject({
       status: 'unavailable',
       failureKind: 'provider-unavailable',
+      provider: null,
+      missingFields: expect.arrayContaining(['incomeStatement', 'balanceSheet', 'cashFlowStatement']),
       missingInputs: expect.arrayContaining(['incomeStatement', 'balanceSheet', 'cashFlowStatement']),
+      asOf: expect.any(String),
       methodologyVersion: 'nexora-fv-v1',
     });
     expect(mocks.getMarketDataProvider).not.toHaveBeenCalled();
@@ -68,9 +157,12 @@ describe('Fair Value orchestration failures', () => {
 
     expect(result).toMatchObject({
       status: 'unavailable',
-      failureKind: 'calculation-failure',
+      failureKind: 'server-error',
       reason: expect.stringContaining('ล้มเหลว'),
+      provider: 'alpha-vantage',
+      missingFields: ['valuationCalculation'],
       missingInputs: ['valuationCalculation'],
+      asOf: expect.any(String),
       methodologyVersion: 'nexora-fv-v1',
     });
     expect(logger).toHaveBeenCalledWith({
@@ -78,10 +170,23 @@ describe('Fair Value orchestration failures', () => {
       status: 'unavailable',
       symbol: 'AAPL',
       provider: 'alpha-vantage',
-      failureKind: 'calculation-failure',
+      failureKind: 'server-error',
       missingInputCount: 1,
       errorCode: 'internal-error',
     });
     expect(JSON.stringify(logger.mock.calls)).not.toContain('must-not-appear');
+  });
+
+  it('keeps USD valuation available when display-only FX fails', async () => {
+    arrangeRequiredProviderData();
+    mocks.getFxRate.mockRejectedValue(new Error('FX offline'));
+
+    const result = await loadFairValue('RKLB');
+
+    expect(result.status).toBe('available');
+    if (result.status === 'available') {
+      expect(result.modelResults.map((model) => model.model)).toEqual(['ev-sales']);
+      expect(result.displayFx).toBeNull();
+    }
   });
 });
