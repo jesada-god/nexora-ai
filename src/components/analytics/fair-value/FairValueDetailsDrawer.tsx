@@ -3,7 +3,7 @@
 import { Drawer } from '@/src/components/ui/Drawer';
 import type { FairValueResult } from '@/src/lib/analytics/valuation/types';
 import { formatBangkokDateTime, formatMarketDataAsOf } from '@/src/lib/presentation/datetime';
-import { fairValueUnavailableLabel, fairValueUnavailableReason, modelLabel } from './presentation';
+import { fairValueMissingFieldDetails, fairValueUnavailableLabel, fairValueUnavailableReason, modelLabel } from './presentation';
 
 export function FairValueDetailsDrawer({ id, open, onClose, data, unavailableReason }: {
   id: string;
@@ -12,6 +12,9 @@ export function FairValueDetailsDrawer({ id, open, onClose, data, unavailableRea
   data: FairValueResult | null;
   unavailableReason: string | null;
 }) {
+  const missingDetails = data?.status === 'unavailable'
+    ? fairValueMissingFieldDetails(data.missingFields)
+    : [];
   return (
     <Drawer id={id} isOpen={open} onClose={onClose} title="วิธีคำนวณ Fair Value">
       <div className="space-y-6 break-words text-sm leading-6 text-slate-300">
@@ -24,7 +27,7 @@ export function FairValueDetailsDrawer({ id, open, onClose, data, unavailableRea
             <h3 className="font-semibold text-white">เหตุผลที่ยังคำนวณไม่ได้</h3>
             <p className="mt-1 font-semibold text-amber-300">{data?.status === 'unavailable' ? fairValueUnavailableLabel(data.failureKind, 'th') : 'เกิดข้อผิดพลาด'}</p>
             <p className="mt-1 text-slate-300">{data?.status === 'unavailable' ? fairValueUnavailableReason(data, 'th') : unavailableReason ?? 'ไม่มีข้อมูล Fair Value ที่ผ่าน validation'}</p>
-            {data?.status === 'unavailable' && <><p className="mt-2 text-xs text-slate-500">Provider: {data.provider ?? 'ไม่ทราบ'} · as of {formatBangkokDateTime(data.asOf)}</p><ul className="mt-2 list-disc pl-5 text-xs text-slate-400">{data.missingFields.map((item) => <li key={item}>{item}</li>)}</ul></>}
+            {data?.status === 'unavailable' && <><p className="mt-2 text-xs text-slate-500">Provider: {data.provider ?? 'ไม่ทราบ'} · as of {formatBangkokDateTime(data.asOf)}</p>{missingDetails.length > 0 && <details className="mt-3 rounded-lg border border-slate-800 p-3"><summary className="cursor-pointer font-semibold text-slate-200">ดูข้อมูลที่ขาด</summary><div className="mt-3 space-y-3">{missingDetails.map((item, index) => <dl key={`${item.field}:${item.period ?? index}`} className="grid grid-cols-[6rem_1fr] gap-x-2 text-xs"><dt className="text-slate-500">Field</dt><dd>{item.field}</dd><dt className="text-slate-500">Period</dt><dd>{item.period ?? 'ไม่ระบุ'}</dd><dt className="text-slate-500">Statement</dt><dd>{item.statement ?? 'ไม่ระบุ'}</dd><dt className="text-slate-500">Provider</dt><dd>{data.provider ?? 'ไม่ทราบ'}</dd><dt className="text-slate-500">Reason</dt><dd>{item.reason}</dd><dt className="text-slate-500">Affected model</dt><dd>{item.affectedModels.length ? item.affectedModels.map(modelLabel).join(', ') : 'ขึ้นกับ model gate'}</dd></dl>)}</div></details>}</>}
           </section>
         ) : (
           <>

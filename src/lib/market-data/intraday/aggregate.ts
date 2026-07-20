@@ -1,25 +1,38 @@
 import type { CanonicalIntradayBar } from './contracts';
 
-export interface DerivedH4Bar extends Omit<CanonicalIntradayBar, 'interval'> {
-  interval: '4h';
+export type AggregatedIntradayInterval = '10m' | '1h' | '4h';
+
+export interface AggregatedIntradayBar extends Omit<CanonicalIntradayBar, 'interval'> {
+  interval: AggregatedIntradayInterval;
   sourceInterval: CanonicalIntradayBar['interval'];
   sourceBars: number;
 }
 
-/** Aggregate only real intraday bars and never cross an exchange session date. */
-export function aggregateSessionAwareH4(
+const INTERVAL_MS: Record<AggregatedIntradayInterval, number> = {
+  '10m': 10 * 60_000,
+  '1h': 60 * 60_000,
+  '4h': 4 * 60 * 60_000,
+};
+
+/** Aggregate only real bars and never cross an exchange date or session boundary. */
+export function aggregateSessionAwareIntraday(
   bars: readonly CanonicalIntradayBar[],
-): DerivedH4Bar[] {
-  const regular = [...bars]
-    .filter((bar) => bar.sessionType === 'regular')
-    .sort((left, right) => left.timestamp.localeCompare(right.timestamp));
+  interval: AggregatedIntradayInterval,
+): AggregatedIntradayBar[] {
+  const ordered = [...bars].sort((left, right) => left.timestamp.localeCompare(right.timestamp));
+  const firstBySession = new Map<string, string>();
+  for (const bar of ordered) {
+    const sessionKey = `${bar.sessionDate}:${bar.sessionType}`;
+    if (!firstBySession.has(sessionKey)) firstBySession.set(sessionKey, bar.timestamp);
+  }
   const buckets = new Map<string, CanonicalIntradayBar[]>();
-  for (const bar of regular) {
-    const firstOfSession = regular.find((candidate) => candidate.sessionDate === bar.sessionDate)?.timestamp;
+  for (const bar of ordered) {
+    const sessionKey = `${bar.sessionDate}:${bar.sessionType}`;
+    const firstOfSession = firstBySession.get(sessionKey);
     if (!firstOfSession) continue;
     const offset = Date.parse(bar.timestamp) - Date.parse(firstOfSession);
-    const bucket = Math.max(0, Math.floor(offset / (4 * 60 * 60_000)));
-    const key = `${bar.sessionDate}:${bucket}`;
+    const bucket = Math.max(0, Math.floor(offset / INTERVAL_MS[interval]));
+    const key = `${sessionKey}:${bucket}`;
     buckets.set(key, [...(buckets.get(key) ?? []), bar]);
   }
   return [...buckets.values()].map((group) => {
@@ -34,13 +47,21 @@ export function aggregateSessionAwareH4(
       low: Math.min(...group.map((bar) => bar.low)),
       close: last.close,
       volume: volumes.length ? volumes.reduce((sum, value) => sum + value, 0) : null,
-      interval: '4h' as const,
+      interval,
       sourceInterval: first.interval,
       sourceBars: group.length,
       exchangeTimezone: first.exchangeTimezone,
-      sessionType: 'regular' as const,
+      sessionType: first.sessionType,
       provider: first.provider,
       asOf: last.asOf,
     };
   });
+}
+
+export type DerivedH4Bar = AggregatedIntradayBar & { interval: '4h' };
+
+export function aggregateSessionAwareH4(
+  bars: readonly CanonicalIntradayBar[],
+): DerivedH4Bar[] {
+  return aggregateSessionAwareIntraday(bars, '4h') as DerivedH4Bar[];
 }

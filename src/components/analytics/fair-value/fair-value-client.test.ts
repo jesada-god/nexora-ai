@@ -3,7 +3,7 @@ import { clearFairValueClientCacheForTests, requestFairValue } from './fair-valu
 
 const unavailable = {
   status: 'unavailable' as const,
-  failureKind: 'insufficient-data' as const,
+  failureKind: 'missing-field' as const,
   symbol: 'RKLB',
   currency: 'USD',
   provider: 'alpha-vantage',
@@ -63,7 +63,7 @@ describe('Fair Value request coordinator', () => {
   it('preserves a structured rate-limited response instead of replacing it with a generic error', async () => {
     const rateLimited = {
       ...unavailable,
-      failureKind: 'rate-limited' as const,
+      failureKind: 'provider-rate-limited' as const,
       provider: null,
       missingFields: [],
       missingInputs: [],
@@ -76,7 +76,7 @@ describe('Fair Value request coordinator', () => {
 
     await expect(requestFairValue('RKLB', new AbortController().signal)).resolves.toMatchObject({
       status: 'unavailable',
-      failureKind: 'rate-limited',
+      failureKind: 'provider-rate-limited',
       missingFields: [],
     });
   });

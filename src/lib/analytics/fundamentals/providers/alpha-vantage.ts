@@ -69,7 +69,15 @@ export class AlphaVantageFundamentalsProvider implements FundamentalsProvider {
     const fetchedAtMs = available.size ? Math.max(...[...available.values()].map((item) => item.fetchedAt)) : this.now(); const fetchedAt = new Date(fetchedAtMs).toISOString();
     const normalized = normalizeFinancialStatements(symbol, available.get('income-statement')?.payload ?? empty, available.get('balance-sheet')?.payload ?? empty, available.get('cash-flow')?.payload ?? empty, { source: this.id, fetchedAt });
     const diagnostics = { provider: this.id, capabilities: ['company-profile', 'income-statement', 'balance-sheet', 'cash-flow', 'diluted-eps', 'diluted-shares'], datasets: Object.fromEntries((Object.keys(FUNCTIONS) as DatasetName[]).map((dataset) => [dataset, available.has(dataset) ? 'available' : 'unavailable'])) as Record<string, 'available' | 'unavailable'>, cache: Object.fromEntries((Object.keys(FUNCTIONS) as DatasetName[]).map((dataset) => [dataset, available.get(dataset)?.cache ?? 'miss'])) as Record<string, 'hit' | 'miss' | 'stale'>, datasetFetchedAt: Object.fromEntries((Object.keys(FUNCTIONS) as DatasetName[]).map((dataset) => [dataset, available.has(dataset) ? new Date(available.get(dataset)!.fetchedAt).toISOString() : null])), latencyMs: Math.max(0, this.now() - started), normalizedPeriodCount: { annual: normalized.annual.length, quarterly: normalized.quarterly.length } };
-    if (process.env.NODE_ENV === 'development') console.info({ event: 'fundamentals_provider_snapshot', ...diagnostics });
+    if (process.env.NODE_ENV === 'development') {
+      const sanitizedPayloadShape = Object.fromEntries([...available].map(([dataset, item]) => {
+        const annual = Array.isArray(item.payload.annualReports) ? item.payload.annualReports : [];
+        const quarterly = Array.isArray(item.payload.quarterlyReports) ? item.payload.quarterlyReports : [];
+        const fieldNames = [...new Set([...annual, ...quarterly].flatMap((row) => row && typeof row === 'object' && !Array.isArray(row) ? Object.keys(row) : []))].sort();
+        return [dataset, { annualCount: annual.length, quarterlyCount: quarterly.length, fieldNames }];
+      }));
+      console.info({ event: 'fundamentals_provider_snapshot', ...diagnostics, sanitizedPayloadShape });
+    }
     return { symbol, periods: normalized.annual, quarterlyPeriods: normalized.quarterly, annualRecords: normalized.annualRecords, quarterlyRecords: normalized.quarterlyRecords, asOf: normalized.annual.at(-1)?.periodEnd ?? normalized.quarterly.at(-1)?.periodEnd ?? normalized.dilutedEpsAsOf ?? fetchedAt, fetchedAt, currency: normalized.currency, dilutedEpsTtm: normalized.dilutedEpsTtm, dilutedEpsAsOf: normalized.dilutedEpsAsOf, missingInputs: [...missingDatasets.map((dataset) => `dataset:${dataset}`), ...normalized.missingInputs], diagnostics };
   }
 }

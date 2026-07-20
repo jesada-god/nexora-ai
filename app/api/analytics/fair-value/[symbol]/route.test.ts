@@ -17,7 +17,7 @@ import { GET } from './route';
 
 const unavailable = {
   status: 'unavailable' as const,
-  failureKind: 'insufficient-data' as const,
+  failureKind: 'missing-field' as const,
   symbol: 'AAPL',
   currency: 'USD',
   provider: 'alpha-vantage',
@@ -73,7 +73,7 @@ describe('GET /api/analytics/fair-value/[symbol]', () => {
     expect(response.headers.get('Retry-After')).toBe('30');
     expect(body.data).toMatchObject({
       status: 'unavailable',
-      failureKind: 'rate-limited',
+      failureKind: 'provider-rate-limited',
       symbol: 'AAPL',
       provider: null,
       missingFields: [],

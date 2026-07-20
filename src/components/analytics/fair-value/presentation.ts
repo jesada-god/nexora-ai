@@ -58,33 +58,43 @@ export function displayStatus(data: FairValueAvailable): string {
 }
 
 const FAILURE_LABELS: Record<FairValueFailureKind, { th: string; en: string }> = {
+  'insufficient-periods': { th: 'งบการเงินมีจำนวนงวดไม่เพียงพอ', en: 'Insufficient financial periods' },
+  'currency-mismatch': { th: 'สกุลเงินของข้อมูลไม่ตรงกัน', en: 'Currency mismatch' },
+  'stale-fundamentals': { th: 'งบการเงินเก่าเกินเกณฑ์', en: 'Stale fundamentals' },
   'provider-unavailable': {
     th: 'ผู้ให้บริการไม่มีข้อมูล',
     en: 'Provider data unavailable',
   },
-  'insufficient-data': {
+  'missing-field': {
     th: 'ข้อมูลไม่ผ่านเกณฑ์ขั้นต่ำ',
     en: 'Insufficient data',
   },
-  'not-meaningful': {
+  'mapping-error': {
     th: 'ไม่มีโมเดลที่มีความหมายกับข้อมูลชุดนี้',
     en: 'No meaningful valuation model',
   },
-  'rate-limited': {
+  'provider-rate-limited': {
     th: 'ผู้ให้บริการจำกัดคำขอชั่วคราว',
     en: 'Rate limited',
   },
-  'server-error': {
+  'calculation-error': {
     th: 'เซิร์ฟเวอร์ประมวลผลไม่สำเร็จ',
     en: 'Server error',
   },
 };
 
 export function fairValueUnavailableLabel(
-  failureKind: FairValueFailureKind,
+  failureKind: FairValueFailureKind | 'insufficient-data' | 'not-meaningful' | 'rate-limited' | 'server-error',
   language: 'th' | 'en',
 ): string {
-  return FAILURE_LABELS[failureKind][language];
+  const normalized: FairValueFailureKind = failureKind === 'insufficient-data'
+    ? 'missing-field'
+    : failureKind === 'not-meaningful'
+      ? 'mapping-error'
+      : failureKind === 'rate-limited'
+        ? 'provider-rate-limited'
+        : failureKind === 'server-error' ? 'calculation-error' : failureKind;
+  return FAILURE_LABELS[normalized][language];
 }
 
 function missingFieldLabel(field: string, language: 'th' | 'en'): string {
@@ -157,6 +167,47 @@ export function fairValueMissingFieldsSummary(
   const labels = [...new Set(missingFields.map((field) => missingFieldLabel(field, language)))];
   if (!labels.length) return language === 'th' ? 'ไม่มีข้อมูลที่ขาดเพิ่มเติม' : 'No additional fields are missing';
   return `${language === 'th' ? 'ขาด' : 'Missing'} ${joinHumanList(labels, language)}`;
+}
+
+export interface MissingFieldDetail {
+  field: string;
+  period: string | null;
+  statement: string | null;
+  reason: string;
+  affectedModels: ModelId[];
+}
+
+function affectedModelsForField(field: string): ModelId[] {
+  const normalized = field.toLowerCase();
+  if (/workingcapital|freecashflow|capitalexpenditure|depreciation/.test(normalized)) return ['fcff-dcf'];
+  if (/dividend/.test(normalized)) return ['ddm'];
+  if (/forward.*growth/.test(normalized)) return ['peg'];
+  if (/eps/.test(normalized)) return ['pe', 'peg'];
+  if (/equity|asset|liabilit/.test(normalized)) return ['asset-based', 'pb'];
+  if (/ebitda/.test(normalized)) return ['ev-ebitda'];
+  if (/revenue/.test(normalized)) return ['fcff-dcf', 'ev-sales'];
+  if (/shares/.test(normalized)) return ['fcff-dcf', 'fcfe', 'ddm', 'relative', 'asset-based', 'ev-sales', 'ev-ebitda', 'pe', 'peg', 'pb'];
+  return [];
+}
+
+export function fairValueMissingFieldDetails(missingFields: string[]): MissingFieldDetail[] {
+  return missingFields.map((raw) => {
+    const periodMatch = /^(annual|quarterly):(\d{4}-\d{2}-\d{2}):(.+)$/.exec(raw);
+    const modelMatch = /^(fcff-dcf|fcfe|ddm|relative|asset-based|ev-sales|ev-ebitda|pe|peg|pb):\s*(.+)$/.exec(raw);
+    const field = periodMatch?.[3] ?? (modelMatch ? 'model input gate' : raw);
+    const statement = /revenue|income|eps|shares|ebitda|interest/i.test(field)
+      ? 'income statement'
+      : /cash|capital|dividend|workingcapital|freecashflow/i.test(field)
+        ? 'cash-flow statement'
+        : /asset|liabilit|debt|equity/i.test(field) ? 'balance sheet' : null;
+    return {
+      field: modelMatch?.[1] ?? field,
+      period: periodMatch?.[2] ?? null,
+      statement,
+      reason: modelMatch?.[2] ?? (periodMatch ? 'provider field unavailable or could not be mapped safely' : raw),
+      affectedModels: modelMatch ? [modelMatch[1] as ModelId] : affectedModelsForField(field),
+    };
+  });
 }
 
 export function fairValueUnavailableReason(

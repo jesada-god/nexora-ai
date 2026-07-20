@@ -100,4 +100,17 @@ describe('Alpha Vantage normalization', () => {
       notes: null,
     });
   });
+
+  it.each([
+    ['closed', 'Market holiday', 'holiday'],
+    ['closed', 'Early close at 13:00', 'early-close'],
+    ['pre-market', '', 'pre-market'],
+    ['after-hours', '', 'after-hours'],
+    ['paused', '', 'unknown'],
+  ])('preserves provider market status %s/%s as %s', (currentStatus, notes, expected) => {
+    const result = normalizeMarketOverviewResponse({
+      markets: [{ market_type: 'Equity', region: 'United States', current_status: currentStatus, notes }],
+    });
+    expect(result.markets[0].currentStatus).toBe(expected);
+  });
 });

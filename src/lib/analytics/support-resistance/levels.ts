@@ -1,5 +1,5 @@
 import type { NormalizedBar } from '../chart-data/timeline';
-import type { SupportResistanceResult, SupportResistanceZone } from './types';
+import type { SupportResistanceResult, SupportResistanceZone, ZoneScoreComponents } from './types';
 
 export type LevelSide = 'resistance' | 'support';
 
@@ -15,6 +15,8 @@ export interface ChartLevel {
   timeframe: '1D';
   score: number;
   touches: number;
+  latestTouchAt: string;
+  scoreComponents: ZoneScoreComponents;
   scoreExplanation?: string;
 }
 
@@ -60,6 +62,8 @@ function zoneLevel(zone: SupportResistanceZone, asOf: string): ChartLevel {
     timeframe: '1D',
     score: zone.strengthScore,
     touches: zone.touches,
+    latestTouchAt: zone.latestTouchAt,
+    scoreComponents: zone.scoreComponents,
     scoreExplanation: zone.reasons.map((reason) => `${reason.label} ${reason.score.toFixed(1)}`).join(' + '),
   };
 }

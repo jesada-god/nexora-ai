@@ -23,7 +23,7 @@ function allFinite(period: FinancialPeriod) {
     key === 'periodEnd'
     || key === 'currency'
     || key === 'restated'
-    || (['dividendsPaid', 'grossProfit', 'ebitda', 'dilutedEps', 'totalEquity'].includes(key) && (value === null || value === undefined))
+    || (['dividendsPaid', 'grossProfit', 'ebitda', 'dilutedEps', 'totalEquity', 'changeInWorkingCapital'].includes(key) && (value === null || value === undefined))
     || (typeof value === 'number' && Number.isFinite(value)),
   );
 }
@@ -55,7 +55,7 @@ export function calculateFairValue(input: ValuationInput, now = Date.now()): Fai
   const gate = dataSufficiency(input, now);
   if (!gate.ok) {
     return createFairValueUnavailable({
-      failureKind: 'insufficient-data',
+      failureKind: gate.missingInputs.includes('historicalFinancials>=3Periods') ? 'insufficient-periods' : gate.missingInputs.includes('currencyNormalization') ? 'currency-mismatch' : 'missing-field',
       symbol: input.symbol,
       currency: input.currency || null,
       provider: input.source || null,
@@ -71,7 +71,7 @@ export function calculateFairValue(input: ValuationInput, now = Date.now()): Fai
   const selection = selectSectorModels(input);
   if (!selection.models.length) {
     return createFairValueUnavailable({
-      failureKind: 'not-meaningful',
+      failureKind: 'missing-field',
       symbol: input.symbol,
       currency: input.currency,
       provider: input.source,
@@ -127,7 +127,7 @@ export function calculateFairValue(input: ValuationInput, now = Date.now()): Fai
   const optimistic = blendedScenario('optimistic');
   if (!(conservative <= base && base <= optimistic) || ![conservative, base, optimistic].every(Number.isFinite)) {
     return createFairValueUnavailable({
-      failureKind: 'server-error',
+      failureKind: 'calculation-error',
       symbol: input.symbol,
       currency: input.currency,
       provider: input.source,

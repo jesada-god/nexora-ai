@@ -148,10 +148,19 @@ export function normalizeMarketOverviewResponse(input: unknown) {
         .filter(Boolean),
       localOpen: nullableText(market.local_open),
       localClose: nullableText(market.local_close),
-      currentStatus: market.current_status === 'open'
-        ? 'open'
-        : market.current_status === 'closed' ? 'closed' : 'unknown',
+      currentStatus: normalizeProviderMarketStatus(market.current_status, market.notes),
       notes: nullableText(market.notes),
     })),
   });
+}
+
+function normalizeProviderMarketStatus(status: string | undefined, notes: string | undefined) {
+  const value = `${status ?? ''} ${notes ?? ''}`.trim().toLowerCase();
+  if (/\b(holiday|market holiday)\b/.test(value)) return 'holiday' as const;
+  if (/\b(early[- ]?close|closing early)\b/.test(value)) return 'early-close' as const;
+  if (/\b(pre[- ]?market|before market)\b/.test(value)) return 'pre-market' as const;
+  if (/\b(after[- ]?hours|post[- ]?market)\b/.test(value)) return 'after-hours' as const;
+  if (status?.trim().toLowerCase() === 'open') return 'open' as const;
+  if (status?.trim().toLowerCase() === 'closed') return 'closed' as const;
+  return 'unknown' as const;
 }

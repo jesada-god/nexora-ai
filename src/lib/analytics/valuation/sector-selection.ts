@@ -29,7 +29,7 @@ function derivedDcfAssumptions(input: ValuationInput, rule: SectorValuationRule)
   if (input.assumptions) return input.assumptions;
   const latest = input.periods.at(-1);
   const earliest = input.periods.at(0);
-  if (!latest || !earliest || input.periods.length < 3 || latest.revenue <= 0 || earliest.revenue <= 0) return null;
+  if (!latest || !earliest || input.periods.length < 3 || latest.revenue <= 0 || earliest.revenue <= 0 || !finite(latest.changeInWorkingCapital)) return null;
   const years = Math.max(1, input.periods.length - 1);
   const revenueGrowth = clamp((latest.revenue / earliest.revenue) ** (1 / years) - 1, -0.1, 0.2);
   const operatingMargin = latest.operatingIncome / latest.revenue;

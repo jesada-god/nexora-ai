@@ -35,7 +35,10 @@ const EMPTY_VALUES = new Set(['', '-', 'none', 'null', 'n/a']);
 export function safeNumber(value: unknown): number | null {
   if (typeof value === 'number') return Number.isFinite(value) ? value : null;
   if (typeof value !== 'string' || EMPTY_VALUES.has(value.trim().toLowerCase())) return null;
-  const parsed = Number(value.replaceAll(',', '').trim());
+  const trimmed = value.trim();
+  const negativeParentheses = /^\((.*)\)$/.exec(trimmed);
+  const normalized = (negativeParentheses?.[1] ?? trimmed).replaceAll(',', '').trim();
+  const parsed = Number(normalized) * (negativeParentheses ? -1 : 1);
   return Number.isFinite(parsed) ? parsed : null;
 }
 
@@ -78,13 +81,34 @@ function combineDebt(report: RawReport): number | null {
   return current !== null && longTerm !== null ? current + longTerm : null;
 }
 
-function workingCapitalChange(report: RawReport): number | null {
-  const liabilities = safeNumber(report.changeInOperatingLiabilities);
-  const assets = safeNumber(report.changeInOperatingAssets);
-  return liabilities !== null && assets !== null ? liabilities - assets : null;
+function sumRequired(report: RawReport, fields: readonly string[]): number | null {
+  const values = fields.map((field) => safeNumber(report[field]));
+  return values.every((value): value is number => value !== null)
+    ? values.reduce((sum, value) => sum + value, 0)
+    : null;
 }
 
-function fields(i: RawReport, b: RawReport, c: RawReport) {
+function operatingWorkingCapital(report: RawReport): number | null {
+  const directAssets = firstNumber(report, ['totalOperatingCurrentAssets', 'nonCashCurrentAssets']);
+  const directLiabilities = firstNumber(report, ['totalOperatingCurrentLiabilities', 'nonDebtCurrentLiabilities']);
+  const assets = directAssets ?? sumRequired(report, ['currentNetReceivables', 'inventory', 'otherCurrentAssets']);
+  const liabilities = directLiabilities ?? sumRequired(report, ['currentAccountsPayable', 'otherCurrentLiabilities']);
+  return assets !== null && liabilities !== null ? assets - liabilities : null;
+}
+
+/** Positive means an operating working-capital investment that reduces forecast FCF. */
+export function workingCapitalChange(report: RawReport, balance: RawReport = {}, previousBalance: RawReport | null = null): number | null {
+  const cashFlowImpact = firstNumber(report, ['changeInWorkingCapital', 'changesInOperatingAssetsAndLiabilities']);
+  if (cashFlowImpact !== null) return -cashFlowImpact;
+  const liabilities = firstNumber(report, ['changeInOperatingLiabilities', 'changeInCurrentLiabilities']);
+  const assets = firstNumber(report, ['changeInOperatingAssets', 'changeInCurrentAssets']);
+  if (liabilities !== null && assets !== null) return assets - liabilities;
+  const current = operatingWorkingCapital(balance);
+  const previous = previousBalance ? operatingWorkingCapital(previousBalance) : null;
+  return current !== null && previous !== null ? current - previous : null;
+}
+
+function fields(i: RawReport, b: RawReport, c: RawReport, previousBalance: RawReport | null) {
   const operatingCashFlow = safeNumber(c.operatingCashflow); const capitalExpenditure = safeNumber(c.capitalExpenditures);
   const operatingIncome = firstNumber(i, ['operatingIncome', 'ebit']);
   const depreciationAmortization = firstNumber(c, ['depreciationDepletionAndAmortization', 'depreciation']);
@@ -98,7 +122,7 @@ function fields(i: RawReport, b: RawReport, c: RawReport) {
     dilutedEps: safeNumber(i.dilutedEPS),
     depreciationAmortization,
     capitalExpenditure,
-    changeInWorkingCapital: workingCapitalChange(c),
+    changeInWorkingCapital: workingCapitalChange(c, b, previousBalance),
     operatingCashFlow,
     freeCashFlow: operatingCashFlow !== null && capitalExpenditure !== null ? operatingCashFlow - normalizeCapitalExpenditure(capitalExpenditure) : null,
     dividendsPaid: firstNumber(c, ['dividendPayoutCommonStock', 'dividendPayout']),
@@ -116,15 +140,19 @@ function normalizeFrequency(income: RawStatementPayload, balance: RawStatementPa
   const incomes = keyed(income, frequency, missing, 'income-statement'); const balances = keyed(balance, frequency, missing, 'balance-sheet'); const cashFlows = keyed(cashFlow, frequency, missing, 'cash-flow');
   const periods: FinancialPeriod[] = [];
   const records: NormalizedFinancialRecord[] = [];
-  for (const [periodEnd, i] of incomes) {
+  const orderedIncomes = [...incomes].sort(([left], [right]) => left.localeCompare(right));
+  for (const [index, [periodEnd, i]] of orderedIncomes.entries()) {
     const b = balances.get(periodEnd) ?? {}; const c = cashFlows.get(periodEnd) ?? {};
     if (!balances.has(periodEnd) || !cashFlows.has(periodEnd)) missing.add(`${frequency}:${periodEnd}:alignedStatements`);
     const currencies = [text(i.reportedCurrency), text(b.reportedCurrency), text(c.reportedCurrency)].filter((v): v is string => Boolean(v));
     const currency = currencies.length && new Set(currencies).size === 1 ? currencies[0] : null;
     if (!currency) missing.add(`${frequency}:${periodEnd}:currency`);
-    const values = fields(i, b, c);
-    records.push({ fiscalPeriod: frequency === 'annual' ? 'FY' : text(i.fiscalPeriod) ?? 'quarter', fiscalYear: Number(periodEnd.slice(0, 4)), periodEnd, filingDate: text(i.filingDate ?? i.reportedDate), currency, frequency, source, fetchedAt, values: Object.fromEntries(Object.entries(values).map(([name, value]) => [name, value === null ? { status: 'unavailable', value: null } : { status: 'available', value }])) });
-    const optionalFields = new Set(['dividendsPaid', 'grossProfit', 'ebitda', 'dilutedEps', 'totalEquity']);
+    const previousPeriod = orderedIncomes[index - 1]?.[0];
+    const previousBalance = previousPeriod ? balances.get(previousPeriod) ?? null : null;
+    const values = fields(i, b, c, previousBalance);
+    const fiscalYear = safeNumber(i.fiscalYear);
+    records.push({ fiscalPeriod: frequency === 'annual' ? 'FY' : text(i.fiscalPeriod) ?? 'quarter', fiscalYear: fiscalYear !== null && Number.isInteger(fiscalYear) ? fiscalYear : Number(periodEnd.slice(0, 4)), periodEnd, filingDate: text(i.filingDate ?? i.reportedDate), currency, frequency, source, fetchedAt, values: Object.fromEntries(Object.entries(values).map(([name, value]) => [name, value === null ? { status: 'unavailable', value: null } : { status: 'available', value }])) });
+    const optionalFields = new Set(['dividendsPaid', 'grossProfit', 'ebitda', 'dilutedEps', 'totalEquity', 'changeInWorkingCapital']);
     const absent = Object.entries(values).filter(([name, value]) => value === null && !optionalFields.has(name)).map(([name]) => name);
     if (absent.length || !currency) { absent.forEach((name) => missing.add(`${frequency}:${periodEnd}:${name}`)); continue; }
     periods.push({ periodEnd, currency, ...(values as Omit<FinancialPeriod, 'periodEnd' | 'currency'>) });

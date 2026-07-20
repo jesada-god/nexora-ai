@@ -86,7 +86,7 @@ export const marketStatusSchema = z.object({
   primaryExchanges: z.array(z.string()),
   localOpen: z.string().nullable(),
   localClose: z.string().nullable(),
-  currentStatus: z.enum(['open', 'closed', 'unknown']),
+  currentStatus: z.enum(['pre-market', 'open', 'after-hours', 'closed', 'holiday', 'early-close', 'unknown']),
   notes: z.string().nullable(),
 });
 
@@ -101,6 +101,7 @@ export type HistoricalPrices = z.infer<typeof historicalPricesSchema>;
 export type HistoricalRange = HistoricalPrices['range'];
 export type CompanyProfile = z.infer<typeof companyProfileSchema>;
 export type MarketOverview = z.infer<typeof marketOverviewSchema>;
+export type MarketStatusState = z.infer<typeof marketStatusSchema>['currentStatus'];
 
 export type {
   MarketDataStatus,

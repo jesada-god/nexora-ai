@@ -1,13 +1,14 @@
 'use client';
 
 import dynamic from 'next/dynamic';
-import { useEffect, useState, useTransition } from 'react';
+import { useCallback, useEffect, useRef, useState, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
 import { Activity, ArrowLeft, Bell, Share2, Star } from 'lucide-react';
 import { addWatchlistItemAction, removeWatchlistItemAction } from '@/app/watchlist/actions';
 import { Tabs } from '@/src/components/ui/Tabs';
 import { useToast } from '@/src/components/ui/Toast';
 import { useOnlineStatus } from '@/src/hooks/useOnlineStatus';
+import { useAppActive } from '@/src/hooks/useAppActive';
 import { KeyStatisticsSection } from '@/src/components/analytics/key-statistics/KeyStatisticsSection';
 import { FairValueSection } from '@/src/components/analytics/fair-value/FairValueSection';
 import { FairValueCard } from '@/src/components/analytics/fair-value/FairValueCard';
@@ -125,6 +126,9 @@ export function StockDetailClient({
   const [quoteResource, setQuoteResource] = useState(initialQuoteResource);
   const [quoteLoading, setQuoteLoading] = useState(false);
   const [quoteRetryAt, setQuoteRetryAt] = useState(0);
+  const quoteAbort = useRef<AbortController | null>(null);
+  const quoteGeneration = useRef(0);
+  const quoteInflight = useRef<Promise<void> | null>(null);
   const [profileResource, setProfileResource] = useState(initialProfileResource);
   const [profileLoading, setProfileLoading] = useState(false);
   const [profileRetryAt, setProfileRetryAt] = useState(() => {
@@ -137,6 +141,7 @@ export function StockDetailClient({
     initialProfileResource.data?.description ? 'th' : 'en',
   );
   const isOnline = useOnlineStatus();
+  const appActive = useAppActive();
 
   useEffect(() => {
     if (profileRetryAt <= 0) return;
@@ -207,13 +212,19 @@ export function StockDetailClient({
     }
   };
 
-  const retryQuote = async () => {
+  const retryQuote = useCallback(async () => {
     const now = Date.now();
-    if (quoteLoading || now < quoteRetryAt) return;
+    if (quoteInflight.current || now < quoteRetryAt) return quoteInflight.current ?? undefined;
+    const requestGeneration = ++quoteGeneration.current;
+    const controller = new AbortController();
+    quoteAbort.current?.abort();
+    quoteAbort.current = controller;
     setQuoteLoading(true);
-    try {
+    const operation = (async () => { try {
       const response = await fetch(`/api/market/quote/${encodeURIComponent(symbol)}`, {
         headers: { Accept: 'application/json' },
+        cache: 'no-store',
+        signal: controller.signal,
       });
       const body = quoteEnvelopeSchema.safeParse(await response.json());
       if (!body.success) throw new Error('Quote API returned an invalid response');
@@ -236,17 +247,21 @@ export function StockDetailClient({
         console.warn('[stock-detail:quote-retry]', { code: error.code });
         return;
       }
-      const fallback = body.data.meta.provider?.includes('(daily history)') ?? false;
+      const intradayFallback = body.data.meta.provider?.includes('intraday fallback') ?? false;
+      const dailyFallback = body.data.meta.provider?.includes('(daily history)') ?? false;
+      const fallback = intradayFallback || dailyFallback;
+      if (quoteGeneration.current !== requestGeneration) return;
       setQuoteResource({
         data: body.data.data,
         freshness: body.data.meta.freshness,
         provider: body.data.meta.provider,
-        reason: fallback ? 'Primary quote unavailable; using verified daily OHLCV' : null,
+        reason: intradayFallback ? 'Primary quote unavailable; using newest verified intraday close' : dailyFallback ? 'Primary quote unavailable; using verified daily OHLCV' : null,
         error: null,
-        fallbackLabel: fallback ? 'Previous trading day' : null,
+        fallbackLabel: intradayFallback ? 'Intraday close fallback' : dailyFallback ? 'Previous trading day' : null,
       });
       setQuoteRetryAt(0);
     } catch (cause) {
+      if (controller.signal.aborted || quoteGeneration.current !== requestGeneration) return;
       const error: MarketDataApiError = {
         code: 'internal-error',
         message: cause instanceof Error ? cause.message : 'Quote is unavailable',
@@ -259,9 +274,26 @@ export function StockDetailClient({
       }));
       console.warn('[stock-detail:quote-retry]', { code: error.code });
     } finally {
-      setQuoteLoading(false);
-    }
-  };
+      if (quoteGeneration.current === requestGeneration) setQuoteLoading(false);
+    } })().finally(() => {
+      if (quoteInflight.current === operation) quoteInflight.current = null;
+    });
+    quoteInflight.current = operation;
+    return operation;
+  }, [quoteRetryAt, symbol]);
+
+  useEffect(() => {
+    const liveSession = market && ['pre-market', 'open', 'after-hours', 'early-close'].includes(market.currentStatus);
+    if (!appActive || !isOnline || !liveSession) return;
+    void retryQuote();
+    const timer = window.setInterval(() => { void retryQuote(); }, 60_000);
+    return () => {
+      window.clearInterval(timer);
+      quoteGeneration.current += 1;
+      quoteAbort.current?.abort();
+      quoteInflight.current = null;
+    };
+  }, [appActive, isOnline, market, retryQuote]);
 
   const retryProfile = async () => {
     const now = Date.now();

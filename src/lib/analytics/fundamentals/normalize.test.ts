@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { normalizeFinancialStatements, safeNumber, type RawReport } from './normalize';
+import { normalizeFinancialStatements, safeNumber, workingCapitalChange, type RawReport } from './normalize';
 
 function rows(dates: string[], kind: 'income' | 'balance' | 'cash'): RawReport[] {
   return dates.map((fiscalDateEnding, index) => {
@@ -14,6 +14,16 @@ describe('fundamentals normalization', () => {
   it('treats None, empty, null, NaN and Infinity as unavailable rather than zero', () => {
     for (const value of ['None', '-', '', null, undefined, 'NaN', 'Infinity']) expect(safeNumber(value)).toBeNull();
     expect(safeNumber('1,234.5')).toBe(1234.5);
+    expect(safeNumber('(1.25e3)')).toBe(-1250);
+  });
+
+  it('normalizes working-capital sign once and derives only from complete real components', () => {
+    expect(workingCapitalChange({ changeInOperatingAssets: '30', changeInOperatingLiabilities: '10' })).toBe(20);
+    expect(workingCapitalChange({ changeInWorkingCapital: '-25' })).toBe(25);
+    const previous = { currentNetReceivables: '100', inventory: '50', otherCurrentAssets: '10', currentAccountsPayable: '40', otherCurrentLiabilities: '20' };
+    const current = { currentNetReceivables: '120', inventory: '55', otherCurrentAssets: '10', currentAccountsPayable: '45', otherCurrentLiabilities: '20' };
+    expect(workingCapitalChange({}, current, previous)).toBe(20);
+    expect(workingCapitalChange({}, { ...current, inventory: 'None' }, previous)).toBeNull();
   });
   it('separates and orders annual/quarterly periods and calculates diluted EPS TTM only from four complete quarters', () => {
     const annualDates = ['2024-12-31', '2023-12-31']; const quarterDates = ['2024-03-31', '2024-06-30', '2024-09-30', '2024-12-31'];

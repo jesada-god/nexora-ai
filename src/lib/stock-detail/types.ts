@@ -20,7 +20,7 @@ export interface StockDetailResource<T> {
 }
 
 export interface StockDetailQuoteResource extends StockDetailResource<Quote> {
-  fallbackLabel: 'Previous trading day' | null;
+  fallbackLabel: 'Previous trading day' | 'Intraday close fallback' | null;
 }
 
 export interface InitialHistoryResponse {

@@ -5,10 +5,13 @@ export const METHODOLOGY_VERSION = 'nexora-fv-v1' as const;
 export const SECTOR_RULE_VERSION = 'nexora-sector-valuation-v1' as const;
 export type FairValueFailureKind =
   | 'provider-unavailable'
-  | 'insufficient-data'
-  | 'not-meaningful'
-  | 'rate-limited'
-  | 'server-error';
+  | 'provider-rate-limited'
+  | 'mapping-error'
+  | 'insufficient-periods'
+  | 'missing-field'
+  | 'currency-mismatch'
+  | 'stale-fundamentals'
+  | 'calculation-error';
 export type CompanyClassification = 'profitable-growth' | 'mature-dividend-paying' | 'cyclical' | 'financial-institution' | 'reit' | 'early-stage-high-growth' | 'loss-making' | 'asset-heavy' | 'commodity-sensitive';
 export type ModelId = 'fcff-dcf' | 'fcfe' | 'ddm' | 'relative' | 'asset-based' | 'ev-sales' | 'ev-ebitda' | 'pe' | 'peg' | 'pb';
 export type FairValueDataStatus = 'live' | 'delayed' | 'cached' | 'stale' | 'limited' | 'unavailable';
@@ -21,7 +24,7 @@ export interface FinancialPeriod {
   netIncome: number;
   depreciationAmortization: number;
   capitalExpenditure: number;
-  changeInWorkingCapital: number;
+  changeInWorkingCapital: number | null;
   operatingCashFlow: number;
   freeCashFlow: number;
   dividendsPaid: number | null;

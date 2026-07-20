@@ -1,10 +1,11 @@
 import { formatMarketDataAsOf } from '@/src/lib/presentation/datetime';
 
-export type DisplayDataStatus = 'live' | 'delayed' | 'cached' | 'stale' | 'unavailable';
+export type DisplayDataStatus = 'live' | 'delayed' | 'end-of-day' | 'cached' | 'stale' | 'unavailable';
 
 const styles: Record<DisplayDataStatus, string> = {
   live: 'border-emerald-500/30 bg-emerald-500/10 text-emerald-200',
   delayed: 'border-sky-500/30 bg-sky-500/10 text-sky-200',
+  'end-of-day': 'border-slate-500/30 bg-slate-500/10 text-slate-200',
   cached: 'border-violet-500/30 bg-violet-500/10 text-violet-200',
   stale: 'border-amber-500/30 bg-amber-500/10 text-amber-200',
   unavailable: 'border-red-500/30 bg-red-500/10 text-red-200',

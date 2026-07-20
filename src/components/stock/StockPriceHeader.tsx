@@ -24,7 +24,7 @@ import {
 } from './price-header';
 
 interface MarketSummary {
-  currentStatus: 'open' | 'closed' | 'unknown';
+  currentStatus: 'pre-market' | 'open' | 'after-hours' | 'closed' | 'holiday' | 'early-close' | 'unknown';
   notes: string | null;
 }
 
@@ -46,7 +46,7 @@ interface StockPriceHeaderProps {
   provider: string | null;
   providerConfigured: boolean;
   quoteError: MarketDataApiError | null;
-  fallbackLabel: 'Previous trading day' | null;
+  fallbackLabel: 'Previous trading day' | 'Intraday close fallback' | null;
   quoteLoading: boolean;
   quoteRetryAt: number;
   onRetryQuote: () => void;
@@ -184,7 +184,7 @@ export function StockPriceHeader({
           </div>
 
           <div className="mt-3 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-sm text-text-muted">
-            {fallbackLabel && <span className="text-amber-300">ข้อมูลจากวันซื้อขายก่อนหน้า</span>}
+            {fallbackLabel && <span className="text-amber-300">{fallbackLabel === 'Intraday close fallback' ? 'ราคาปิด intraday ล่าสุด (fallback)' : 'ข้อมูลจากวันซื้อขายก่อนหน้า'}</span>}
             {fallbackLabel && <span aria-hidden="true">·</span>}
             <span>{formatProviderTimestamp(displayedQuoteAsOf, Boolean(quoteDate))}</span>
             <span aria-hidden="true">·</span>

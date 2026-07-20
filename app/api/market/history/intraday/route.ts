@@ -8,7 +8,7 @@ import { NextResponse } from 'next/server';
 export async function GET(request: NextRequest) {
   const rate = checkMarketDataRateLimit(request, 'intraday-history');
   if (!rate.allowed) return NextResponse.json({ data: null, error: { code: 'rate-limited', message: 'Public market-data request limit exceeded', retryable: true, retryAfterSeconds: rate.retryAfterSeconds }, meta: { provider: null, timestamp: new Date().toISOString(), freshness: { status: 'unavailable', asOf: null, maxAgeSeconds: null } } }, { status: 429, headers: { 'Retry-After': String(rate.retryAfterSeconds), 'Cache-Control': 'no-store' } });
-  return observedMarketDataResponse(request, { route: '/api/market/history/intraday', symbol: request.nextUrl.searchParams.get('symbol') }, async () => {
+  const response = await observedMarketDataResponse(request, { route: '/api/market/history/intraday', symbol: request.nextUrl.searchParams.get('symbol') }, async () => {
     const query = intradayQuerySchema.parse({
       symbol: request.nextUrl.searchParams.get('symbol'),
       interval: request.nextUrl.searchParams.get('interval'),
@@ -22,4 +22,6 @@ export async function GET(request: NextRequest) {
       query.session,
     );
   });
+  response.headers.set('Cache-Control', 'private, no-store');
+  return response;
 }

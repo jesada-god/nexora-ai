@@ -11,10 +11,13 @@ export const fairValueRequestSchema = z.object({ symbol: symbolSchema, scenario:
 
 export const fairValueFailureKindSchema = z.enum([
   'provider-unavailable',
-  'insufficient-data',
-  'not-meaningful',
-  'rate-limited',
-  'server-error',
+  'provider-rate-limited',
+  'mapping-error',
+  'insufficient-periods',
+  'missing-field',
+  'currency-mismatch',
+  'stale-fundamentals',
+  'calculation-error',
 ]);
 
 const modelIdSchema = z.enum([

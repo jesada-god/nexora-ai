@@ -12,6 +12,13 @@ import {
 } from './price-header';
 
 describe('stock price header market session mapping', () => {
+  it('preserves provider extended, holiday and early-close states', () => {
+    expect(deriveMarketSession({ currentStatus: 'pre-market', notes: null })).toBe('premarket');
+    expect(deriveMarketSession({ currentStatus: 'after-hours', notes: null })).toBe('after-hours');
+    expect(deriveMarketSession({ currentStatus: 'holiday', notes: null })).toBe('holiday');
+    expect(deriveMarketSession({ currentStatus: 'early-close', notes: null })).toBe('early-close');
+  });
+
   it.each([
     ['premarket', '🌅', 'ก่อนตลาดเปิด'],
     ['open', '☀️', 'ตลาดเปิด'],

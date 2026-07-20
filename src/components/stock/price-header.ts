@@ -1,6 +1,6 @@
 import type { DataFreshness } from '@/src/lib/market-data/types';
 
-export type MarketSession = 'halted' | 'holiday' | 'premarket' | 'open' | 'after-hours' | 'closed' | 'unknown';
+export type MarketSession = 'halted' | 'holiday' | 'early-close' | 'premarket' | 'open' | 'after-hours' | 'closed' | 'unknown';
 export type PriceDirection = 'up' | 'down' | 'neutral';
 export type PriceDisplayCurrency = 'USD' | 'THB';
 export type PriceDataStatus = 'live' | 'delayed' | 'cached' | 'stale' | 'unknown' | 'unavailable';
@@ -8,6 +8,7 @@ export type PriceDataStatus = 'live' | 'delayed' | 'cached' | 'stale' | 'unknown
 export interface MarketSessionSignals {
   halted?: boolean;
   holiday?: boolean;
+  earlyClose?: boolean;
   premarket?: boolean;
   regularOpen?: boolean;
   afterHours?: boolean;
@@ -47,6 +48,7 @@ const TRUSTED_EXCHANGE_CURRENCIES: Record<string, string> = {
 };
 
 const MARKET_SESSION_PRESENTATION: Record<MarketSession, { emoji: string; label: string; fullName: string }> = {
+  'early-close': { emoji: '⏱️', label: 'ตลาดปิดเร็ว', fullName: 'Early Close Session' },
   halted: { emoji: '⏸️', label: 'ระงับการซื้อขาย', fullName: 'Trading Halt / Symbol Halted' },
   holiday: { emoji: '📅', label: 'วันหยุดตลาด', fullName: 'Market Holiday' },
   premarket: { emoji: '🌅', label: 'ก่อนตลาดเปิด', fullName: 'Pre-market Session' },
@@ -74,6 +76,7 @@ const PRICE_DIRECTION_PRESENTATION: Record<PriceDirection, { sign: '+' | '-' | '
 export function resolveMarketSession(signals: MarketSessionSignals): MarketSession {
   if (signals.halted) return 'halted';
   if (signals.holiday) return 'holiday';
+  if (signals.earlyClose) return 'early-close';
   if (signals.premarket) return 'premarket';
   if (signals.regularOpen) return 'open';
   if (signals.afterHours) return 'after-hours';
@@ -82,16 +85,17 @@ export function resolveMarketSession(signals: MarketSessionSignals): MarketSessi
 }
 
 export function deriveMarketSession(
-  market: { currentStatus: 'open' | 'closed' | 'unknown'; notes: string | null } | null | undefined,
+  market: { currentStatus: 'pre-market' | 'open' | 'after-hours' | 'closed' | 'holiday' | 'early-close' | 'unknown'; notes: string | null } | null | undefined,
   extendedSession?: 'premarket' | 'after-hours' | null,
 ): MarketSession {
   const notes = market?.notes?.toLowerCase() ?? '';
   return resolveMarketSession({
     halted: /\b(halt(?:ed)?|suspend(?:ed)?)\b/.test(notes),
-    holiday: /\bholiday\b/.test(notes),
-    premarket: extendedSession === 'premarket' || /\bpre-?market\b/.test(notes),
+    holiday: market?.currentStatus === 'holiday' || /\bholiday\b/.test(notes),
+    earlyClose: market?.currentStatus === 'early-close' || /\bearly[- ]?close\b/.test(notes),
+    premarket: market?.currentStatus === 'pre-market' || extendedSession === 'premarket' || /\bpre-?market\b/.test(notes),
     regularOpen: market?.currentStatus === 'open',
-    afterHours: extendedSession === 'after-hours' || /\b(after[- ]?hours|post[- ]?market)\b/.test(notes),
+    afterHours: market?.currentStatus === 'after-hours' || extendedSession === 'after-hours' || /\b(after[- ]?hours|post[- ]?market)\b/.test(notes),
     closed: market?.currentStatus === 'closed',
   });
 }

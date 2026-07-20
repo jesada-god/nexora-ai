@@ -41,7 +41,7 @@ export async function GET(
   if (!rate.allowed) {
     const calculatedAt = new Date().toISOString();
     const data = createFairValueUnavailable({
-      failureKind: 'rate-limited',
+      failureKind: 'provider-rate-limited',
       symbol: parsed.data,
       reason: 'ระบบจำกัดคำขอ Fair Value ชั่วคราว กรุณาลองใหม่ภายหลัง',
       missingFields: [],
@@ -67,7 +67,7 @@ export async function GET(
   } catch {
     const calculatedAt = new Date().toISOString();
     const data = createFairValueUnavailable({
-      failureKind: 'server-error',
+      failureKind: 'calculation-error',
       symbol: parsed.data,
       reason: 'เซิร์ฟเวอร์ไม่สามารถประมวลผล Fair Value ได้อย่างปลอดภัย',
       missingFields: ['valuationService'],

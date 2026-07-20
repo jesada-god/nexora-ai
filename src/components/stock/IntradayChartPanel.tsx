@@ -5,48 +5,49 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { DataProvenance } from '@/src/components/market-data/DataProvenance';
 import { Skeleton } from '@/src/components/ui/Skeleton';
 import { useAppActive } from '@/src/hooks/useAppActive';
-import { aggregateSessionAwareH4 } from '@/src/lib/market-data/intraday/aggregate';
-import { canonicalIntradaySeriesSchema, type CanonicalIntradaySeries, type IntradayInterval, type IntradayRange, type IntradaySessionMode } from '@/src/lib/market-data/intraday/contracts';
+import { normalizedCandleResultSchema, type CandleInterval, type CandleRange, type CandleSession, type NormalizedCandleResult } from '@/src/lib/market-data/candles/contracts';
+import type { HistoricalPrices, MarketDataEnvelope } from '@/src/lib/market-data/types';
 
 const Chart = dynamic(() => import('./HistoricalChart'), { ssr: false, loading: () => <Skeleton className="h-[420px] w-full" /> });
-type DisplayInterval = IntradayInterval | '4h';
-type Envelope = { data: unknown; error?: { code: string; message: string; retryAfterSeconds?: number } };
-const intervals: Array<{ id: DisplayInterval; label: string; source: string }> = [
-  { id: '1m', label: '1m', source: 'provider' },
-  { id: '5m', label: '5m', source: 'provider' },
-  { id: '15m', label: '15m', source: 'provider' },
-  { id: '30m', label: '30m', source: 'provider' },
-  { id: '60m', label: '60m', source: 'provider' },
-  { id: '4h', label: 'H4', source: 'derived from real 60m regular-session bars' },
-];
+const TechnicalIndicatorControls = dynamic(() => import('@/src/components/analytics/TechnicalIndicatorControls').then((module) => module.TechnicalIndicatorControls), { ssr: false });
 
-function intradayError(code: string | undefined): string {
-  if (code === 'forbidden') return 'แพ็กเกจข้อมูลปัจจุบันไม่มีสิทธิ์ Intraday';
-  if (code === 'rate-limited') return 'ผู้ให้บริการจำกัดจำนวนคำขอชั่วคราว';
-  if (code === 'unsupported') return 'ผู้ให้บริการไม่รองรับ interval/session นี้';
-  if (code === 'provider-not-configured') return 'ยังไม่ได้ตั้งค่าผู้ให้บริการ Intraday';
-  if (code === 'insufficient-data') return 'ไม่มีแท่งราคาจริงในช่วงที่เลือก';
-  return 'Intraday data ไม่พร้อมใช้งาน';
+type Envelope = { data: unknown; error?: { code?: string; message?: string; retryAfterSeconds?: number; reason?: string } };
+interface Props {
+  symbol: string; active: boolean; interval: CandleInterval; range: CandleRange; session: CandleSession; adjusted: boolean;
+  technicalIndicatorsEnabled: boolean; advancedChartTypesEnabled: boolean; extendedIndicatorsEnabled: boolean;
+  supportResistanceEnabled: boolean; fairValueEnabled: boolean;
 }
 
-export function IntradayChartPanel({ symbol, active }: { symbol: string; active: boolean }) {
+function limitationMessage(code: string | undefined): string {
+  if (code === 'forbidden' || code === 'provider-unauthorized') return 'The configured API package does not authorize this timeframe.';
+  if (code === 'rate-limited') return 'The provider is cooling down after a rate limit.';
+  if (code === 'unsupported') return 'No provider supports this timeframe and historical range combination.';
+  if (code === 'not-found' || code === 'insufficient-data') return 'No real OHLCV is available for this symbol and selection.';
+  return 'Market candles are temporarily unavailable.';
+}
+
+function analyticsRange(range: CandleRange): HistoricalPrices['range'] {
+  if (range === '1d' || range === '5d' || range === '1m') return '1m';
+  if (range === '3m') return '3m';
+  if (range === '6m') return '6m';
+  if (range === 'ytd' || range === '1y') return '1y';
+  return '5y';
+}
+
+export function MarketCandleChartPanel({ symbol, active, interval, range, session, adjusted, technicalIndicatorsEnabled, advancedChartTypesEnabled, extendedIndicatorsEnabled, supportResistanceEnabled, fairValueEnabled }: Props) {
   const appActive = useAppActive();
-  const [interval, setInterval] = useState<DisplayInterval>('60m');
-  const [range, setRange] = useState<IntradayRange>('5d');
-  const [sessionMode, setSessionMode] = useState<IntradaySessionMode>('regular');
-  const [series, setSeries] = useState<CanonicalIntradaySeries | null>(null);
+  const [series, setSeries] = useState<NormalizedCandleResult | null>(null);
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<{ code?: string; message: string } | null>(null);
-  const [unsupported, setUnsupported] = useState<Partial<Record<DisplayInterval, string>>>({});
+  const [error, setError] = useState<{ code?: string; message: string; diagnostics?: string } | null>(null);
   const [cooldownUntil, setCooldownUntil] = useState(0);
   const [now, setNow] = useState(0);
   const [saveData] = useState(() => typeof navigator !== 'undefined' && Boolean((navigator as Navigator & { connection?: { saveData?: boolean } }).connection?.saveData));
   const [userStarted, setUserStarted] = useState(false);
-  const cache = useRef(new Map<string, CanonicalIntradaySeries>());
+  const cache = useRef(new Map<string, NormalizedCandleResult>());
+  const inflight = useRef(new Map<string, Promise<void>>());
   const abort = useRef<AbortController | null>(null);
   const generation = useRef(0);
-  const sourceInterval: IntradayInterval = interval === '4h' ? '60m' : interval;
-  const requestKey = `${symbol}:${sourceInterval}:${range}:${sessionMode}`;
+  const requestKey = `${symbol}:${interval}:${range}:${adjusted}:${session}`;
 
   useEffect(() => {
     if (!cooldownUntil) return;
@@ -56,10 +57,12 @@ export function IntradayChartPanel({ symbol, active }: { symbol: string; active:
 
   const request = useCallback(async (force = false) => {
     if (!active || !appActive) return;
-    if (!navigator.onLine) { setError({ code: 'offline', message: 'ออฟไลน์อยู่ จึงไม่เรียกผู้ให้บริการ' }); return; }
+    if (!navigator.onLine) { setError({ code: 'offline', message: 'You are offline, so no provider request was made.' }); return; }
     if (!force) {
       const saved = cache.current.get(requestKey);
       if (saved) { setSeries(saved); setError(null); return; }
+      const pending = inflight.current.get(requestKey);
+      if (pending) return pending;
     }
     if (Date.now() < cooldownUntil) return;
     const requestGeneration = ++generation.current;
@@ -67,56 +70,65 @@ export function IntradayChartPanel({ symbol, active }: { symbol: string; active:
     const controller = new AbortController();
     abort.current = controller;
     setLoading(true); setError(null);
-    try {
-      const query = new URLSearchParams({ symbol, interval: sourceInterval, range, session: sessionMode });
-      const response = await fetch(`/api/market/history/intraday?${query.toString()}`, { signal: controller.signal, headers: { Accept: 'application/json' } });
-      const payload = await response.json() as Envelope;
-      if (!response.ok) {
-        const retry = Number(response.headers.get('Retry-After') ?? payload.error?.retryAfterSeconds ?? 0);
-        if (retry > 0) { const deadline = Date.now() + retry * 1_000; setNow(Date.now()); setCooldownUntil(deadline); }
-        throw Object.assign(new Error(intradayError(payload.error?.code)), { code: payload.error?.code });
-      }
-      const parsed = canonicalIntradaySeriesSchema.safeParse(payload.data);
-      if (!parsed.success) throw Object.assign(new Error('Intraday response validation failed'), { code: 'invalid-response' });
-      if (generation.current !== requestGeneration) return;
-      cache.current.set(requestKey, parsed.data);
-      setSeries(parsed.data); setUnsupported((current) => ({ ...current, [interval]: undefined }));
-    } catch (cause) {
-      if (controller.signal.aborted || generation.current !== requestGeneration) return;
-      const code = (cause as { code?: string }).code;
-      const message = cause instanceof Error ? cause.message : 'Intraday unavailable';
-      setSeries(null); setError({ code, message });
-      if (['forbidden', 'unsupported', 'insufficient-data'].includes(code ?? '')) setUnsupported((current) => ({ ...current, [interval]: message }));
-    } finally { if (generation.current === requestGeneration) setLoading(false); }
-  }, [active, appActive, cooldownUntil, interval, range, requestKey, sessionMode, sourceInterval, symbol]);
+    const operation = (async () => {
+      try {
+        const query = new URLSearchParams({ symbol, interval, range, adjusted: String(adjusted), session });
+        const response = await fetch(`/api/market/candles?${query.toString()}`, { signal: controller.signal, headers: { Accept: 'application/json' }, cache: 'no-store' });
+        const payload = await response.json() as Envelope;
+        if (!response.ok) {
+          const retry = Number(response.headers.get('Retry-After') ?? payload.error?.retryAfterSeconds ?? 0);
+          if (retry > 0) { const deadline = Date.now() + retry * 1_000; setNow(Date.now()); setCooldownUntil(deadline); }
+          throw Object.assign(new Error(limitationMessage(payload.error?.code)), { code: payload.error?.code, diagnostics: process.env.NODE_ENV === 'development' ? payload.error?.reason ?? payload.error?.message : undefined });
+        }
+        const parsed = normalizedCandleResultSchema.safeParse(payload.data);
+        if (!parsed.success) throw Object.assign(new Error('Market candle response failed validation.'), { code: 'invalid-provider-response' });
+        if (generation.current !== requestGeneration) return;
+        cache.current.set(requestKey, parsed.data); setSeries(parsed.data); setCooldownUntil(0);
+      } catch (cause) {
+        if (controller.signal.aborted || generation.current !== requestGeneration) return;
+        setSeries(null);
+        setError({ code: (cause as { code?: string }).code, message: cause instanceof Error ? cause.message : 'Market candles are unavailable.', diagnostics: (cause as { diagnostics?: string }).diagnostics });
+      } finally { if (generation.current === requestGeneration) setLoading(false); }
+    })().finally(() => inflight.current.delete(requestKey));
+    inflight.current.set(requestKey, operation);
+    return operation;
+  }, [active, adjusted, appActive, cooldownUntil, interval, range, requestKey, session, symbol]);
 
   useEffect(() => {
-    if (!active || !appActive || (saveData && !userStarted)) return;
     let cancelled = false;
-    queueMicrotask(() => { if (!cancelled) void request(); });
-    return () => { cancelled = true; abort.current?.abort(); };
-  }, [active, appActive, request, saveData, userStarted]);
+    queueMicrotask(() => {
+      if (cancelled) return;
+      setSeries(null);
+      setError(null);
+      if (active && appActive && (!saveData || userStarted)) void request();
+    });
+    return () => { cancelled = true; generation.current += 1; abort.current?.abort(); };
+  }, [active, appActive, request, requestKey, saveData, userStarted]);
+  useEffect(() => {
+    if (!active || !appActive || series?.dataStatus !== 'live') return;
+    const timer = window.setInterval(() => { void request(true); }, 60_000);
+    return () => window.clearInterval(timer);
+  }, [active, appActive, request, series?.dataStatus]);
   useEffect(() => () => abort.current?.abort(), []);
 
-  const bars = useMemo(() => {
-    if (!series) return [];
-    return interval === '4h' ? aggregateSessionAwareH4(series.bars) : series.bars;
-  }, [interval, series]);
-  const prices = useMemo(() => bars.map((bar) => ({ date: bar.timestamp, open: bar.open, high: bar.high, low: bar.low, close: bar.close, volume: bar.volume })), [bars]);
+  const prices = useMemo(() => series?.candles.map((bar) => ({ date: new Date(bar.timestamp * 1_000).toISOString(), open: bar.open, high: bar.high, low: bar.low, close: bar.close, volume: bar.volume })) ?? [], [series]);
+  const history = useMemo<HistoricalPrices | null>(() => series ? { symbol, range: analyticsRange(range), interval: '1d', prices, providerUsed: series.provider, fallbackReason: series.fallbackReason, asOf: series.actualEnd ? new Date(series.actualEnd * 1_000).toISOString() : null, freshness: series.cacheStatus === 'stale' ? 'stale' : series.cacheStatus === 'hit' ? 'cached' : 'fresh', methodology: `Canonical ${interval} OHLCV from ${series.provider}; source interval ${series.sourceInterval}`, limitations: series.warnings } : null, [interval, prices, range, series, symbol]);
+  const meta = useMemo<MarketDataEnvelope<HistoricalPrices>['meta'] | null>(() => series ? { provider: series.provider, timestamp: new Date().toISOString(), freshness: { status: series.dataStatus === 'live' ? 'realtime' : series.dataStatus, asOf: series.actualEnd ? new Date(series.actualEnd * 1_000).toISOString() : null, maxAgeSeconds: ['1D', 'Week', 'Month'].includes(interval) ? 21_600 : 60 } } : null, [interval, series]);
+  const analyticsEnabled = technicalIndicatorsEnabled || advancedChartTypesEnabled || extendedIndicatorsEnabled || supportResistanceEnabled || fairValueEnabled;
   const cooldown = Math.max(0, Math.ceil((cooldownUntil - now) / 1_000));
 
-  if (saveData && !userStarted) return <div className="rounded-xl border border-slate-700 p-5 text-sm text-slate-300"><p>Data Saver เปิดอยู่ ระบบจึงยังไม่โหลด Intraday</p><button type="button" className="mt-3 min-h-11 rounded-lg border border-[#D4FF00]/40 px-3 text-[#D4FF00]" onClick={() => setUserStarted(true)}>โหลด Intraday</button></div>;
+  if (saveData && !userStarted) return <div className="rounded-xl border border-slate-700 p-5 text-sm text-slate-300"><p>Data Saver is enabled. Candles have not been loaded.</p><button type="button" className="mt-3 min-h-11 rounded-lg border border-[#D4FF00]/40 px-3 text-[#D4FF00]" onClick={() => setUserStarted(true)}>Load real OHLCV</button></div>;
 
-  return <div className="space-y-3" data-testid="intraday-chart-panel">
-    <div className="flex flex-wrap gap-2">{intervals.map((item) => <button key={item.id} type="button" title={unsupported[item.id] ?? item.source} disabled={Boolean(unsupported[item.id])} onClick={() => { setInterval(item.id); setError(null); setSeries(null); }} className={`min-h-11 rounded-full border px-3 text-xs disabled:cursor-not-allowed disabled:opacity-40 ${interval === item.id ? 'border-[#D4FF00] bg-[#D4FF00] text-black' : 'border-slate-700 text-slate-300'}`}>{item.label}</button>)}
-      <select aria-label="Intraday range" value={range} onChange={(event) => { setRange(event.target.value as IntradayRange); setError(null); setSeries(null); }} className="min-h-11 rounded-lg border border-slate-700 bg-slate-900 px-3 text-xs text-slate-200"><option value="1d">1 day</option><option value="5d">5 days</option><option value="1m">1 month</option></select>
-      <select aria-label="Market session" value={sessionMode} onChange={(event) => { setSessionMode(event.target.value as IntradaySessionMode); setError(null); setSeries(null); }} className="min-h-11 rounded-lg border border-slate-700 bg-slate-900 px-3 text-xs text-slate-200"><option value="regular">Regular session</option><option value="extended">Extended (provider permitting)</option></select>
-      <button type="button" disabled={loading || cooldown > 0 || !appActive} onClick={() => void request(true)} className="min-h-11 rounded-lg border border-slate-700 px-3 text-xs text-slate-300 disabled:opacity-40">{cooldown ? `Refresh ${cooldown}s` : 'Refresh'}</button>
-    </div>
-    <DataProvenance status={series?.status ?? (error ? 'unavailable' : 'delayed')} provider={series?.provider} asOf={series?.asOf} delayedMinutes={series?.delayedMinutes} reason={error?.message ?? (interval === '4h' ? 'H4 derived only from real 60m regular-session bars' : null)}/>
+  return <div className="space-y-3" data-testid="market-candle-chart-panel">
+    <div className="flex flex-wrap items-center gap-2"><button type="button" disabled={loading || cooldown > 0 || !appActive} onClick={() => void request(true)} className="min-h-11 rounded-lg border border-slate-700 px-3 text-xs text-slate-300 disabled:opacity-40">{cooldown ? `Refresh in ${cooldown}s` : 'Refresh'}</button>{series && <span className="text-xs text-slate-500">{series.candles.length.toLocaleString()} candles · {series.exchangeTimezone} · {series.actualStart ? new Date(series.actualStart * 1_000).toLocaleDateString() : '—'}–{series.actualEnd ? new Date(series.actualEnd * 1_000).toLocaleDateString() : '—'}</span>}</div>
+    <DataProvenance status={series?.dataStatus ?? (error ? 'unavailable' : 'delayed')} provider={series?.provider} asOf={series?.actualEnd ? new Date(series.actualEnd * 1_000).toISOString() : undefined} delayedMinutes={series?.delayedByMinutes} reason={error?.message ?? series?.fallbackReason ?? (series?.aggregated ? `${interval} aggregated from real ${series.sourceInterval} OHLCV` : null)}/>
+    {series?.warnings.map((warning) => <p key={warning} className="text-xs text-amber-300">{warning}</p>)}
     {loading && !series && <Skeleton className="h-[420px] w-full rounded-xl" />}
-    {error && !loading && <div role="alert" className="flex h-[300px] flex-col items-center justify-center rounded-xl border border-amber-500/20 p-4 text-center text-sm text-amber-200"><p>{error.message}</p><p className="mt-1 text-xs text-slate-500">ไม่มีการสร้างแท่งราคา Intraday หรือ H4 ทดแทนจาก Daily</p><button type="button" disabled={cooldown > 0} onClick={() => { setError(null); setUserStarted(true); void request(true); }} className="mt-3 min-h-11 rounded-lg border border-slate-700 px-3 disabled:opacity-40">{cooldown ? `ลองใหม่ใน ${cooldown}s` : 'ลองใหม่'}</button></div>}
-    {series && prices.length > 0 && <><p className="text-xs text-slate-500">{prices.length.toLocaleString()} bars · {series.exchangeTimezone} · {sessionMode}{interval === '4h' ? ' · session-aware H4' : ''}</p><Chart symbol={symbol} prices={prices} visibleBarCount={Math.min(120, prices.length)} chartType="candlestick" /></>}
-    {series && prices.length === 0 && <p className="rounded-xl border border-amber-500/20 p-4 text-sm text-amber-200">ไม่มีแท่งราคาจริงสำหรับ timeframe/session นี้ จึงปิดการแสดงผล</p>}
+    {error && !loading && <div role="alert" className="flex min-h-[300px] flex-col items-center justify-center rounded-xl border border-amber-500/20 p-4 text-center text-sm text-amber-200"><p>{error.message}</p><p className="mt-1 text-xs text-slate-500">No candle is mocked, interpolated, forward-filled, or replaced with daily data.</p>{error.diagnostics && <details className="mt-2 max-w-xl text-left text-xs text-slate-500"><summary>Development diagnostics</summary><p className="mt-1 break-words">{error.diagnostics}</p></details>}<button type="button" disabled={cooldown > 0} onClick={() => void request(true)} className="mt-3 min-h-11 rounded-lg border border-slate-700 px-3 disabled:opacity-40">{cooldown ? `Try again in ${cooldown}s` : 'Try again'}</button></div>}
+    {series && history && meta && prices.length > 0 && (analyticsEnabled ? <TechnicalIndicatorControls history={history} meta={meta} visibleBarCount={Math.min(1_260, prices.length)} technicalIndicatorsEnabled={technicalIndicatorsEnabled} advancedChartTypesEnabled={advancedChartTypesEnabled} extendedIndicatorsEnabled={extendedIndicatorsEnabled} supportResistanceEnabled={supportResistanceEnabled} fairValueEnabled={fairValueEnabled} /> : <Chart symbol={symbol} prices={prices} visibleBarCount={Math.min(1_260, prices.length)} chartType="candlestick" />)}
+    {series && prices.length === 0 && <p className="rounded-xl border border-amber-500/20 p-4 text-sm text-amber-200">No validated real candles are available for this selection.</p>}
+    {process.env.NODE_ENV === 'development' && series && <details className="rounded-xl border border-slate-800 p-3 text-xs text-slate-400"><summary>Development diagnostics</summary><dl className="mt-2 grid gap-1 sm:grid-cols-2"><div>Selected provider: {series.provider}</div><div>Attempted: {series.attemptedProviders.join(', ')}</div><div>Requested interval: {series.requestedInterval}</div><div>Actual/source: {series.actualInterval}/{series.sourceInterval}</div><div>Range: {series.requestedRange}</div><div>Actual start/end: {series.actualStart ?? '—'} / {series.actualEnd ?? '—'}</div><div>Candles: {series.candles.length}</div><div>Timezone/currency: {series.exchangeTimezone} / {series.currency ?? '—'}</div><div>Adjusted: {String(series.adjusted)}</div><div>Aggregated: {String(series.aggregated)}</div><div>Cache: {series.cacheStatus}</div><div>Fallback: {series.fallbackReason ?? 'none'}</div></dl></details>}
   </div>;
 }
+
+export const IntradayChartPanel = MarketCandleChartPanel;

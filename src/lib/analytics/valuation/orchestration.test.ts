@@ -157,7 +157,7 @@ describe('Fair Value orchestration failures', () => {
 
     expect(result).toMatchObject({
       status: 'unavailable',
-      failureKind: 'server-error',
+      failureKind: 'calculation-error',
       reason: expect.stringContaining('ล้มเหลว'),
       provider: 'alpha-vantage',
       missingFields: ['valuationCalculation'],
@@ -170,7 +170,7 @@ describe('Fair Value orchestration failures', () => {
       status: 'unavailable',
       symbol: 'AAPL',
       provider: 'alpha-vantage',
-      failureKind: 'server-error',
+      failureKind: 'calculation-error',
       missingInputCount: 1,
       errorCode: 'internal-error',
     });
