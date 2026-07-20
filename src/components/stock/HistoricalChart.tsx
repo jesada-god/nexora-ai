@@ -8,7 +8,6 @@ import {
   useState,
   type PointerEvent as ReactPointerEvent,
   type TouchEvent as ReactTouchEvent,
-  type WheelEvent as ReactWheelEvent,
 } from 'react';
 import {
   Area,
@@ -32,12 +31,11 @@ import type { SupportResistanceResult } from '@/src/lib/analytics/support-resist
 import type { VolumeProfileResult } from '@/src/lib/analytics/volume-profile/types';
 import type { FibonacciResult } from '@/src/lib/analytics/fibonacci/types';
 import { normalizeOhlcvTimeline, type NormalizedBar, type OhlcvInputBar } from '@/src/lib/analytics/chart-data/timeline';
-import { fitLogicalRange, panLogicalRange, zoomLogicalRange, type LogicalRange } from '@/src/lib/analytics/chart-data/viewport';
+import { fitLogicalRange, initialLogicalRange, panLogicalRange, zoomLogicalRange, type LogicalRange } from '@/src/lib/analytics/chart-data/viewport';
 import {
   buildSupportResistanceView,
   summaryRows,
   type ChartLevel,
-  type SupportResistanceMode,
   type SupportResistanceView,
 } from '@/src/lib/analytics/support-resistance/levels';
 import { parseStrikeLines, strikeDistance, type StrikeLine } from '@/src/lib/analytics/chart-layers/strike-lines';
@@ -155,8 +153,16 @@ function levelColor(level: ChartLevel) {
   return level.side === 'support' ? '#34d399' : level.side === 'resistance' ? '#fb7185' : '#facc15';
 }
 
+function levelLabelPosition(level: ChartLevel) {
+  const rank = Math.max(0, Number(level.label.slice(1)) - 1);
+  const resistance = ['insideTopRight', 'insideTopLeft', 'insideRight'] as const;
+  const support = ['insideBottomRight', 'insideBottomLeft', 'insideRight'] as const;
+  const positions = level.side === 'resistance' ? resistance : support;
+  return positions[rank % positions.length];
+}
+
 function SupportResistancePanel({ view }: { view: SupportResistanceView }) {
-  if (view.status === 'unavailable') return <section aria-label="Support and resistance summary" className="rounded-xl border border-amber-500/20 bg-amber-500/5 p-4"><h3 className="font-semibold text-white">แนวรับ–แนวต้าน</h3><p className="mt-2 text-sm text-amber-300">Unavailable: {view.reason}</p><p className="mt-1 text-xs text-slate-500">Missing: {view.missingInputs.join(', ')}</p></section>;
+  if (view.status === 'unavailable') return <section aria-label="Support and resistance summary" className="rounded-xl border border-amber-500/20 bg-amber-500/5 p-4"><h3 className="font-semibold text-white">แนวรับ–แนวต้าน</h3><p className="mt-2 text-sm text-amber-300">ข้อมูลไม่เพียงพอสำหรับคำนวณ S/R</p><p className="mt-1 text-xs text-slate-400">{view.reason}</p><p className="mt-1 text-xs text-slate-500">Missing: {view.missingInputs.join(', ')}</p></section>;
   const distance = strikeDistance(view.nearest.price, view.currentPrice);
   return <section aria-label="Support and resistance summary" className="rounded-xl border border-slate-800 bg-[#151B28]/70 p-3 sm:p-4">
     <div className="mb-3"><h3 className="font-semibold text-white">แนวรับ–แนวต้าน</h3><p className="mt-1 text-sm text-slate-300">ใกล้ถึง {view.nearest.label} ที่ ${price(view.nearest.price)} (ห่าง {Math.abs(distance.percent ?? 0).toFixed(2)}%)</p>{view.nearestEstimate && <p className="mt-1 text-xs text-amber-200">{view.nearestEstimate.label} · {view.nearestEstimate.basis}</p>}</div>
@@ -182,29 +188,29 @@ interface Props {
   showVolume?: boolean;
   showVpvr?: boolean;
   showFibonacci?: boolean;
-  showSmartSupportResistance?: boolean;
 }
 
 interface ChartMouseState { activeLabel?: string | number; activeTooltipIndex?: number; }
 
-export default function HistoricalChart({ prices, symbol, visibleBarCount = DEFAULT_VISIBLE_BARS, technical, enabledIndicators = [], chartType = 'area', supportResistance, volumeProfile, fibonacci, showVolume = true, showVpvr = false, showFibonacci = false, showSmartSupportResistance = false }: Props) {
+export default function HistoricalChart({ prices, symbol, visibleBarCount = DEFAULT_VISIBLE_BARS, technical, enabledIndicators = [], chartType = 'area', supportResistance, volumeProfile, fibonacci, showVolume = true, showVpvr = false, showFibonacci = false }: Props) {
   const rootRef = useRef<HTMLDivElement>(null);
   const interactionRef = useRef<HTMLDivElement>(null);
-  const animationRef = useRef<number | null>(null);
-  const dragRef = useRef<{ pointerId: number; x: number; at: number; range: LogicalRange; velocity: number } | null>(null);
+  const interactionFrameRef = useRef<number | null>(null);
+  const kineticFrameRef = useRef<number | null>(null);
+  const pendingRangeRef = useRef<LogicalRange | null>(null);
+  const pendingCrosshairRef = useRef<string | undefined>(undefined);
+  const dragRef = useRef<{ pointerId: number; x: number; at: number; range: LogicalRange; velocity: number; moved: boolean } | null>(null);
   const pinchRef = useRef<{ distance: number; range: LogicalRange } | null>(null);
+  const pinchActiveRef = useRef(false);
   const longPressRef = useRef<number | null>(null);
   const lastTapRef = useRef(0);
   const viewportSnapshotRef = useRef<{ timelineKey: string; visibleBarCount: number; startTime: string | null; endTime: string | null } | null>(null);
-  const previousSmartPropRef = useRef(showSmartSupportResistance);
   const [fullscreen, setFullscreen] = useState(false);
   const [volumeVisible, setVolumeVisible] = useState(showVolume);
-  const [volumeMode, setVolumeMode] = useState<'separate' | 'overlay'>('separate');
-  const [logicalRange, setLogicalRange] = useState<LogicalRange>(() => fitLogicalRange(prices.length));
+  const [logicalRange, setLogicalRange] = useState<LogicalRange>(() => initialLogicalRange(prices.length, visibleBarCount));
   const [crosshairTime, setCrosshairTime] = useState<string | null>(null);
   const [inspectionLocked, setInspectionLocked] = useState(false);
-  const [showSr, setShowSr] = useState(showSmartSupportResistance);
-  const [srMode, setSrMode] = useState<SupportResistanceMode>(showSmartSupportResistance ? 'structure' : 'pivot');
+  const [showSr, setShowSr] = useState(false);
   const [strikeEditorOpen, setStrikeEditorOpen] = useState(false);
   const [strikeLines, setStrikeLines] = useState<StrikeLine[]>([]);
   const [editingStrikeId, setEditingStrikeId] = useState<string | null>(null);
@@ -215,20 +221,37 @@ export default function HistoricalChart({ prices, symbol, visibleBarCount = DEFA
 
   const normalized = useMemo(() => normalizeOhlcvTimeline(prices), [prices]);
   const data = useMemo(() => mergePriceData(prices, chartType, technical, enabledIndicators), [chartType, enabledIndicators, prices, technical]);
-  const timelineKey = `${data[0]?.date ?? ''}:${data.at(-1)?.date ?? ''}:${data.length}`;
+  const dataRef = useRef(data);
+  const logicalRangeRef = useRef(logicalRange);
+  const storageSymbol = symbol ?? technical?.symbol ?? 'chart';
+  const timelineKey = `${storageSymbol.toUpperCase()}:${data[0]?.date ?? ''}:${data.at(-1)?.date ?? ''}:${data.length}`;
   const visibleData = useMemo(() => data.slice(logicalRange.start, logicalRange.end + 1), [data, logicalRange.end, logicalRange.start]);
   const crosshairPoint = useMemo(() => data.find((point) => point.date === crosshairTime) ?? null, [crosshairTime, data]);
   const crosshairVisibleIndex = crosshairPoint ? visibleData.findIndex((point) => point.date === crosshairPoint.date) : -1;
-  const srView = useMemo(() => buildSupportResistanceView(srMode, normalized, supportResistance), [normalized, srMode, supportResistance]);
-  const storageSymbol = symbol ?? technical?.symbol ?? 'chart';
+  const srView = useMemo(() => buildSupportResistanceView(normalized, supportResistance), [normalized, supportResistance]);
   const storageKey = `nexora:strike-lines:${storageSymbol.toUpperCase()}:v1`;
 
+  useEffect(() => { dataRef.current = data; }, [data]);
+  useEffect(() => { logicalRangeRef.current = logicalRange; }, [logicalRange]);
+
   const resetRange = useCallback(() => {
-    const length = data.length;
-    const start = Math.max(0, length - Math.min(visibleBarCount, length));
-    setLogicalRange({ start, end: Math.max(0, length - 1) });
+    if (interactionFrameRef.current != null) cancelAnimationFrame(interactionFrameRef.current);
+    interactionFrameRef.current = null;
+    pendingRangeRef.current = null;
+    pendingCrosshairRef.current = undefined;
+    const next = initialLogicalRange(data.length, visibleBarCount);
+    logicalRangeRef.current = next;
+    setLogicalRange(next);
   }, [data.length, visibleBarCount]);
-  const fitContent = useCallback(() => setLogicalRange(fitLogicalRange(data.length)), [data.length]);
+  const fitContent = useCallback(() => {
+    if (interactionFrameRef.current != null) cancelAnimationFrame(interactionFrameRef.current);
+    interactionFrameRef.current = null;
+    pendingRangeRef.current = null;
+    pendingCrosshairRef.current = undefined;
+    const next = fitLogicalRange(data.length);
+    logicalRangeRef.current = next;
+    setLogicalRange(next);
+  }, [data.length]);
 
   useEffect(() => {
     const previous = viewportSnapshotRef.current;
@@ -259,17 +282,6 @@ export default function HistoricalChart({ prices, symbol, visibleBarCount = DEFA
     return () => { cancelled = true; };
   }, [showVolume]);
   useEffect(() => {
-    if (previousSmartPropRef.current === showSmartSupportResistance) return;
-    previousSmartPropRef.current = showSmartSupportResistance;
-    let cancelled = false;
-    queueMicrotask(() => {
-      if (cancelled) return;
-      setShowSr(showSmartSupportResistance);
-      if (showSmartSupportResistance) setSrMode('structure');
-    });
-    return () => { cancelled = true; };
-  }, [showSmartSupportResistance]);
-  useEffect(() => {
     let cancelled = false;
     queueMicrotask(() => {
       if (cancelled) return;
@@ -283,7 +295,8 @@ export default function HistoricalChart({ prices, symbol, visibleBarCount = DEFA
     return () => document.removeEventListener('fullscreenchange', update);
   }, []);
   useEffect(() => () => {
-    if (animationRef.current != null) cancelAnimationFrame(animationRef.current);
+    if (interactionFrameRef.current != null) cancelAnimationFrame(interactionFrameRef.current);
+    if (kineticFrameRef.current != null) cancelAnimationFrame(kineticFrameRef.current);
     if (longPressRef.current != null) window.clearTimeout(longPressRef.current);
   }, []);
 
@@ -302,38 +315,58 @@ export default function HistoricalChart({ prices, symbol, visibleBarCount = DEFA
   };
   const editStrike = (line: StrikeLine) => { setStrikeEditorOpen(true); setEditingStrikeId(line.id); setStrikePrice(String(line.price)); setStrikeLabel(line.label); setStrikeType(line.optionType); setStrikeExpiration(line.expiration ?? ''); };
 
-  const updateCrosshairFromRatio = (ratio: number) => {
-    if (!visibleData.length) return;
-    const index = Math.min(visibleData.length - 1, Math.max(0, Math.round(ratio * (visibleData.length - 1))));
-    setCrosshairTime(visibleData[index].date);
-  };
-  const pointerRatio = (clientX: number) => {
+  const pointerRatio = useCallback((clientX: number) => {
     const bounds = interactionRef.current?.getBoundingClientRect();
     if (!bounds || bounds.width <= PRICE_AXIS_WIDTH) return 0.5;
     return Math.min(1, Math.max(0, (clientX - bounds.left) / (bounds.width - PRICE_AXIS_WIDTH)));
-  };
-  const onWheel = (event: ReactWheelEvent<HTMLDivElement>) => {
-    event.preventDefault();
-    setLogicalRange((current) => zoomLogicalRange(current, data.length, event.deltaY > 0 ? 1.18 : 0.84, pointerRatio(event.clientX)));
-  };
+  }, []);
+  const scheduleViewport = useCallback((nextRange: LogicalRange | null, ratio?: number) => {
+    if (nextRange) pendingRangeRef.current = nextRange;
+    if (ratio != null) {
+      const source = dataRef.current;
+      const range = nextRange ?? pendingRangeRef.current ?? logicalRangeRef.current;
+      if (source.length) {
+        const visibleLength = range.end - range.start + 1;
+        const index = Math.min(source.length - 1, Math.max(0, range.start + Math.round(ratio * Math.max(visibleLength - 1, 0))));
+        pendingCrosshairRef.current = source[index]?.date;
+      }
+    }
+    if (interactionFrameRef.current != null) return;
+    interactionFrameRef.current = requestAnimationFrame(() => {
+      interactionFrameRef.current = null;
+      const pendingRange = pendingRangeRef.current;
+      const pendingCrosshair = pendingCrosshairRef.current;
+      pendingRangeRef.current = null;
+      pendingCrosshairRef.current = undefined;
+      if (pendingRange) {
+        logicalRangeRef.current = pendingRange;
+        setLogicalRange(pendingRange);
+      }
+      if (pendingCrosshair !== undefined) setCrosshairTime(pendingCrosshair);
+    });
+  }, []);
   const onPointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
     if (event.pointerType === 'mouse' && event.button !== 0) return;
-    if (animationRef.current != null) cancelAnimationFrame(animationRef.current);
+    if (kineticFrameRef.current != null) { cancelAnimationFrame(kineticFrameRef.current); kineticFrameRef.current = null; }
     event.currentTarget.setPointerCapture(event.pointerId);
-    dragRef.current = { pointerId: event.pointerId, x: event.clientX, at: performance.now(), range: logicalRange, velocity: 0 };
-    updateCrosshairFromRatio(pointerRatio(event.clientX));
+    dragRef.current = { pointerId: event.pointerId, x: event.clientX, at: performance.now(), range: pendingRangeRef.current ?? logicalRangeRef.current, velocity: 0, moved: false };
+    scheduleViewport(null, pointerRatio(event.clientX));
     if (event.pointerType !== 'mouse') longPressRef.current = window.setTimeout(() => setInspectionLocked(true), 450);
   };
   const onPointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
-    updateCrosshairFromRatio(pointerRatio(event.clientX));
+    const ratio = pointerRatio(event.clientX);
     const drag = dragRef.current;
-    if (!drag || drag.pointerId !== event.pointerId || !interactionRef.current) return;
+    if (!drag || drag.pointerId !== event.pointerId || !interactionRef.current) { scheduleViewport(null, ratio); return; }
+    if (pinchRef.current) return;
     const width = interactionRef.current.clientWidth - PRICE_AXIS_WIDTH;
     const slots = width > 0 ? -((event.clientX - drag.x) / width) * (drag.range.end - drag.range.start + 1) : 0;
-    setLogicalRange(panLogicalRange(drag.range, data.length, slots));
+    scheduleViewport(panLogicalRange(drag.range, dataRef.current.length, slots), ratio);
     const now = performance.now();
     drag.velocity = now === drag.at ? 0 : (event.clientX - drag.x) / (now - drag.at);
-    if (Math.abs(event.clientX - drag.x) > 6 && longPressRef.current != null) { window.clearTimeout(longPressRef.current); longPressRef.current = null; }
+    if (Math.abs(event.clientX - drag.x) > 6) {
+      drag.moved = true;
+      if (longPressRef.current != null) { window.clearTimeout(longPressRef.current); longPressRef.current = null; }
+    }
   };
   const startKineticScroll = (velocity: number) => {
     const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -344,36 +377,75 @@ export default function HistoricalChart({ prices, symbol, visibleBarCount = DEFA
     const step = (now: number) => {
       const elapsed = now - previous; previous = now;
       const width = Math.max(1, (interactionRef.current?.clientWidth ?? 1) - PRICE_AXIS_WIDTH);
-      setLogicalRange((current) => panLogicalRange(current, data.length, -(currentVelocity * elapsed / width) * (current.end - current.start + 1)));
+      const current = pendingRangeRef.current ?? logicalRangeRef.current;
+      const next = panLogicalRange(current, dataRef.current.length, -(currentVelocity * elapsed / width) * (current.end - current.start + 1));
+      logicalRangeRef.current = next;
+      setLogicalRange(next);
       currentVelocity *= 0.9;
-      if (Math.abs(currentVelocity) >= 0.02) animationRef.current = requestAnimationFrame(step);
+      if (Math.abs(currentVelocity) >= 0.02) kineticFrameRef.current = requestAnimationFrame(step);
+      else kineticFrameRef.current = null;
     };
-    animationRef.current = requestAnimationFrame(step);
+    kineticFrameRef.current = requestAnimationFrame(step);
   };
   const onPointerUp = (event: ReactPointerEvent<HTMLDivElement>) => {
     if (longPressRef.current != null) { window.clearTimeout(longPressRef.current); longPressRef.current = null; }
     const drag = dragRef.current;
     dragRef.current = null;
-    if (event.pointerType !== 'mouse') {
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+    if (event.pointerType !== 'mouse' && !drag?.moved && !pinchActiveRef.current) {
       const now = Date.now();
-      if (now - lastTapRef.current < 320) resetRange();
+      if (now - lastTapRef.current < 320) fitContent();
       else setInspectionLocked(true);
       lastTapRef.current = now;
     }
-    if (drag) startKineticScroll(drag.velocity);
+    if (drag?.moved) startKineticScroll(drag.velocity);
   };
   const onTouchStart = (event: ReactTouchEvent<HTMLDivElement>) => {
-    if (event.touches.length !== 2) return;
-    const distance = Math.abs(event.touches[0].clientX - event.touches[1].clientX);
-    pinchRef.current = { distance: Math.max(distance, 1), range: logicalRange };
+    if (event.touches.length !== 2) {
+      pinchActiveRef.current = false;
+      pinchRef.current = null;
+      return;
+    }
+    pinchActiveRef.current = true;
+    lastTapRef.current = 0;
+    const distance = Math.hypot(
+      event.touches[0].clientX - event.touches[1].clientX,
+      event.touches[0].clientY - event.touches[1].clientY,
+    );
+    pinchRef.current = { distance: Math.max(distance, 1), range: pendingRangeRef.current ?? logicalRangeRef.current };
   };
-  const onTouchMove = (event: ReactTouchEvent<HTMLDivElement>) => {
-    if (event.touches.length !== 2 || !pinchRef.current) return;
-    event.preventDefault();
-    const distance = Math.max(Math.abs(event.touches[0].clientX - event.touches[1].clientX), 1);
-    const midpoint = (event.touches[0].clientX + event.touches[1].clientX) / 2;
-    setLogicalRange(zoomLogicalRange(pinchRef.current.range, data.length, pinchRef.current.distance / distance, pointerRatio(midpoint)));
-  };
+  useEffect(() => {
+    const chartArea = interactionRef.current;
+    if (!chartArea) return;
+    const options: AddEventListenerOptions = { passive: false };
+    const handleWheel = (event: WheelEvent) => {
+      event.preventDefault();
+      const ratio = pointerRatio(event.clientX);
+      const current = pendingRangeRef.current ?? logicalRangeRef.current;
+      const normalizedDelta = Math.max(-120, Math.min(120, event.deltaY));
+      if (normalizedDelta === 0) return;
+      const exponent = Math.sign(normalizedDelta) * Math.max(0.015, Math.abs(normalizedDelta) * 0.0015);
+      scheduleViewport(zoomLogicalRange(current, dataRef.current.length, Math.exp(exponent), ratio), ratio);
+    };
+    const handleTouchMove = (event: TouchEvent) => {
+      if (!event.touches.length) return;
+      event.preventDefault();
+      if (event.touches.length !== 2 || !pinchRef.current) return;
+      const distance = Math.max(Math.hypot(
+        event.touches[0].clientX - event.touches[1].clientX,
+        event.touches[0].clientY - event.touches[1].clientY,
+      ), 1);
+      const midpoint = (event.touches[0].clientX + event.touches[1].clientX) / 2;
+      const ratio = pointerRatio(midpoint);
+      scheduleViewport(zoomLogicalRange(pinchRef.current.range, dataRef.current.length, pinchRef.current.distance / distance, ratio), ratio);
+    };
+    chartArea.addEventListener('wheel', handleWheel, options);
+    chartArea.addEventListener('touchmove', handleTouchMove, options);
+    return () => {
+      chartArea.removeEventListener('wheel', handleWheel, options);
+      chartArea.removeEventListener('touchmove', handleTouchMove, options);
+    };
+  }, [pointerRatio, scheduleViewport]);
   const onMouseState = (state: unknown) => {
     const active = state as ChartMouseState | undefined;
     if (active?.activeLabel != null) setCrosshairTime(String(active.activeLabel));
@@ -389,8 +461,6 @@ export default function HistoricalChart({ prices, symbol, visibleBarCount = DEFA
   const secondary = enabledIndicators.filter((id) => !OVERLAYS.includes(id) && id !== 'volume');
   const latest = normalized.at(-1)!;
   const lastDate = visibleData.at(-1)?.date;
-  const visibleVolume = visibleData.flatMap((point) => typeof point.volume === 'number' ? [point.volume] : []);
-  const volumeDomainMax = Math.max(...visibleVolume, 1) * 4.25;
   const srLevels = showSr && srView.status === 'available' ? srView.levels : [];
   const strikeLevels = strikeLines.filter((line) => line.visible);
   const tooltipOnRight = crosshairVisibleIndex >= 0 && crosshairVisibleIndex < visibleData.length / 2;
@@ -401,8 +471,8 @@ export default function HistoricalChart({ prices, symbol, visibleBarCount = DEFA
     <CartesianGrid stroke="#1e293b" vertical={false}/><XAxis dataKey="date" hide/><YAxis yAxisId="price" orientation="right" width={PRICE_AXIS_WIDTH} domain={['auto', 'auto']} tick={{ fontSize: 10 }} stroke="#64748b"/><Tooltip content={() => null} cursor={false}/><Legend verticalAlign="top" height={28}/>
     {sharedCrosshair}{crosshairPoint && <ReferenceLine yAxisId="price" y={crosshairPoint.raw.close} stroke="#64748b" strokeDasharray="2 4"/>}
     {srLevels.map((level) => level.lower !== level.upper
-      ? <ReferenceArea yAxisId="price" key={level.id} y1={level.lower} y2={level.upper} fill={levelColor(level)} fillOpacity={0.1} stroke={levelColor(level)} strokeDasharray="4 3" label={{ value: `${level.label} ${price(level.price)}`, position: 'insideTopRight', fill: levelColor(level), fontSize: 9 }}/>
-      : <ReferenceLine yAxisId="price" key={level.id} y={level.price} stroke={levelColor(level)} strokeDasharray="5 4" label={{ value: `${level.label} ${price(level.price)}`, position: 'insideTopRight', fill: levelColor(level), fontSize: 9 }}/>) }
+      ? <ReferenceArea yAxisId="price" key={level.id} y1={level.lower} y2={level.upper} fill={levelColor(level)} fillOpacity={0.1} stroke={levelColor(level)} strokeDasharray="4 3" label={{ value: `${level.label} ${price(level.price)}`, position: levelLabelPosition(level), fill: levelColor(level), fontSize: 9 }}/>
+      : <ReferenceLine yAxisId="price" key={level.id} y={level.price} stroke={levelColor(level)} strokeDasharray="5 4" label={{ value: `${level.label} ${price(level.price)}`, position: levelLabelPosition(level), fill: levelColor(level), fontSize: 9 }}/>) }
     {strikeLevels.map((line) => <ReferenceLine yAxisId="price" key={line.id} y={line.price} stroke={line.optionType === 'call' ? '#38bdf8' : '#c084fc'} strokeDasharray="7 3" label={{ value: `${line.label} ${price(line.price)}`, position: 'insideBottomRight', fill: line.optionType === 'call' ? '#38bdf8' : '#c084fc', fontSize: 9 }}/>) }
     {showVpvr && volumeProfile?.status === 'available' && volumeProfile.bins.filter((bin) => bin.volume > 0).map((bin) => { const width = Math.max(1, Math.round(bin.normalizedVolume * Math.min(visibleData.length * 0.28, 20))); const start = visibleData[Math.max(0, visibleData.length - 1 - width)]?.date; return start && lastDate ? <ReferenceArea yAxisId="price" key={`vpvr-${bin.index}`} x1={start} x2={lastDate} y1={bin.priceLow} y2={bin.priceHigh} fill="#64748b" fillOpacity={0.18} strokeOpacity={0}/> : null; })}
     {showVpvr && volumeProfile?.status === 'available' && <><ReferenceLine yAxisId="price" y={(volumeProfile.poc.priceLow + volumeProfile.poc.priceHigh) / 2} stroke="#D4FF00" strokeDasharray="5 3"/><ReferenceLine yAxisId="price" y={volumeProfile.vah} stroke="#94a3b8" strokeDasharray="2 4"/><ReferenceLine yAxisId="price" y={volumeProfile.val} stroke="#94a3b8" strokeDasharray="2 4"/></>}
@@ -411,26 +481,23 @@ export default function HistoricalChart({ prices, symbol, visibleBarCount = DEFA
     {enabledIndicators.filter((id) => ['sma', 'sma50', 'sma100', 'sma200', 'ema', 'ema50', 'ema100', 'ema200', 'vwap'].includes(id)).map((id) => <Line yAxisId="price" key={id} type="monotone" dataKey={id} name={labels[id]} stroke={colors[id]} strokeWidth={1.5} dot={false} connectNulls={false} isAnimationActive={false}/>)}
     {enabledIndicators.includes('bollinger') && <><Line yAxisId="price" type="monotone" dataKey="bbUpper" name="BB Upper" stroke={colors.bollinger} strokeDasharray="4 3" dot={false} isAnimationActive={false}/><Line yAxisId="price" type="monotone" dataKey="bbMiddle" name="BB Middle" stroke={colors.bollinger} dot={false} isAnimationActive={false}/><Line yAxisId="price" type="monotone" dataKey="bbLower" name="BB Lower" stroke={colors.bollinger} strokeDasharray="4 3" dot={false} isAnimationActive={false}/></>}
     {enabledIndicators.includes('ichimoku') && <><Line yAxisId="price" type="monotone" dataKey="ichimokuConversion" name="Tenkan" stroke="#22d3ee" dot={false} isAnimationActive={false}/><Line yAxisId="price" type="monotone" dataKey="ichimokuBase" name="Kijun" stroke="#fb7185" dot={false} isAnimationActive={false}/></>}
-    {volumeVisible && volumeMode === 'overlay' && <><YAxis yAxisId="volume" hide domain={[0, volumeDomainMax]}/><Bar yAxisId="volume" dataKey="volume" name="Volume" fillOpacity={0.42} isAnimationActive={false}>{visibleData.map((point) => <Cell key={point.date} fill={point.raw.close >= point.raw.open ? '#34d39970' : '#fb718570'}/>)}</Bar></>}
   </ComposedChart></ResponsiveContainer></div>;
 
-  const volumePane = volumeVisible && volumeMode === 'separate' && <section aria-label="Volume pane" className="border-t border-slate-800 bg-[#101621]/70"><div className="flex items-center justify-between px-3 pt-1 text-[10px] text-slate-500"><span>Volume · canonical raw OHLC direction</span><span>{latest.volume == null ? 'unavailable' : compactVolume(latest.volume)}</span></div><div className={fullscreen ? 'h-[18dvh] min-h-28' : 'h-[5.5rem] md:h-[6.5rem]'}><ResponsiveContainer width="100%" height="100%"><ComposedChart data={visibleData} syncId="nexora-professional-chart" syncMethod="index" margin={CHART_MARGIN} barCategoryGap="18%" onMouseMove={onMouseState}><CartesianGrid stroke="#1e293b" vertical={false}/><XAxis dataKey="date" tickFormatter={formatChartTime} minTickGap={42} height={24} tick={{ fontSize: 9 }} stroke="#64748b"/><YAxis yAxisId="volume" orientation="right" width={PRICE_AXIS_WIDTH} tickFormatter={compactVolume} tick={{ fontSize: 9 }} stroke="#64748b" domain={[0, 'dataMax']}/><Tooltip content={() => null} cursor={false}/>{sharedCrosshair}<Bar yAxisId="volume" dataKey="volume" name="Volume" isAnimationActive={false}>{visibleData.map((point) => <Cell key={point.date} fill={point.raw.close >= point.raw.open ? '#34d39999' : '#fb718599'}/>)}</Bar></ComposedChart></ResponsiveContainer></div></section>;
+  const volumePane = volumeVisible && <section aria-label="Volume pane" className="border-t border-slate-800 bg-[#101621]/70"><div className="flex items-center justify-between px-3 pt-1 text-[10px] text-slate-500"><span>Volume · canonical raw OHLC direction</span><span>{latest.volume == null ? 'unavailable' : compactVolume(latest.volume)}</span></div><div className={fullscreen ? 'h-[18dvh] min-h-28' : 'h-[5.5rem] md:h-[6.5rem]'}><ResponsiveContainer width="100%" height="100%"><ComposedChart data={visibleData} syncId="nexora-professional-chart" syncMethod="index" margin={CHART_MARGIN} barCategoryGap="18%" onMouseMove={onMouseState}><CartesianGrid stroke="#1e293b" vertical={false}/><XAxis dataKey="date" tickFormatter={formatChartTime} minTickGap={42} height={24} tick={{ fontSize: 9 }} stroke="#64748b"/><YAxis yAxisId="volume" orientation="right" width={PRICE_AXIS_WIDTH} tickFormatter={compactVolume} tick={{ fontSize: 9 }} stroke="#64748b" domain={[0, 'dataMax']}/><Tooltip content={() => null} cursor={false}/>{sharedCrosshair}<Bar yAxisId="volume" dataKey="volume" name="Volume" isAnimationActive={false}>{visibleData.map((point) => <Cell key={point.date} fill={point.raw.close >= point.raw.open ? '#34d39999' : '#fb718599'}/>)}</Bar></ComposedChart></ResponsiveContainer></div></section>;
 
   return <div ref={rootRef} className={fullscreen ? 'fixed inset-0 z-50 overflow-y-auto bg-[#0A0E17] p-[max(0.75rem,env(safe-area-inset-top))_max(0.75rem,env(safe-area-inset-right))_max(0.75rem,env(safe-area-inset-bottom))_max(0.75rem,env(safe-area-inset-left))]' : 'relative'}>
     <div className="mb-2 flex flex-wrap items-center gap-2 rounded-xl border border-slate-800 bg-[#151B28]/80 p-2">
-      <button type="button" aria-pressed={volumeVisible} onClick={() => setVolumeVisible((current) => !current)} className={`min-h-11 rounded-lg border px-3 text-xs ${volumeVisible ? 'border-[#D4FF00] text-[#D4FF00]' : 'border-slate-700 text-slate-300'}`}>Volume</button>
-      {volumeVisible && <button type="button" onClick={() => setVolumeMode((current) => current === 'separate' ? 'overlay' : 'separate')} className="min-h-11 rounded-lg border border-slate-700 px-3 text-xs text-slate-300">{volumeMode === 'separate' ? 'Separate pane' : 'Overlay'}</button>}
-      {supportResistance !== undefined && <button type="button" aria-pressed={showSr} onClick={() => setShowSr((current) => !current)} className={`min-h-11 rounded-lg border px-3 text-xs ${showSr ? 'border-emerald-400 text-emerald-300' : 'border-slate-700 text-slate-300'}`}>S/R</button>}
-      {showSr && <select aria-label="Support resistance source" value={srMode} onChange={(event) => setSrMode(event.target.value as SupportResistanceMode)} className="min-h-11 rounded-lg border border-slate-700 bg-[#151B28] px-3 text-xs text-slate-200"><option value="pivot">Pivot</option><option value="structure">Smart Structure</option><option value="oi">OI Concentration</option><option value="expected-move">Expected Move</option><option value="confluence">Confluence</option></select>}
-      <button type="button" aria-pressed={strikeEditorOpen} onClick={() => setStrikeEditorOpen((current) => !current)} className={`min-h-11 rounded-lg border px-3 text-xs ${strikeEditorOpen ? 'border-sky-400 text-sky-300' : 'border-slate-700 text-slate-300'}`}>Strike</button>
-      <span className="hidden text-[10px] text-slate-500 sm:inline">drag · wheel/pinch zoom · double-click/tap reset</span>
-      <div className="ml-auto flex gap-2"><button type="button" onClick={fitContent} className="min-h-11 rounded-lg border border-slate-700 px-3 text-xs text-slate-300">Fit</button><button type="button" onClick={resetRange} className="min-h-11 rounded-lg border border-slate-700 px-3 text-xs text-slate-300">Reset</button><button type="button" onClick={() => void toggleFullscreen()} className="min-h-11 rounded-lg bg-slate-800 px-3 text-xs text-white">{fullscreen ? 'Exit full screen' : 'Full screen'}</button></div>
+      <button type="button" aria-label={`${volumeVisible ? 'ปิด' : 'เปิด'} Volume`} aria-pressed={volumeVisible} onClick={() => setVolumeVisible((current) => !current)} className={`min-h-11 rounded-lg border px-3 text-xs ${volumeVisible ? 'border-[#D4FF00] text-[#D4FF00]' : 'border-slate-700 text-slate-300'}`}>Volume</button>
+      {supportResistance !== undefined && <button type="button" aria-label={`${showSr ? 'ปิด' : 'เปิด'} Support/Resistance`} aria-pressed={showSr} onClick={() => setShowSr((current) => !current)} className={`min-h-11 rounded-lg border px-3 text-xs ${showSr ? 'border-emerald-400 text-emerald-300' : 'border-slate-700 text-slate-300'}`}>S/R</button>}
+      <button type="button" aria-label={`${strikeEditorOpen ? 'ปิด' : 'เปิด'} Strike editor`} aria-pressed={strikeEditorOpen} onClick={() => setStrikeEditorOpen((current) => !current)} className={`min-h-11 rounded-lg border px-3 text-xs ${strikeEditorOpen ? 'border-sky-400 text-sky-300' : 'border-slate-700 text-slate-300'}`}>Strike</button>
+      <span className="hidden text-[10px] text-slate-500 sm:inline">drag · wheel/pinch zoom · double-click/tap Fit</span>
+      <div className="ml-auto flex gap-2"><button type="button" aria-label="Fit chart content" onClick={fitContent} className="min-h-11 rounded-lg border border-slate-700 px-3 text-xs text-slate-300">Fit</button><button type="button" aria-label="Reset chart viewport" onClick={resetRange} className="min-h-11 rounded-lg border border-slate-700 px-3 text-xs text-slate-300">Reset</button><button type="button" aria-label={fullscreen ? 'Exit chart full screen' : 'Open chart full screen'} onClick={() => void toggleFullscreen()} className="min-h-11 rounded-lg bg-slate-800 px-3 text-xs text-white">{fullscreen ? 'Exit full screen' : 'Full screen'}</button></div>
     </div>
-    {strikeEditorOpen && <section className="mb-3 rounded-xl border border-sky-500/20 bg-sky-500/5 p-3"><div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-5"><input aria-label="Strike price" inputMode="decimal" value={strikePrice} onChange={(event) => setStrikePrice(event.target.value)} placeholder="Strike > 0" className="min-h-11 rounded-lg border border-slate-700 bg-[#101621] px-3 text-sm"/><input aria-label="Strike label" value={strikeLabel} onChange={(event) => setStrikeLabel(event.target.value)} placeholder="Label" className="min-h-11 rounded-lg border border-slate-700 bg-[#101621] px-3 text-sm"/><select aria-label="Call or Put" value={strikeType} onChange={(event) => setStrikeType(event.target.value as 'call' | 'put')} className="min-h-11 rounded-lg border border-slate-700 bg-[#101621] px-3 text-sm"><option value="call">Call</option><option value="put">Put</option></select><input aria-label="Expiration" type="date" value={strikeExpiration} onChange={(event) => setStrikeExpiration(event.target.value)} className="min-h-11 rounded-lg border border-slate-700 bg-[#101621] px-3 text-sm"/><button type="button" disabled={!Number.isFinite(Number(strikePrice)) || Number(strikePrice) <= 0} onClick={submitStrike} className="min-h-11 rounded-lg bg-sky-500 px-3 text-sm font-semibold text-slate-950 disabled:opacity-40">{editingStrikeId ? 'Save strike' : 'Add strike'}</button></div>
-      {strikeLines.length > 0 && <div className="mt-3 grid gap-2 sm:grid-cols-2">{strikeLines.map((line) => { const gap = strikeDistance(line.price, latest.close); return <div key={line.id} className="flex min-h-12 items-center gap-2 rounded-lg border border-slate-800 px-3 text-xs"><span className={line.optionType === 'call' ? 'text-sky-300' : 'text-purple-300'}>{line.label} · ${price(line.price)}</span><span className="text-slate-500">{signed(gap.dollars)} / {gap.percent == null ? '—' : `${signed(gap.percent)}%`}</span><div className="ml-auto flex gap-1"><button type="button" onClick={() => saveStrikes(strikeLines.map((item) => item.id === line.id ? { ...item, visible: !item.visible } : item))} className="min-h-11 px-2 text-slate-300">{line.visible ? 'Hide' : 'Show'}</button><button type="button" onClick={() => editStrike(line)} className="min-h-11 px-2 text-slate-300">Edit</button><button type="button" onClick={() => saveStrikes(strikeLines.filter((item) => item.id !== line.id))} className="min-h-11 px-2 text-rose-300">Delete</button></div></div>; })}</div>}
+    {strikeEditorOpen && <section className="mb-3 rounded-xl border border-sky-500/20 bg-sky-500/5 p-3"><div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-5"><input aria-label="Strike price" inputMode="decimal" value={strikePrice} onChange={(event) => setStrikePrice(event.target.value)} placeholder="Strike > 0" className="min-h-11 rounded-lg border border-slate-700 bg-[#101621] px-3 text-sm"/><input aria-label="Strike label" value={strikeLabel} onChange={(event) => setStrikeLabel(event.target.value)} placeholder="Label" className="min-h-11 rounded-lg border border-slate-700 bg-[#101621] px-3 text-sm"/><select aria-label="Call or Put" value={strikeType} onChange={(event) => setStrikeType(event.target.value as 'call' | 'put')} className="min-h-11 rounded-lg border border-slate-700 bg-[#101621] px-3 text-sm"><option value="call">Call</option><option value="put">Put</option></select><input aria-label="Expiration" type="date" value={strikeExpiration} onChange={(event) => setStrikeExpiration(event.target.value)} className="min-h-11 rounded-lg border border-slate-700 bg-[#101621] px-3 text-sm"/><button type="button" aria-label={editingStrikeId ? 'Save strike line' : 'Add strike line'} disabled={!Number.isFinite(Number(strikePrice)) || Number(strikePrice) <= 0} onClick={submitStrike} className="min-h-11 rounded-lg bg-sky-500 px-3 text-sm font-semibold text-slate-950 disabled:opacity-40">{editingStrikeId ? 'Save strike' : 'Add strike'}</button></div>
+      {strikeLines.length > 0 && <div className="mt-3 grid gap-2 sm:grid-cols-2">{strikeLines.map((line) => { const gap = strikeDistance(line.price, latest.close); return <div key={line.id} className="flex min-h-12 items-center gap-2 rounded-lg border border-slate-800 px-3 text-xs"><span className={line.optionType === 'call' ? 'text-sky-300' : 'text-purple-300'}>{line.label} · ${price(line.price)}</span><span className="text-slate-500">{signed(gap.dollars)} / {gap.percent == null ? '—' : `${signed(gap.percent)}%`}</span><div className="ml-auto flex gap-1"><button type="button" aria-label={`${line.visible ? 'ซ่อน' : 'แสดง'} ${line.label}`} onClick={() => saveStrikes(strikeLines.map((item) => item.id === line.id ? { ...item, visible: !item.visible } : item))} className="min-h-11 px-2 text-slate-300">{line.visible ? 'Hide' : 'Show'}</button><button type="button" aria-label={`แก้ไข ${line.label}`} onClick={() => editStrike(line)} className="min-h-11 px-2 text-slate-300">Edit</button><button type="button" aria-label={`ลบ ${line.label}`} onClick={() => saveStrikes(strikeLines.filter((item) => item.id !== line.id))} className="min-h-11 px-2 text-rose-300">Delete</button></div></div>; })}</div>}
       <p className="mt-2 text-[10px] text-slate-500">เก็บใน local preference ของอุปกรณ์นี้เท่านั้น ไม่สร้าง trade, order หรือ options data</p>
     </section>}
-    <div ref={interactionRef} aria-label="Interactive price and volume chart" onWheel={onWheel} onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerCancel={onPointerUp} onPointerLeave={() => { if (!inspectionLocked && !dragRef.current) setCrosshairTime(null); }} onDoubleClick={resetRange} onTouchStart={onTouchStart} onTouchMove={onTouchMove} onTouchEnd={() => { pinchRef.current = null; }} className="relative overflow-hidden rounded-xl border border-slate-800 bg-[#101621] select-none" style={{ touchAction: 'pan-y' }}>
+    <div ref={interactionRef} aria-label="Interactive price and volume chart" onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerCancel={onPointerUp} onPointerLeave={() => { if (!inspectionLocked && !dragRef.current) setCrosshairTime(null); }} onDoubleClick={fitContent} onTouchStart={onTouchStart} onTouchEnd={() => { pinchRef.current = null; }} className="relative overflow-hidden rounded-xl border border-slate-800 bg-[#101621] select-none" style={{ touchAction: 'none' }}>
       {crosshairPoint && <div className={`pointer-events-none absolute top-12 z-20 ${tooltipOnRight ? 'right-2' : 'left-2'}`}><InspectionTooltip point={crosshairPoint} enabled={enabledIndicators} chartType={chartType}/></div>}
       {priceChart}{volumePane}
     </div>

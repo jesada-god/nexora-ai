@@ -8,14 +8,12 @@ export interface ChartLayerPreferences {
   volume: boolean;
   vpvr: boolean;
   fibonacci: boolean;
-  smartSupportResistance: boolean;
 }
 
 export const DEFAULT_CHART_LAYERS: ChartLayerPreferences = {
   volume: true,
   vpvr: false,
   fibonacci: false,
-  smartSupportResistance: false,
 };
 
 export function parseChartType(value: string | null, fallback: AdvancedChartType): AdvancedChartType {

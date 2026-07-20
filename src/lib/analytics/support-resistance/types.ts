@@ -6,8 +6,8 @@ export interface SupportResistanceParameters {
   atrTolerance: number;
   minimumTouches: number;
   maximumPerSide: number;
+  minimumStrengthScore: number;
   useVolumeConfirmation: boolean;
-  useConsolidation: boolean;
   usePsychologicalLevels: boolean;
 }
 
@@ -16,19 +16,15 @@ export interface ZoneScoreComponents {
   recency: number;
   rejection: number;
   relativeVolume: number | null;
-  consolidation: number | null;
   psychological: number | null;
-  volumeProfile: number | null;
-  movingAverage: number | null;
-  fibonacci: number | null;
 }
 
 export interface ZoneReason { id: string; label: string; score: number; }
 
 export interface SupportResistanceZone {
   id: string;
-  type: 'support' | 'resistance' | 'fast-zone';
-  classification: 'Strong Support' | 'Support' | 'Strong Resistance' | 'Resistance' | 'LVN / Fast Zone';
+  type: 'support' | 'resistance';
+  classification: 'Strong Support' | 'Support' | 'Strong Resistance' | 'Resistance';
   lower: number;
   upper: number;
   midpoint: number;
@@ -57,7 +53,6 @@ export type SupportResistanceResult = (SupportResistanceMetadata & {
   status: 'available';
   currentPrice: number;
   zones: SupportResistanceZone[];
-  fastZones: SupportResistanceZone[];
 }) | (SupportResistanceMetadata & {
   status: 'unavailable';
   reason: string;

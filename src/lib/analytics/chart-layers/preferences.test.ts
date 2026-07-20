@@ -9,7 +9,7 @@ describe('chart preference validation', () => {
   });
 
   it('hydrates only booleans and known unique indicators', () => {
-    expect(parseChartLayers(JSON.stringify({ volume: false, vpvr: true, fibonacci: 'yes' }))).toEqual({ ...DEFAULT_CHART_LAYERS, volume: false, vpvr: true });
+    expect(parseChartLayers(JSON.stringify({ volume: false, vpvr: true, fibonacci: 'yes', removedLayer: true }))).toEqual({ ...DEFAULT_CHART_LAYERS, volume: false, vpvr: true });
     expect(parseIndicatorIds(JSON.stringify(['ema', 'ema', 'bad', 20]), ['ema', 'sma'])).toEqual(['ema']);
   });
 });

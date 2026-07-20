@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { calculateSupportResistance } from './calculations';
+import { calculateSupportResistance, confirmedSwingPivots } from './calculations';
 
 const freshness = { status: 'end-of-day' as const, asOf: '2026-01-30T00:00:00.000Z', maxAgeSeconds: 86_400 };
 const context = { symbol: 'TEST', source: 'fixture', freshness, calculatedAt: '2026-02-01T00:00:00.000Z' };
+
 function fixture(length = 80): Array<{
   date: string;
   open: number;
@@ -13,43 +14,59 @@ function fixture(length = 80): Array<{
 }> {
   return Array.from({ length }, (_, index) => {
     const close = 100 + Math.sin(index * Math.PI / 4) * 10;
-    return { date: new Date(Date.UTC(2026, 0, index + 1)).toISOString().slice(0, 10), open: close - 0.5, high: close + 1, low: close - 1, close, volume: 1_000 + (index % 8) * 20 };
+    return {
+      date: new Date(Date.UTC(2026, 0, index + 1)).toISOString().slice(0, 10),
+      open: close - 0.5,
+      high: close + 1,
+      low: close - 1,
+      close,
+      volume: 1_000 + (index % 8) * 20,
+    };
   });
 }
 
-describe('support/resistance engine', () => {
-  it('clusters confirmed pivots, returns finite metadata, and orders each side by distance', () => {
+describe('deterministic support/resistance engine', () => {
+  it('uses only candles known at confirmation time', () => {
+    const complete = fixture(50);
+    const prefix = complete.slice(0, 30);
+    const prefixPivots = confirmedSwingPivots(prefix, 3);
+    const completePivotsKnownAtPrefix = confirmedSwingPivots(complete, 3).filter((pivot) => pivot.confirmedAtIndex < prefix.length);
+    expect(completePivotsKnownAtPrefix).toEqual(prefixPivots);
+    expect(prefixPivots.every((pivot) => pivot.confirmedAtIndex === pivot.index + 3)).toBe(true);
+  });
+
+  it('merges repeated nearby swings, caps each side at three, and keeps levels strictly around latest close', () => {
     const result = calculateSupportResistance(fixture(), context, { pivotWindow: 2, atrTolerance: 1 });
     expect(result.status).toBe('available');
     expect(JSON.stringify(result)).not.toMatch(/NaN|Infinity/);
     if (result.status === 'available') {
-      expect(result.zones.length).toBeGreaterThan(0);
-      for (const type of ['support', 'resistance'] as const) {
-        const distances = result.zones.filter((zone) => zone.type === type).map((zone) => Math.abs(zone.midpoint - result.currentPrice));
-        expect(distances).toEqual([...distances].sort((a, b) => a - b));
+      const supports = result.zones.filter((zone) => zone.type === 'support');
+      const resistances = result.zones.filter((zone) => zone.type === 'resistance');
+      expect(supports.length).toBeLessThanOrEqual(3);
+      expect(resistances.length).toBeLessThanOrEqual(3);
+      expect(supports.every((zone) => zone.midpoint < result.currentPrice && zone.upper < result.currentPrice)).toBe(true);
+      expect(resistances.every((zone) => zone.midpoint > result.currentPrice && zone.lower > result.currentPrice)).toBe(true);
+      expect(result.zones.some((zone) => zone.touches > 2)).toBe(true);
+      for (const side of [supports, resistances]) {
+        const distances = side.map((zone) => Math.abs(zone.midpoint - result.currentPrice));
+        expect(distances).toEqual([...distances].sort((left, right) => left - right));
       }
-      expect(result.zones.every((zone) => zone.touches >= 2 && zone.strengthScore >= 0 && zone.strengthScore <= 100)).toBe(true);
     }
   });
 
-  it('does not confirm a final unconfirmed swing and returns unavailable for insufficient/invalid data', () => {
+  it('returns unavailable for insufficient, invalid, or below-threshold data without fallback levels', () => {
     const base = fixture();
-    const normal = calculateSupportResistance(base, context, { pivotWindow: 3 });
-    const withFutureCandidate = [...base, { ...base.at(-1)!, date: '2026-03-22', high: 999, close: 998, open: 997 }];
-    const changed = calculateSupportResistance(withFutureCandidate, context, { pivotWindow: 3 });
-    if (changed.status === 'available') expect(changed.zones.every((zone) => zone.midpoint < 900)).toBe(true);
-    expect(normal.status).not.toBe(undefined);
     expect(calculateSupportResistance(base.slice(0, 5), context).status).toBe('unavailable');
     expect(calculateSupportResistance([...base].reverse(), context).status).toBe('unavailable');
+    expect(calculateSupportResistance(base, context, { minimumStrengthScore: 100 }).status).toBe('unavailable');
   });
 
-  it('does not fabricate volume confirmation when a canonical slot has no volume', () => {
-    const input = fixture();
-    input[10] = { ...input[10], volume: null };
+  it('does not fabricate volume confirmation when canonical slots have no volume', () => {
+    const input = fixture().map((candle) => ({ ...candle, volume: null }));
     const result = calculateSupportResistance(input, context, { pivotWindow: 2, atrTolerance: 1 });
     expect(result.status).toBe('available');
     if (result.status === 'available') {
-      expect(result.zones.every((zone) => zone.scoreComponents.relativeVolume == null || Number.isFinite(zone.scoreComponents.relativeVolume))).toBe(true);
+      expect(result.zones.every((zone) => zone.scoreComponents.relativeVolume === null)).toBe(true);
     }
   });
 });
