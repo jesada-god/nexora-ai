@@ -11,21 +11,22 @@ const middleware = read('middleware.ts');
 
 describe('Phase 11 market UI production contract', () => {
   it('keeps candle requests isolated, cancellable, visibility-aware and independent of pan/zoom', () => {
-    expect(candleChart).toContain('new Map<string, NormalizedCandleResult>()');
+    expect(candleChart).toContain('new Map<string, ChartResult>()');
     expect(candleChart).toContain('`${symbol}:${interval}:${range}:${adjusted}:${session}`');
     expect(candleChart).toContain('AbortController');
     expect(candleChart).toContain('generation.current');
     expect(candleChart).toContain('useAppActive');
-    expect(candleChart).toContain('connection?.saveData');
+    expect(candleChart).toContain('inflight.current');
     expect(candleChart).not.toMatch(/onPan|onZoom|wheel.*fetch|pointer.*fetch/i);
   });
 
-  it('uses one server-normalized candle route and separates timeframe from historical range', () => {
-    expect(candleChart).toContain('/api/market/candles?');
+  it('uses one server-normalized gateway route and separates timeframe from historical range', () => {
+    expect(candleChart).toContain('/api/market/chart?');
     expect(candleChart).not.toContain('aggregateSessionAwareIntraday');
-    expect(chart).toContain('Candle Timeframe');
-    expect(chart).toContain('Historical Range');
-    expect(chart).toContain('Intraday never falls back to daily candles');
+    expect(candleChart).toContain('No candle is mocked, interpolated, forward-filled, or replaced by another provider');
+    expect(chart).toContain('aria-label="Historical range"');
+    expect(chart).toContain('aria-label="Candle interval"');
+    expect(chart).toContain('compatibleSelection');
   });
 
   it('lazy-loads the options UI with generation guards, cooldown and virtualization', () => {

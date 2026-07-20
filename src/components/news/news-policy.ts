@@ -1,4 +1,14 @@
-export function shouldRenderNewsImage(saveData: boolean, imageUrl: string | null) { return !saveData && Boolean(imageUrl); }
+const CSP_IMAGE_HOSTS = new Set(['picsum.photos']);
+
+export function shouldRenderNewsImage(saveData: boolean, imageUrl: string | null) {
+  if (saveData || !imageUrl) return false;
+  try {
+    const url = new URL(imageUrl);
+    return url.protocol === 'https:' && CSP_IMAGE_HOSTS.has(url.hostname);
+  } catch {
+    return false;
+  }
+}
 export function newsErrorMessage(code: string) {
   if (code === 'NEWS_PROVIDER_NOT_CONFIGURED') return 'ยังไม่สามารถโหลดข่าวได้ — ระบบข่าวยังไม่ได้ตั้งค่า';
   if (code === 'NEWS_PROVIDER_RATE_LIMITED') return 'ยังไม่สามารถโหลดข่าวได้ — ผู้ให้บริการจำกัดจำนวนคำขอชั่วคราว';

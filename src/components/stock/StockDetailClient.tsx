@@ -424,6 +424,7 @@ export function StockDetailClient({
               symbol={symbol}
               active={tab === 'Chart'}
               initialHistory={initialHistory}
+              currentPrice={quote?.price ?? null}
               technicalIndicatorsEnabled={technicalIndicatorsEnabled}
               advancedChartTypesEnabled={advancedChartTypesEnabled}
               extendedIndicatorsEnabled={extendedIndicatorsEnabled}

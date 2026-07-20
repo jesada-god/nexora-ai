@@ -8,7 +8,7 @@ const nextConfig: NextConfig = {
   typescript: {
     ignoreBuildErrors: false,
   },
-  // Allow access to remote image placeholder.
+  // Keep this allowlist synchronized with CSP and news-policy.ts.
   images: {
     remotePatterns: [
       {

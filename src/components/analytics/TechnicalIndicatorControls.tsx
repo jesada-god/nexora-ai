@@ -15,6 +15,7 @@ import { calculateFibonacci } from '@/src/lib/analytics/fibonacci/calculations';
 import { DEFAULT_CHART_LAYERS, parseChartLayers, parseChartType, parseIndicatorIds, type ChartLayerPreferences } from '@/src/lib/analytics/chart-layers/preferences';
 import { formatBangkokDateTime } from '@/src/lib/presentation/datetime';
 import { normalizeOhlcvTimeline } from '@/src/lib/analytics/chart-data/timeline';
+import type { ChartTooltipContext } from '@/src/components/stock/chart/chart-types';
 
 const Chart = dynamic(() => import('@/src/components/stock/HistoricalChart'), { ssr: false });
 const INDICATOR_STORAGE_KEY = 'nexora:technical-indicators:v2';
@@ -55,9 +56,12 @@ interface Props {
   fairValueEnabled: boolean;
   visibleBarCount: number;
   onRequestMoreHistory?: (minimumDataPoints: number) => void;
+  currentPrice?: number | null;
+  datasetKey?: string;
+  tooltipContext?: ChartTooltipContext;
 }
 
-export function TechnicalIndicatorControls({ history, meta, technicalIndicatorsEnabled, advancedChartTypesEnabled, extendedIndicatorsEnabled, supportResistanceEnabled, fairValueEnabled, visibleBarCount, onRequestMoreHistory }: Props) {
+export function TechnicalIndicatorControls({ history, meta, technicalIndicatorsEnabled, advancedChartTypesEnabled, extendedIndicatorsEnabled, supportResistanceEnabled, fairValueEnabled, visibleBarCount, onRequestMoreHistory, currentPrice, datasetKey, tooltipContext }: Props) {
   const indicators = useMemo(() => [...(technicalIndicatorsEnabled ? BASE_INDICATORS : []), ...(extendedIndicatorsEnabled ? EXTENDED_INDICATORS : [])], [extendedIndicatorsEnabled, technicalIndicatorsEnabled]);
   const [enabled, setEnabled] = useState<TechnicalIndicatorId[]>([]);
   const [chartType, setChartType] = useState<AdvancedChartType>(advancedChartTypesEnabled ? 'candlestick' : 'area');
@@ -154,6 +158,6 @@ export function TechnicalIndicatorControls({ history, meta, technicalIndicatorsE
       <details className="mt-3 border-t border-slate-800 pt-3 text-xs text-slate-400"><summary className="cursor-pointer text-slate-300">รายละเอียดวิธีคำนวณและแหล่งข้อมูล</summary><dl className="mt-2 grid gap-1 sm:grid-cols-2"><div>Symbol: <span className="text-slate-200">{analysis.symbol}</span></div><div>Source: <span className="text-slate-200">{analysis.dataSource ?? 'unavailable'}</span></div><div>Data points: <span className="text-slate-200">{analysis.dataPoints}</span></div><div>Latest data: <span className="text-slate-200">{analysis.latestDataAt ?? 'unavailable'}</span></div><div>Calculated: <span className="text-slate-200">{formatBangkokDateTime(analysis.calculatedAt)}</span></div><div>Freshness: <span className="text-slate-200">{analysis.freshness.status}</span></div><div className="sm:col-span-2">Method: <span className="text-slate-200">{analysis.methodology}; raw OHLCV, close field</span></div></dl><ul className="mt-2 list-disc space-y-1 pl-4">{analysis.limitations.map((limitation) => <li key={limitation}>{limitation}</li>)}</ul><p className="mt-2 text-amber-300">ค่าทั้งหมดคำนวณจากข้อมูลย้อนหลัง ไม่ใช่คำแนะนำหรือการรับประกันผลตอบแทน</p></details>
     </details>
     {chartType === 'heikin-ashi' && <p role="note" className="rounded-lg border border-amber-500/20 bg-amber-500/5 p-3 text-xs text-amber-200">Heikin Ashi เป็นค่าที่แปลงจาก OHLC ไม่ใช่ราคาซื้อขายจริง</p>}
-    <Chart symbol={history.symbol} prices={history.prices} visibleBarCount={visibleBarCount} technical={analysis} enabledIndicators={enabled} chartType={chartType} supportResistance={supportResistance} volumeProfile={volumeProfile} fibonacci={fibonacci} showVolume={layers.volume} showVpvr={layers.vpvr} showFibonacci={layers.fibonacci}/>
+    <Chart symbol={history.symbol} prices={history.prices} visibleBarCount={visibleBarCount} technical={analysis} enabledIndicators={enabled} chartType={chartType} supportResistance={supportResistance} volumeProfile={volumeProfile} fibonacci={fibonacci} showVolume={layers.volume} onToggleVolume={() => toggleLayer('volume')} showVpvr={layers.vpvr} showFibonacci={layers.fibonacci} currentPrice={currentPrice} datasetKey={datasetKey} tooltipContext={tooltipContext}/>
   </div>;
 }

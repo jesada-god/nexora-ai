@@ -54,6 +54,8 @@ export function parseServerEnv(input: Record<string, unknown>) {
       GEMINI_MODEL: read('GEMINI_MODEL', geminiModel, DEFAULT_GEMINI_MODEL),
       ALPHA_VANTAGE_API_KEY: read('ALPHA_VANTAGE_API_KEY', optionalSecret, undefined),
       FMP_API_KEY: read('FMP_API_KEY', optionalSecret, undefined),
+      POLYGON_API_KEY: read('POLYGON_API_KEY', optionalSecret, undefined),
+      MARKET_DATA_PROVIDER: read('MARKET_DATA_PROVIDER', optionalSecret, undefined),
       NEWS_API_KEY: read('NEWS_API_KEY', optionalSecret, undefined),
       SUPABASE_SERVICE_ROLE_KEY: read('SUPABASE_SERVICE_ROLE_KEY', optionalSecret, undefined),
       CRON_SECRET: read('CRON_SECRET', optionalSecret, undefined),

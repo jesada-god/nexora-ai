@@ -1,53 +1,42 @@
-import { getHistoricalMarketDataService, getMarketDataProvider } from '@/src/lib/market-data';
-import { getIntradayMarketDataService } from '@/src/lib/market-data/intraday';
-import { marketDataResponse } from '@/src/lib/market-data/route';
+import type { NextRequest } from 'next/server';
+import { getMarketDataGateway } from '@/src/lib/market-data/gateway/service';
+import { observedMarketDataResponse } from '@/src/lib/market-data/route';
 import { symbolSchema } from '@/src/lib/market-data/validation';
-import { loadQuoteWithHistoryFallback } from '@/src/lib/stock-detail/load';
 
-export async function GET(_request: Request, context: { params: Promise<{ symbol: string }> }) {
-  const response = await marketDataResponse(async () => {
-    const { symbol: rawSymbol } = await context.params;
-    const symbol = symbolSchema.parse(rawSymbol);
-    let provider: ReturnType<typeof getMarketDataProvider> | null = null;
-    try {
-      provider = getMarketDataProvider();
-    } catch {
-      // Daily history can still provide a verified previous-trading-day quote.
-    }
-    if (provider) {
-      try {
-        return await provider.getQuote(symbol);
-      } catch {
-        // A verified intraday close is a better fallback than an older daily bar.
-      }
-    }
-    for (const session of ['extended', 'regular'] as const) {
-      try {
-        const result = await getIntradayMarketDataService().getIntraday(symbol, '1m', '1d', session);
-        const latest = result.data.bars.at(-1);
-        if (!latest) continue;
-        return {
-          data: {
-            symbol,
-            price: latest.close,
-            open: latest.open,
-            high: latest.high,
-            low: latest.low,
-            previousClose: null,
-            change: null,
-            changePercent: null,
-            volume: latest.volume,
-            latestTradingDay: latest.sessionDate,
-          },
-          freshness: result.freshness,
-          provider: `${result.provider ?? result.data.provider} (${latest.sessionType} intraday fallback)`,
-        };
-      } catch {
-        // Fall through to verified daily history; no candle is synthesized.
-      }
-    }
-    return loadQuoteWithHistoryFallback(symbol, null, getHistoricalMarketDataService());
-  });
+export async function GET(request: NextRequest, context: { params: Promise<{ symbol: string }> }) {
+  const rawSymbol = (await context.params).symbol;
+  const response = await observedMarketDataResponse(
+    request,
+    { route: '/api/market/quote/[symbol]', symbol: rawSymbol },
+    async () => {
+      const symbol = symbolSchema.parse(rawSymbol);
+      const gateway = getMarketDataGateway();
+      const instrument = await gateway.resolveInstrument(symbol);
+      const quote = await gateway.getQuote({ instrument });
+      return {
+        data: {
+          symbol: quote.symbol,
+          currency: quote.currency,
+          price: quote.price,
+          open: quote.open ?? null,
+          high: quote.high ?? null,
+          low: quote.low ?? null,
+          previousClose: quote.previousClose,
+          change: quote.change,
+          changePercent: quote.changePercent,
+          volume: quote.volume == null ? null : Math.round(quote.volume),
+          latestTradingDay: new Date(quote.timestamp * 1_000).toISOString().slice(0, 10),
+        },
+        provider: quote.provider,
+        freshness: {
+          status: quote.status === 'real-time' ? 'realtime' as const : quote.status,
+          asOf: new Date(quote.timestamp * 1_000).toISOString(),
+          maxAgeSeconds: quote.status === 'real-time' ? 15 : 60,
+        },
+      };
+    },
+  );
   response.headers.set('Cache-Control', 'private, no-store');
+  response.headers.set('X-Market-Data-Provenance', 'market-data-gateway');
   return response;
 }
