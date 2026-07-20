@@ -1,7 +1,6 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import { Watchlist, Notification, PortfolioItem } from '../types';
-import { appConfig } from '../config/app';
 
 interface AppState {
   currency: 'THB' | 'USD';
@@ -92,10 +91,7 @@ export const useStore = create<AppState>()(
       })),
       clearRecentSearches: () => set({ recentSearches: [] }),
       
-      notifications: [
-        { id: '1', title: 'NVDA ทะลุแนวต้าน', message: 'NVDA ทะลุ $1,200', timestamp: new Date().toISOString(), read: false, type: 'ALERT' },
-        { id: '2', title: `ยินดีต้อนรับสู่ ${appConfig.name}`, message: 'เริ่มสำรวจพอร์ตโฟลิโอของคุณเลย', timestamp: new Date(Date.now() - 86400000).toISOString(), read: true, type: 'SYSTEM' }
-      ],
+      notifications: [],
       markNotificationRead: (id) => set((state) => ({
         notifications: state.notifications.map(n => n.id === id ? { ...n, read: true } : n)
       })),
@@ -112,6 +108,7 @@ export const useStore = create<AppState>()(
     }),
     {
       name: 'nexora-ai-storage',
+      skipHydration: true,
     }
   )
 );

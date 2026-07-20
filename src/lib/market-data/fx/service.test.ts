@@ -27,7 +27,7 @@ describe('FX service', () => {
   it('reads persistent cache after an in-memory restart when providers fail', async () => {
     const saved = { ...quote('alpha-vantage'), cached: true, stale: true };
     resetFxCacheForTests();
-    const result = await getFxRate('USD', 'THB', { providers: [provider('primary', new Error('offline'))], repository: repository(saved) });
+    const result = await getFxRate('USD', 'THB', { providers: [provider('primary', new Error('offline'))], repository: repository(saved), now: Date.parse('2026-07-20T06:45:00.000Z') });
     expect(result).toMatchObject({ unavailable: true, quote: { rate: '36.25', cached: true, stale: true } });
   });
 
@@ -41,8 +41,24 @@ describe('FX service', () => {
   });
 
   it('returns database cache with stale warning state when every provider fails', async () => {
-    const result = await getFxRate('USD', 'THB', { providers: [provider('primary', new Error('offline')), provider('secondary', new Error('offline'))], repository: repository({ ...quote(), cached: true, stale: true }) });
+    const result = await getFxRate('USD', 'THB', { providers: [provider('primary', new Error('offline')), provider('secondary', new Error('offline'))], repository: repository({ ...quote(), cached: true, stale: true }), now: Date.parse('2026-07-20T06:45:00.000Z') });
     expect(result).toMatchObject({ unavailable: true, quote: { cached: true, stale: true } });
+  });
+
+  it('rejects a last-known rate older than the accepted seven-day window', async () => {
+    const result = await getFxRate('USD', 'THB', {
+      providers: [provider('primary', new Error('offline'))],
+      repository: repository({
+        ...quote(),
+        asOf: '2026-07-01T06:45:00.000Z',
+        fetchedAt: '2026-07-01T06:45:00.000Z',
+        cached: true,
+        stale: true,
+      }),
+      now: Date.parse('2026-07-20T06:45:00.000Z'),
+    });
+
+    expect(result).toEqual({ quote: null, unavailable: true });
   });
 
   it('returns unavailable and never invents a 1:1 rate when provider and cache are empty', async () => {

@@ -29,7 +29,11 @@ export default async function WatchlistPage() {
   return <div className="min-w-0">
     <Header title="Watchlist" subtitle="ติดตาม Symbol ที่คุณสนใจ พร้อมราคาและความสดของข้อมูลล่าสุด" />
     <div className="mx-auto w-full max-w-5xl p-4 md:p-8">
-      <WatchlistClient watchlist={watchlist} initialQuotes={Object.fromEntries(entries)} />
+      <WatchlistClient
+        watchlist={watchlist}
+        initialQuotes={Object.fromEntries(entries)}
+        renderedAt={new Date().toISOString()}
+      />
     </div>
   </div>;
 }

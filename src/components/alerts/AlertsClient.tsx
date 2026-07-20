@@ -9,6 +9,7 @@ import { Input } from '@/src/components/ui/Input';
 import { Modal } from '@/src/components/ui/Modal';
 import { useToast } from '@/src/components/ui/Toast';
 import { describeCondition } from '@/src/lib/alerts/logic';
+import { requestAlertEvaluation } from '@/src/lib/alerts/client';
 import type { AlertCondition, PriceAlert } from '@/src/lib/alerts/types';
 
 const blank: AlertInput = { symbol: '', condition: 'above', targetValue: 1, cooldownMinutes: 60, enabled: true };
@@ -44,7 +45,7 @@ export function AlertsClient({ initialAlerts }: { initialAlerts: PriceAlert[] })
     setAlerts((current) => current.filter((item) => item.id !== alert.id)); addToast({ title: 'ลบ Alert แล้ว', type: 'success' });
   }); }
   async function evaluate() {
-    setEvaluating(true); try { const response = await fetch('/api/alerts/evaluate', { method: 'POST' }); const payload = await response.json();
+    setEvaluating(true); try { const response = await requestAlertEvaluation(); const payload = await response.json();
       if (!response.ok) throw new Error(payload.error ?? 'Evaluation failed');
       window.dispatchEvent(new Event('notifications-updated'));
       addToast({ title: 'ตรวจสอบ Alerts แล้ว', message: `ตรวจ ${payload.data.evaluated} รายการ · แจ้งเตือนใหม่ ${payload.data.triggered} รายการ`, type: 'success' });

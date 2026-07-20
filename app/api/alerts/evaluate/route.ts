@@ -7,6 +7,31 @@ import { createClient } from '@/src/lib/supabase/server';
 
 export const dynamic = 'force-dynamic';
 
+function errorDetails(
+  error: unknown,
+  defaults: { message: string; code: string; status: number },
+) {
+  const record =
+    error && typeof error === 'object'
+      ? (error as Record<string, unknown>)
+      : null;
+
+  return {
+    message:
+      error instanceof Error && error.message
+        ? error.message
+        : defaults.message,
+    code:
+      typeof record?.code === 'string'
+        ? record.code
+        : defaults.code,
+    status:
+      typeof record?.status === 'number'
+        ? record.status
+        : defaults.status,
+  };
+}
+
 export async function POST() {
   const client = await createClient();
 
@@ -21,16 +46,48 @@ export async function POST() {
     );
   }
 
+  let authResult: Awaited<ReturnType<typeof client.auth.getUser>>;
+
+  try {
+    authResult = await client.auth.getUser();
+  } catch (error) {
+    console.warn(
+      JSON.stringify({
+        event: 'alert_evaluation_auth_failed',
+        ...errorDetails(error, {
+          message: 'Authentication session could not be verified',
+          code: 'auth-verification-failed',
+          status: 401,
+        }),
+      }),
+    );
+
+    return NextResponse.json(
+      {
+        error: 'Authentication session is invalid',
+      },
+      {
+        status: 401,
+      },
+    );
+  }
+
   const {
     data: { user },
     error: authError,
-  } = await client.auth.getUser();
+  } = authResult;
 
   if (authError) {
-    console.warn('Alert evaluation authentication failed', {
-      code: authError.code,
-      status: authError.status,
-    });
+    console.warn(
+      JSON.stringify({
+        event: 'alert_evaluation_auth_failed',
+        ...errorDetails(authError, {
+          message: 'Authentication session is invalid',
+          code: 'auth-session-invalid',
+          status: 401,
+        }),
+      }),
+    );
 
     return NextResponse.json(
       {
@@ -71,12 +128,16 @@ export async function POST() {
       },
     );
   } catch (error) {
-    console.error('Alert evaluation failed', {
-      message:
-        error instanceof Error
-          ? error.message
-          : 'Unknown evaluation error',
-    });
+    console.error(
+      JSON.stringify({
+        event: 'alert_evaluation_failed',
+        ...errorDetails(error, {
+          message: 'Unknown evaluation error',
+          code: 'alert-evaluation-failed',
+          status: 503,
+        }),
+      }),
+    );
 
     return NextResponse.json(
       {

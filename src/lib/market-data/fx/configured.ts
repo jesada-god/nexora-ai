@@ -4,7 +4,7 @@ import { AlphaVantageFxProvider, FrankfurterFxProvider, type FxProvider } from '
 
 export function getFxProviders(): FxProvider[] {
   return [
-    ...(serverEnv.ALPHA_VANTAGE_API_KEY ? [new AlphaVantageFxProvider(serverEnv.ALPHA_VANTAGE_API_KEY)] : []),
+    new AlphaVantageFxProvider(serverEnv.ALPHA_VANTAGE_API_KEY),
     new FrankfurterFxProvider(),
   ];
 }

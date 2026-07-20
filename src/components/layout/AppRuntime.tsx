@@ -13,6 +13,10 @@ export function AppRuntime() {
   const inactiveAt = useRef<number | null>(null);
 
   useEffect(() => {
+    void useStore.persist.rehydrate();
+  }, []);
+
+  useEffect(() => {
     if (!('serviceWorker' in navigator)) return;
     const register = () => { void navigator.serviceWorker.register('/sw.js', { scope: '/' }); };
     if (document.readyState === 'complete') register();

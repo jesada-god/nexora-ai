@@ -6,10 +6,18 @@ export const newsArticleSchema = z.object({
   symbols: z.array(z.string()),
 });
 export const newsPageSchema = z.object({ articles: z.array(newsArticleSchema), nextCursor: z.string().nullable() });
+export const newsDeliveryStatusSchema = z.enum(['live', 'cached', 'stale']);
+export const newsProviderResultSchema = z.object({
+  data: newsPageSchema,
+  status: newsDeliveryStatusSchema,
+  asOf: z.iso.datetime(),
+});
 export type NewsArticle = z.infer<typeof newsArticleSchema>;
 export type NewsPage = z.infer<typeof newsPageSchema>;
+export type NewsDeliveryStatus = z.infer<typeof newsDeliveryStatusSchema>;
+export type NewsProviderResult = z.infer<typeof newsProviderResultSchema>;
 export interface NewsProvider {
   readonly id: string;
-  getMarketNews(cursor?: string): Promise<NewsPage>;
-  getSymbolNews(symbol: string, cursor?: string): Promise<NewsPage>;
+  getMarketNews(cursor?: string): Promise<NewsProviderResult>;
+  getSymbolNews(symbol: string, cursor?: string): Promise<NewsProviderResult>;
 }

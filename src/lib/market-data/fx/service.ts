@@ -1,7 +1,14 @@
 import { fxQuoteSchema, type FxQuote, type SupportedCurrency } from './types';
-import type { FxProvider } from './provider';
+import {
+  normalizeFxProviderError,
+  type FxProvider,
+} from './provider';
 
-const CACHE_TTL_MS = 15 * 60 * 1000;
+export const FX_CACHE_POLICY = {
+  freshMs: 15 * 60 * 1000,
+  staleMs: 7 * 24 * 60 * 60 * 1000,
+};
+
 const cache = new Map<string, FxQuote>();
 const pending = new Map<string, Promise<FxResult>>();
 
@@ -21,12 +28,54 @@ async function defaults(): Promise<Required<Pick<FxServiceOptions, 'providers'>>
   return { providers: getFxProviders(), repository: createFxCacheRepository() };
 }
 
+function isAcceptableRate(quote: FxQuote, now: number): boolean {
+  const asOf = Date.parse(quote.asOf);
+  const age = now - asOf;
+
+  return Number.isFinite(asOf) &&
+    age >= -5 * 60 * 1000 &&
+    age <= FX_CACHE_POLICY.staleMs;
+}
+
+function providerFailureLog(providerUsed: string, error: unknown) {
+  const failure = normalizeFxProviderError(error);
+
+  return JSON.stringify({
+    event: 'fx_provider_failed',
+    providerUsed,
+    message: failure.message,
+    code: failure.code,
+    status: failure.status,
+  });
+}
+
+function cacheFailureLog(
+  event: string,
+  code: string,
+  message: string,
+) {
+  return JSON.stringify({
+    event,
+    providerUsed: 'supabase-cache',
+    message,
+    code,
+    status: null,
+  });
+}
+
 export async function getFxRate(base: SupportedCurrency, quote: SupportedCurrency, options: FxServiceOptions = {}): Promise<FxResult> {
   if (base === quote) return { quote: null, unavailable: true };
   const key = `${base}:${quote}`;
   const now = options.now ?? Date.now();
   const saved = cache.get(key);
-  if (saved && now - Date.parse(saved.fetchedAt) < CACHE_TTL_MS) return { quote: { ...saved, cached: true }, unavailable: saved.stale };
+  if (
+    saved &&
+    now - Date.parse(saved.fetchedAt) < FX_CACHE_POLICY.freshMs &&
+    isAcceptableRate(saved, now)
+  ) {
+    return { quote: { ...saved, cached: true }, unavailable: saved.stale };
+  }
+
   const existing = pending.get(key);
   if (existing) return existing;
 
@@ -37,26 +86,59 @@ export async function getFxRate(base: SupportedCurrency, quote: SupportedCurrenc
     for (const provider of providers) {
       try {
         const live = fxQuoteSchema.parse(await provider.getRate(base, quote));
+
+        if (!isAcceptableRate(live, now)) {
+          throw new Error('FX provider returned an expired rate');
+        }
+
         cache.set(key, live);
         if (repository) {
-          try { await repository.upsert(live); } catch { console.warn(JSON.stringify({ event: 'fx_cache_write_failed', providerUsed: provider.id })); }
+          try {
+            await repository.upsert(live);
+          } catch {
+            console.warn(
+              cacheFailureLog(
+                'fx_cache_write_failed',
+                'cache-write-failed',
+                'FX cache write failed',
+              ),
+            );
+          }
         }
         console.info(JSON.stringify({ event: 'fx_rate_resolved', providerUsed: provider.id }));
         return { quote: { ...live, cached: false, stale: false }, unavailable: false };
-      } catch {
-        console.warn(JSON.stringify({ event: 'fx_provider_failed', providerUsed: provider.id }));
+      } catch (error) {
+        console.warn(providerFailureLog(provider.id, error));
       }
     }
     if (repository) {
       try {
         const persistent = await repository.get(base, quote);
-        if (persistent) {
+        if (persistent && isAcceptableRate(persistent, now)) {
           const stale = fxQuoteSchema.parse({ ...persistent, cached: true, stale: true });
           cache.set(key, stale);
           console.info(JSON.stringify({ event: 'fx_rate_resolved', providerUsed: 'supabase-cache' }));
           return { quote: stale, unavailable: true };
         }
-      } catch { console.warn(JSON.stringify({ event: 'fx_cache_read_failed', providerUsed: 'supabase-cache' })); }
+
+        if (persistent) {
+          console.warn(
+            cacheFailureLog(
+              'fx_cache_rejected',
+              'stale-cache-expired',
+              'Cached FX rate is older than the accepted stale window',
+            ),
+          );
+        }
+      } catch {
+        console.warn(
+          cacheFailureLog(
+            'fx_cache_read_failed',
+            'cache-read-failed',
+            'FX cache read failed',
+          ),
+        );
+      }
     }
     return { quote: null, unavailable: true };
   })();

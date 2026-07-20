@@ -2,6 +2,10 @@
 
 import { useEffect, useRef } from 'react';
 import { usePathname } from 'next/navigation';
+import {
+  AlertEvaluationRequestError,
+  requestAlertEvaluation,
+} from '@/src/lib/alerts/client';
 
 export function AlertEvaluationOnOpen() {
   const pathname = usePathname();
@@ -11,6 +15,8 @@ export function AlertEvaluationOnOpen() {
     if (pathname.startsWith('/auth/')) {
       return;
     }
+
+    let active = true;
 
     const evaluate = async () => {
       const isCoolingDown =
@@ -27,14 +33,11 @@ export function AlertEvaluationOnOpen() {
       lastRun.current = Date.now();
 
       try {
-        const response = await fetch('/api/alerts/evaluate', {
-          method: 'POST',
-          credentials: 'include',
-          headers: {
-            Accept: 'application/json',
-          },
-          cache: 'no-store',
-        });
+        const response = await requestAlertEvaluation();
+
+        if (!active) {
+          return;
+        }
 
         if (response.status === 401) {
           return;
@@ -54,7 +57,14 @@ export function AlertEvaluationOnOpen() {
             new Event('notifications-updated'),
           );
         }
-      } catch {
+      } catch (error) {
+        if (
+          error instanceof AlertEvaluationRequestError &&
+          error.status === 401
+        ) {
+          return;
+        }
+
         // ไม่แสดง error เมื่อออฟไลน์หรือ request ถูกยกเลิก
       }
     };
@@ -73,6 +83,8 @@ export function AlertEvaluationOnOpen() {
     window.addEventListener('online', handleOnline);
 
     return () => {
+      active = false;
+
       window.removeEventListener(
         'app-active',
         handleAppActive,

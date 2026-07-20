@@ -10,28 +10,36 @@ import { useToast } from '@/src/components/ui/Toast';
 import type { MarketDataEnvelope, SymbolSearchResult } from '@/src/lib/market-data/types';
 import type { WatchlistItemRecord, WatchlistQuote, WatchlistRecord } from '@/src/lib/watchlist/types';
 import { useOnlineStatus } from '@/src/hooks/useOnlineStatus';
+import {
+  formatBangkokDateTime,
+  isStaleAt,
+} from '@/src/lib/presentation/datetime';
 
 type SortKey = 'newest' | 'symbol' | 'price' | 'change';
 
 function displayTime(value: string | null) {
   if (!value) return 'ไม่ทราบเวลา';
-  return new Intl.DateTimeFormat('th-TH', {
-    dateStyle: 'medium', timeStyle: 'short', timeZone: 'Asia/Bangkok',
-  }).format(new Date(value));
+  return formatBangkokDateTime(value);
 }
 
-function freshnessLabel(quote: WatchlistQuote | undefined) {
+function freshnessLabel(quote: WatchlistQuote | undefined, referenceTime: string) {
   if (!quote || quote.freshness.status === 'unavailable') return 'Quote ไม่พร้อมใช้งาน';
   const labels: Record<string, string> = {
     realtime: 'เรียลไทม์', delayed: 'ล่าช้า', 'end-of-day': 'ราคาปิด', cached: 'แคช', unknown: 'ไม่ทราบ',
   };
-  const stale = quote.freshness.asOf && Date.now() - new Date(quote.freshness.asOf).valueOf() > Math.max(300, quote.freshness.maxAgeSeconds ?? 0) * 1000;
+  const stale = quote.freshness.status === 'stale'
+    || isStaleAt(
+      quote.freshness.asOf,
+      quote.freshness.maxAgeSeconds,
+      referenceTime,
+    );
   return `${stale ? 'ข้อมูลเก่า (stale)' : labels[quote.freshness.status] ?? quote.freshness.status} · ${displayTime(quote.freshness.asOf)}`;
 }
 
-export function WatchlistClient({ watchlist, initialQuotes }: {
+export function WatchlistClient({ watchlist, initialQuotes, renderedAt }: {
   watchlist: WatchlistRecord;
   initialQuotes: Record<string, WatchlistQuote>;
+  renderedAt: string;
 }) {
   const router = useRouter();
   const { addToast } = useToast();
@@ -197,10 +205,10 @@ export function WatchlistClient({ watchlist, initialQuotes }: {
             return <article key={item.id} className="flex min-w-0 items-center gap-3 p-4 hover:bg-slate-800/30 sm:px-5">
               <button onClick={() => router.push(`/stock/${encodeURIComponent(item.symbol)}`)} className="min-w-0 flex-1 text-left">
                 <span className="block font-bold text-white hover:text-[#D4FF00]">{item.symbol}</span>
-                <span className={`block truncate text-xs ${quote ? 'text-slate-500' : 'text-amber-300'}`}>{freshnessLabel(data)}</span>
+                <span className={`block truncate text-xs ${quote ? 'text-slate-500' : 'text-amber-300'}`}>{freshnessLabel(data, renderedAt)}</span>
               </button>
               <button onClick={() => router.push(`/stock/${encodeURIComponent(item.symbol)}`)} className="shrink-0 text-right">
-                <span className="block font-mono text-sm font-medium text-white">{quote ? `${quote.price.toLocaleString(undefined, { maximumFractionDigits: 4 })}` : '—'}</span>
+                <span className="block font-mono text-sm font-medium text-white">{quote ? `${quote.price.toLocaleString('th-TH', { maximumFractionDigits: 4 })}` : '—'}</span>
                 <span className={`flex items-center justify-end text-xs font-bold ${change == null ? 'text-slate-500' : change >= 0 ? 'text-emerald-500' : 'text-red-500'}`}>
                   {change != null && (change >= 0 ? <ArrowUpRight size={13} /> : <ArrowDownRight size={13} />)}{change == null ? 'ไม่มี quote' : `${Math.abs(change).toFixed(2)}%`}
                 </span>

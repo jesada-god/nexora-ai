@@ -13,47 +13,61 @@ const optionalSecret = z.preprocess(
   z.string().min(1).optional(),
 );
 
+const optionalSubject = z.preprocess(
+  (value) => value === '' ? undefined : value,
+  z.string().min(1).optional(),
+);
+
 const geminiModel = z.preprocess(
   (value) => typeof value === 'string' && value.trim() ? value.trim() : DEFAULT_GEMINI_MODEL,
   z.string().min(1),
 );
 
-const serverEnvSchema = z.object({
-  APP_URL: optionalUrl,
-  GEMINI_API_KEY: optionalSecret,
-  GEMINI_MODEL: geminiModel,
-  ALPHA_VANTAGE_API_KEY: optionalSecret,
-  FMP_API_KEY: optionalSecret,
-  NEWS_API_KEY: optionalSecret,
-  SUPABASE_SERVICE_ROLE_KEY: optionalSecret,
-  CRON_SECRET: optionalSecret,
-  WEB_PUSH_VAPID_PUBLIC_KEY: optionalSecret,
-  WEB_PUSH_VAPID_PRIVATE_KEY: optionalSecret,
-  WEB_PUSH_SUBJECT: z.preprocess((value) => value === '' ? undefined : value, z.string().min(1).optional()),
-});
+export function parseServerEnv(input: Record<string, unknown>) {
+  const issues: Array<{ path: string; message: string }> = [];
 
-const parsedServerEnv = serverEnvSchema.safeParse({
-  APP_URL: process.env.APP_URL,
-  GEMINI_API_KEY: process.env.GEMINI_API_KEY,
-  GEMINI_MODEL: process.env.GEMINI_MODEL,
-  ALPHA_VANTAGE_API_KEY: process.env.ALPHA_VANTAGE_API_KEY,
-  FMP_API_KEY: process.env.FMP_API_KEY,
-  NEWS_API_KEY: process.env.NEWS_API_KEY,
-  SUPABASE_SERVICE_ROLE_KEY: process.env.SUPABASE_SERVICE_ROLE_KEY,
-  CRON_SECRET: process.env.CRON_SECRET,
-  WEB_PUSH_VAPID_PUBLIC_KEY: process.env.WEB_PUSH_VAPID_PUBLIC_KEY,
-  WEB_PUSH_VAPID_PRIVATE_KEY: process.env.WEB_PUSH_VAPID_PRIVATE_KEY,
-  WEB_PUSH_SUBJECT: process.env.WEB_PUSH_SUBJECT,
-});
+  function read<T>(
+    path: string,
+    schema: z.ZodType<T>,
+    fallback: T,
+  ): T {
+    const result = schema.safeParse(input[path]);
 
-// Missing or invalid optional integrations must not crash the application.
-export const serverEnv = parsedServerEnv.success
-  ? parsedServerEnv.data
-  : { APP_URL: undefined, GEMINI_API_KEY: undefined, GEMINI_MODEL: DEFAULT_GEMINI_MODEL, ALPHA_VANTAGE_API_KEY: undefined, FMP_API_KEY: undefined, NEWS_API_KEY: undefined, SUPABASE_SERVICE_ROLE_KEY: undefined, CRON_SECRET: undefined, WEB_PUSH_VAPID_PUBLIC_KEY: undefined, WEB_PUSH_VAPID_PRIVATE_KEY: undefined, WEB_PUSH_SUBJECT: undefined };
+    if (result.success) {
+      return result.data;
+    }
 
-export const serverEnvIssues = parsedServerEnv.success
-  ? []
-  : parsedServerEnv.error.issues.map((issue) => ({
-      path: issue.path.join('.'),
-      message: issue.message,
-    }));
+    issues.push(
+      ...result.error.issues.map((issue) => ({
+        path,
+        message: issue.message,
+      })),
+    );
+
+    return fallback;
+  }
+
+  return {
+    data: {
+      APP_URL: read('APP_URL', optionalUrl, undefined),
+      GEMINI_API_KEY: read('GEMINI_API_KEY', optionalSecret, undefined),
+      GEMINI_MODEL: read('GEMINI_MODEL', geminiModel, DEFAULT_GEMINI_MODEL),
+      ALPHA_VANTAGE_API_KEY: read('ALPHA_VANTAGE_API_KEY', optionalSecret, undefined),
+      FMP_API_KEY: read('FMP_API_KEY', optionalSecret, undefined),
+      NEWS_API_KEY: read('NEWS_API_KEY', optionalSecret, undefined),
+      SUPABASE_SERVICE_ROLE_KEY: read('SUPABASE_SERVICE_ROLE_KEY', optionalSecret, undefined),
+      CRON_SECRET: read('CRON_SECRET', optionalSecret, undefined),
+      WEB_PUSH_VAPID_PUBLIC_KEY: read('WEB_PUSH_VAPID_PUBLIC_KEY', optionalSecret, undefined),
+      WEB_PUSH_VAPID_PRIVATE_KEY: read('WEB_PUSH_VAPID_PRIVATE_KEY', optionalSecret, undefined),
+      WEB_PUSH_SUBJECT: read('WEB_PUSH_SUBJECT', optionalSubject, undefined),
+    },
+    issues,
+  };
+}
+
+const parsedServerEnv = parseServerEnv(process.env);
+
+// Invalid optional integrations are isolated so one bad value cannot disable
+// unrelated valid provider credentials.
+export const serverEnv = parsedServerEnv.data;
+export const serverEnvIssues = parsedServerEnv.issues;

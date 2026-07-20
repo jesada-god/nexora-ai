@@ -30,7 +30,7 @@ export const viewport: Viewport = {
 export default function RootLayout({children}: {children: React.ReactNode}) {
   return (
     <html lang="th" className="dark">
-      <body className="bg-[#0A0E17] text-slate-200 antialiased selection:bg-[#D4FF00]/30" suppressHydrationWarning>
+      <body className="bg-[#0A0E17] text-slate-200 antialiased selection:bg-[#D4FF00]/30">
         <MainLayout>{children}</MainLayout>
         <Toaster />
       </body>
