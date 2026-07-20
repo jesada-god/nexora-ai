@@ -3,6 +3,7 @@
 import dynamic from 'next/dynamic';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { DataProvenance, type DisplayDataStatus } from '@/src/components/market-data/DataProvenance';
+import { planChartRequest, shouldApplyResponse } from './chart-request';
 import { Skeleton } from '@/src/components/ui/Skeleton';
 import { useAppActive } from '@/src/hooks/useAppActive';
 import { chartGatewayResponseSchema, type CandleInterval, type HistoricalRange, type MarketSessionMode } from '@/src/lib/market-data/gateway/contracts';
@@ -11,7 +12,7 @@ import type { HistoricalPrices, MarketDataEnvelope } from '@/src/lib/market-data
 const Chart = dynamic(() => import('./HistoricalChart'), { ssr: false, loading: () => <Skeleton className="h-[420px] w-full" /> });
 const TechnicalIndicatorControls = dynamic(() => import('@/src/components/analytics/TechnicalIndicatorControls').then((module) => module.TechnicalIndicatorControls), { ssr: false });
 
-type Envelope = { data: unknown; error?: { code?: string; message?: string; retryAfterSeconds?: number; reason?: string } };
+type Envelope = { data: unknown; error?: { code?: string; message?: string; retryAfterSeconds?: number; reason?: string; retryable?: boolean } };
 type ChartResult = ReturnType<typeof chartGatewayResponseSchema.parse>;
 
 interface Props {
@@ -57,7 +58,7 @@ export function MarketCandleChartPanel(props: Props) {
   const appActive = useAppActive();
   const [result, setResult] = useState<ChartResult | null>(null);
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<{ code?: string; message: string; diagnostics?: string } | null>(null);
+  const [error, setError] = useState<{ code?: string; message: string; diagnostics?: string; retryable?: boolean } | null>(null);
   const [cooldownUntil, setCooldownUntil] = useState(0);
   const [now, setNow] = useState(0);
   const cache = useRef(new Map<string, ChartResult>());
@@ -74,14 +75,17 @@ export function MarketCandleChartPanel(props: Props) {
 
   const request = useCallback(async (force = false) => {
     if (!active || !appActive) return;
-    if (!navigator.onLine) { setError({ code: 'offline', message: 'You are offline, so no provider request was made.' }); return; }
-    if (!force) {
-      const saved = cache.current.get(requestKey);
-      if (saved) { setResult(saved); setError(null); return; }
-      const pending = inflight.current.get(requestKey);
-      if (pending) return pending;
-    }
-    if (Date.now() < cooldownUntil) return;
+    if (!navigator.onLine) { setError({ code: 'offline', message: 'You are offline, so no provider request was made.', retryable: true }); return; }
+    const plan = planChartRequest({
+      force,
+      hasCache: cache.current.has(requestKey),
+      hasInflight: inflight.current.has(requestKey),
+      now: Date.now(),
+      cooldownUntil,
+    });
+    if (plan === 'serve-cache') { setResult(cache.current.get(requestKey)!); setError(null); return; }
+    if (plan === 'join-inflight') return inflight.current.get(requestKey);
+    if (plan === 'wait-cooldown') return;
     const requestGeneration = ++generation.current;
     abort.current?.abort();
     const controller = new AbortController();
@@ -98,19 +102,20 @@ export function MarketCandleChartPanel(props: Props) {
           if (retry > 0) setCooldownUntil(Date.now() + retry * 1_000);
           throw Object.assign(new Error(limitationMessage(payload.error?.code)), {
             code: payload.error?.code,
+            retryable: payload.error?.retryable,
             diagnostics: process.env.NODE_ENV === 'development' ? payload.error?.reason ?? payload.error?.message : undefined,
           });
         }
         const parsed = chartGatewayResponseSchema.safeParse(payload.data);
         if (!parsed.success) throw Object.assign(new Error('Market gateway response failed validation.'), { code: 'invalid-provider-response' });
-        if (generation.current !== requestGeneration) return;
+        if (!shouldApplyResponse(generation.current, requestGeneration, controller.signal.aborted)) return;
         cache.current.set(requestKey, parsed.data);
         setResult(parsed.data);
         setCooldownUntil(0);
       } catch (cause) {
-        if (controller.signal.aborted || generation.current !== requestGeneration) return;
+        if (!shouldApplyResponse(generation.current, requestGeneration, controller.signal.aborted)) return;
         setResult(null);
-        setError({ code: (cause as { code?: string }).code, message: cause instanceof Error ? cause.message : 'Market candles are unavailable.', diagnostics: (cause as { diagnostics?: string }).diagnostics });
+        setError({ code: (cause as { code?: string }).code, message: cause instanceof Error ? cause.message : 'Market candles are unavailable.', diagnostics: (cause as { diagnostics?: string }).diagnostics, retryable: (cause as { retryable?: boolean }).retryable });
       } finally {
         if (generation.current === requestGeneration) setLoading(false);
       }
@@ -173,11 +178,11 @@ export function MarketCandleChartPanel(props: Props) {
   } : {};
 
   return <div className="space-y-3" data-testid="market-candle-chart-panel">
-    <div className="flex flex-wrap items-center gap-2"><button type="button" disabled={loading || cooldown > 0 || !appActive} onClick={() => void request(true)} className="min-h-11 rounded-lg border border-slate-700 px-3 text-xs text-slate-300 disabled:opacity-40">{cooldown ? `Refresh in ${cooldown}s` : 'Refresh'}</button>{result && <span className="text-xs text-slate-500">{result.bars.bars.length.toLocaleString()} bars · {result.bars.timezone} · {result.bars.firstTimestamp ? new Date(result.bars.firstTimestamp * 1_000).toLocaleDateString() : '—'}–{result.bars.lastTimestamp ? new Date(result.bars.lastTimestamp * 1_000).toLocaleDateString() : '—'}</span>}</div>
+    <div className="flex flex-wrap items-center gap-2"><button type="button" disabled={loading || cooldown > 0 || !appActive || error?.retryable === false} onClick={() => void request(true)} className="min-h-11 rounded-lg border border-slate-700 px-3 text-xs text-slate-300 disabled:opacity-40">{cooldown ? `Refresh in ${cooldown}s` : 'Refresh'}</button>{result && <span className="text-xs text-slate-500">{result.bars.bars.length.toLocaleString()} bars · {result.bars.timezone} · {result.bars.firstTimestamp ? new Date(result.bars.firstTimestamp * 1_000).toLocaleDateString() : '—'}–{result.bars.lastTimestamp ? new Date(result.bars.lastTimestamp * 1_000).toLocaleDateString() : '—'}</span>}</div>
     <DataProvenance status={result ? displayStatus(result.bars.dataStatus) : error ? 'unavailable' : 'delayed'} provider={result?.bars.provider} asOf={result?.bars.asOf ? new Date(result.bars.asOf * 1_000).toISOString() : undefined} delayedMinutes={result?.bars.delayedByMinutes} reason={error?.message}/>
     {result?.bars.warnings.map((warning) => <p key={warning} className="text-xs text-amber-300">{warning}</p>)}
     {loading && !result && <Skeleton className="h-[420px] w-full rounded-xl" />}
-    {error && !loading && <div role="alert" className="flex min-h-[300px] flex-col items-center justify-center rounded-xl border border-amber-500/20 p-4 text-center text-sm text-amber-200"><p>{error.message}</p><p className="mt-1 text-xs text-slate-500">No candle is mocked, interpolated, forward-filled, or replaced by another provider.</p>{error.diagnostics && <details className="mt-2 max-w-xl text-left text-xs text-slate-500"><summary>Development diagnostics</summary><p className="mt-1 break-words">{error.diagnostics}</p></details>}<button type="button" disabled={cooldown > 0} onClick={() => void request(true)} className="mt-3 min-h-11 rounded-lg border border-slate-700 px-3 disabled:opacity-40">{cooldown ? `Try again in ${cooldown}s` : 'Try again'}</button></div>}
+    {error && !loading && <div role="alert" className="flex min-h-[300px] flex-col items-center justify-center rounded-xl border border-amber-500/20 p-4 text-center text-sm text-amber-200"><p>{error.message}</p><p className="mt-1 text-xs text-slate-500">No candle is mocked, interpolated, forward-filled, or replaced by another provider.</p>{error.diagnostics && <details className="mt-2 max-w-xl text-left text-xs text-slate-500"><summary>Development diagnostics</summary><p className="mt-1 break-words">{error.diagnostics}</p></details>}{error.retryable !== false && <button type="button" disabled={cooldown > 0} onClick={() => void request(true)} className="mt-3 min-h-11 rounded-lg border border-slate-700 px-3 disabled:opacity-40">{cooldown ? `Try again in ${cooldown}s` : 'Try again'}</button>}</div>}
     {result && result.bars.bars.length === 1 && <div role="status" className="rounded-xl border border-amber-500/20 p-5 text-sm text-amber-200">ช่วงนี้มีข้อมูลจริงเพียง 1 แท่ง อาจเป็นหลักทรัพย์เพิ่งเข้าตลาดหรือช่วงที่เลือกสั้นเกินไป กรุณาเลือก range ที่ยาวขึ้น</div>}
     {result && result.bars.bars.length >= 2 && history && meta && (analyticsEnabled
       ? <TechnicalIndicatorControls history={history} meta={meta} visibleBarCount={Math.min(1_260, prices.length)} technicalIndicatorsEnabled={props.technicalIndicatorsEnabled} advancedChartTypesEnabled={props.advancedChartTypesEnabled} extendedIndicatorsEnabled={props.extendedIndicatorsEnabled} supportResistanceEnabled={props.supportResistanceEnabled} fairValueEnabled={props.fairValueEnabled} currentPrice={currentPrice} datasetKey={requestKey} tooltipContext={tooltipContext}/>

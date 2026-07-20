@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { mapProviderFailure } from './errors';
+import { MarketDataError, mapProviderFailure } from './errors';
 
 describe('market data provider error mapping', () => {
   it('maps HTTP 429 and preserves retry timing', () => {
@@ -8,6 +8,13 @@ describe('market data provider error mapping', () => {
     expect(error.status).toBe(429);
     expect(error.retryAfterSeconds).toBe(30);
     expect(error.retryable).toBe(true);
+  });
+
+  it('marks a missing-provider configuration fault as non-retryable', () => {
+    const error = new MarketDataError('provider-not-configured', 'Set POLYGON_API_KEY');
+    expect(error.status).toBe(503);
+    expect(error.retryable).toBe(false);
+    expect(error.toApiError().retryable).toBe(false);
   });
 
   it('maps Alpha Vantage frequency payloads to rate limiting', () => {

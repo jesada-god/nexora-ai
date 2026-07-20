@@ -20,7 +20,9 @@ const STATUS_BY_CODE: Record<MarketDataErrorCode, number> = {
 };
 
 const RETRYABLE_CODES = new Set<MarketDataErrorCode>([
-  'provider-not-configured',
+  // 'provider-not-configured' is a deployment/configuration fault, not a transient
+  // upstream failure: retrying cannot succeed until an operator changes env, so it
+  // is intentionally excluded to keep it retryable=false and free of auto-retry.
   'rate-limited',
   'timeout',
   'provider-unavailable',

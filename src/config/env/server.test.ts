@@ -19,4 +19,23 @@ describe('server environment parsing', () => {
       expect.objectContaining({ path: 'APP_URL' }),
     ]);
   });
+
+  it('parses the Polygon production market-data configuration', () => {
+    const parsed = parseServerEnv({
+      POLYGON_API_KEY: 'polygon-secret',
+      MARKET_DATA_PROVIDER: 'polygon',
+    });
+
+    expect(parsed.data.POLYGON_API_KEY).toBe('polygon-secret');
+    expect(parsed.data.MARKET_DATA_PROVIDER).toBe('polygon');
+    expect(parsed.issues).toEqual([]);
+  });
+
+  it('treats blank Polygon values as unset without raising configuration issues', () => {
+    const parsed = parseServerEnv({ POLYGON_API_KEY: '', MARKET_DATA_PROVIDER: '' });
+
+    expect(parsed.data.POLYGON_API_KEY).toBeUndefined();
+    expect(parsed.data.MARKET_DATA_PROVIDER).toBeUndefined();
+    expect(parsed.issues).toEqual([]);
+  });
 });
