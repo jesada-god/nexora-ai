@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { convertUsdForDisplay, formatUpsidePercent, upsideTone } from './presentation';
+import {
+  convertUsdForDisplay,
+  fairValueUnavailableLabel,
+  formatUpsidePercent,
+  upsideTone,
+} from './presentation';
 
 describe('Fair Value card presentation', () => {
   it('keeps USD authoritative and converts THB exactly once', () => {
@@ -15,5 +20,11 @@ describe('Fair Value card presentation', () => {
     expect(upsideTone(12.4)).toBe('success');
     expect(upsideTone(-8.25)).toBe('danger');
     expect(upsideTone(0)).toBe('neutral');
+  });
+
+  it('distinguishes provider, sufficiency, and calculation failures', () => {
+    expect(fairValueUnavailableLabel('provider-unavailable', 'th')).toBe('ผู้ให้บริการไม่มีข้อมูล');
+    expect(fairValueUnavailableLabel('insufficient-data', 'th')).toBe('ข้อมูลไม่ผ่านเกณฑ์ขั้นต่ำ');
+    expect(fairValueUnavailableLabel('calculation-failure', 'en')).toBe('Calculation failed');
   });
 });

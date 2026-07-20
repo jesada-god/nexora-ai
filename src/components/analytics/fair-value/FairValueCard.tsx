@@ -5,7 +5,7 @@ import type { FairValueResult } from '@/src/lib/analytics/valuation/types';
 import type { CompanyProfileLanguage } from '@/src/lib/stock-detail/profile-presentation';
 import { FairValueDetailsDrawer } from './FairValueDetailsDrawer';
 import { requestFairValue } from './fair-value-client';
-import { convertUsdForDisplay, displayStatus, formatFairValueMoney, formatUpsidePercent, modelLabel, upsideTone, type DisplayCurrency } from './presentation';
+import { convertUsdForDisplay, displayStatus, fairValueUnavailableLabel, formatFairValueMoney, formatUpsidePercent, modelLabel, upsideTone, type DisplayCurrency } from './presentation';
 
 export function FairValueCard({
   symbol,
@@ -44,7 +44,9 @@ export function FairValueCard({
   const currentResult = result?.key === requestKey ? result : null;
   const data = currentResult?.data ?? null;
   const loading = enabled && currentResult === null;
-  const unavailableLabel = language === 'th' ? 'ไม่พร้อมใช้งาน' : 'Unavailable';
+  const unavailableLabel = data?.status === 'unavailable'
+    ? fairValueUnavailableLabel(data.failureKind, language)
+    : language === 'th' ? 'ไม่พร้อมใช้งาน' : 'Unavailable';
   const error = enabled
     ? currentResult?.error ?? null
     : language === 'th' ? 'ระบบ Fair Value ถูกปิดอยู่' : 'Fair Value feature is disabled';

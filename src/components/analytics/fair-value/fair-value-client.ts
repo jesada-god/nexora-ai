@@ -13,6 +13,9 @@ function validatePayload(value: unknown): FairValueResult {
   if (!value || typeof value !== 'object') throw new Error('Fair Value API returned an invalid response');
   const candidate = value as Partial<FairValueResult>;
   if (candidate.status !== 'available' && candidate.status !== 'unavailable') throw new Error('Fair Value API returned an invalid status');
+  if (candidate.status === 'unavailable' && !['provider-unavailable', 'insufficient-data', 'calculation-failure'].includes(candidate.failureKind ?? '')) {
+    throw new Error('Fair Value API returned an invalid failure kind');
+  }
   return candidate as FairValueResult;
 }
 

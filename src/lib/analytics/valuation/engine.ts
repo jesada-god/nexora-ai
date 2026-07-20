@@ -55,6 +55,7 @@ export function calculateFairValue(input: ValuationInput, now = Date.now()): Fai
   if (!gate.ok) {
     return {
       status: 'unavailable',
+      failureKind: 'insufficient-data',
       symbol: input.symbol,
       currency: input.currency || null,
       reason: 'ข้อมูลจริงไม่เพียงพอหรือไม่ผ่าน Data Sufficiency Gate จึงไม่สร้าง Fair Value',
@@ -70,6 +71,7 @@ export function calculateFairValue(input: ValuationInput, now = Date.now()): Fai
   if (!selection.models.length) {
     return {
       status: 'unavailable',
+      failureKind: 'insufficient-data',
       symbol: input.symbol,
       currency: input.currency,
       reason: 'ไม่มี valuation model ที่เหมาะสมและผ่าน validation',
@@ -125,6 +127,7 @@ export function calculateFairValue(input: ValuationInput, now = Date.now()): Fai
   if (!(conservative <= base && base <= optimistic) || ![conservative, base, optimistic].every(Number.isFinite)) {
     return {
       status: 'unavailable',
+      failureKind: 'calculation-failure',
       symbol: input.symbol,
       currency: input.currency,
       reason: 'Scenario validation failed; Fair Value was not published.',

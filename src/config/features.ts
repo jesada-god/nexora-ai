@@ -1,5 +1,6 @@
-export function featureFlagEnabled(value: string | undefined) {
-  return value?.trim().toLowerCase() === 'true';
+export function featureFlagEnabled(value: string | undefined, defaultValue = false) {
+  if (value === undefined) return defaultValue;
+  return value.trim().toLowerCase() === 'true';
 }
 
 export function technicalIndicatorsEnabled() {
@@ -21,4 +22,4 @@ export function supportResistanceEnabled() {
 export function keyStatisticsEnabled() { return featureFlagEnabled(process.env.FEATURE_KEY_STATISTICS); }
 export function optionsStatisticsEnabled() { return featureFlagEnabled(process.env.FEATURE_OPTIONS_STATISTICS); }
 export function analystConsensusEnabled() { return featureFlagEnabled(process.env.FEATURE_ANALYST_CONSENSUS); }
-export function fairValueEnabled() { return featureFlagEnabled(process.env.FEATURE_FAIR_VALUE); }
+export function fairValueEnabled() { return featureFlagEnabled(process.env.FEATURE_FAIR_VALUE, true); }

@@ -6,6 +6,19 @@ When `ALPHA_VANTAGE_API_KEY` is configured, the server-side fundamentals adapter
 
 Fundamentals are held in a private in-process cache for 24 hours (stale fallback up to seven days after a transient provider failure), with per-provider/symbol/dataset/period keys and in-flight request deduplication. Provider responses are never publicly cached by the authenticated analytics routes. Missing statements produce structured unavailable results; no production fallback financial values are generated. `FEATURE_OPTIONS_STATISTICS` and `FEATURE_ANALYST_CONSENSUS` must remain disabled until real providers for those capabilities are integrated.
 
+### Fair Value on Vercel
+
+Fair Value is enabled by default. For an explicit production configuration, set these values in the Vercel **Production** environment and redeploy:
+
+```dotenv
+FEATURE_FAIR_VALUE=true
+ALPHA_VANTAGE_API_KEY=
+NEXT_PUBLIC_SUPABASE_URL=
+NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=
+```
+
+`ALPHA_VANTAGE_API_KEY` is server-only and supplies the quote, profile, normalized financial statements, and primary historical data used by `nexora-fv-v1`. The Supabase browser configuration is required because `/api/analytics/fair-value/[symbol]` is authenticated. `FMP_API_KEY` is only a Company Profile fallback and does not replace the financial-statement provider. Set `FEATURE_FAIR_VALUE=false` only for an operational rollback; omitting the flag leaves Fair Value enabled.
+
 Intelligent Investment Analytics — แพลตฟอร์มวิเคราะห์ ติดตามพอร์ต และจำลองการลงทุนด้วยข้อมูลและ AI
 
 Nexora AI เป็นเว็บแอป Next.js สำหรับติดตาม Watchlist, บันทึกข้อมูลพอร์ตด้วยตนเอง, ตั้ง Price Alert และใช้เครื่องมือ What-If, Price Target และ Monte Carlo โดยไม่มีระบบส่งคำสั่งซื้อขายจริง

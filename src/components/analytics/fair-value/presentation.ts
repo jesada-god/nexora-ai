@@ -1,4 +1,8 @@
-import type { FairValueAvailable, ModelId } from '@/src/lib/analytics/valuation/types';
+import type {
+  FairValueAvailable,
+  FairValueFailureKind,
+  ModelId,
+} from '@/src/lib/analytics/valuation/types';
 
 export type DisplayCurrency = 'USD' | 'THB';
 export type UpsideTone = 'success' | 'danger' | 'neutral';
@@ -50,4 +54,26 @@ export function formatUpsidePercent(percent: number | null): string {
 
 export function displayStatus(data: FairValueAvailable): string {
   return data.dataStatus.charAt(0).toUpperCase() + data.dataStatus.slice(1);
+}
+
+const FAILURE_LABELS: Record<FairValueFailureKind, { th: string; en: string }> = {
+  'provider-unavailable': {
+    th: 'ผู้ให้บริการไม่มีข้อมูล',
+    en: 'Provider data unavailable',
+  },
+  'insufficient-data': {
+    th: 'ข้อมูลไม่ผ่านเกณฑ์ขั้นต่ำ',
+    en: 'Insufficient data',
+  },
+  'calculation-failure': {
+    th: 'การคำนวณไม่สำเร็จ',
+    en: 'Calculation failed',
+  },
+};
+
+export function fairValueUnavailableLabel(
+  failureKind: FairValueFailureKind,
+  language: 'th' | 'en',
+): string {
+  return FAILURE_LABELS[failureKind][language];
 }

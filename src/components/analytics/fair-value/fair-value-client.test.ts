@@ -3,6 +3,7 @@ import { clearFairValueClientCacheForTests, requestFairValue } from './fair-valu
 
 const unavailable = {
   status: 'unavailable' as const,
+  failureKind: 'insufficient-data' as const,
   symbol: 'RKLB',
   currency: 'USD',
   reason: 'insufficient real data',
