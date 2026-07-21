@@ -132,7 +132,13 @@ function fields(i: RawReport, b: RawReport, c: RawReport, previousBalance: RawRe
     totalAssets: safeNumber(b.totalAssets),
     totalLiabilities: safeNumber(b.totalLiabilities),
     totalEquity: firstNumber(b, ['totalShareholderEquity', 'totalStockholderEquity']),
-    dilutedShares: safeNumber(i.dilutedAverageShares),
+    // Alpha Vantage's INCOME_STATEMENT carries no share count; the diluted/weighted
+    // fields only exist for other vendors. Fall back to the balance sheet's
+    // period-end shares outstanding (the sole share figure Alpha Vantage returns)
+    // so real filings are not dropped as "missing dilutedShares". This is a field
+    // mapping only — no valuation formula changes.
+    dilutedShares: firstNumber(i, ['dilutedAverageShares', 'weightedAverageDilutedSharesOutstanding', 'weightedAverageShsOutDil'])
+      ?? firstNumber(b, ['commonStockSharesOutstanding', 'commonStockSharesOutstandingDiluted']),
   };
 }
 

@@ -45,6 +45,44 @@ describe('PolygonMarketDataProvider', () => {
     expect(output.firstTimestamp).toBeLessThan(output.lastTimestamp!);
   });
 
+  it('keeps multi-hour regular-session buckets that overlap 09:30 and excludes those that do not', async () => {
+    // Provider-native 4h buckets on a trading Monday (EDT, UTC-4). The 08:00 ET
+    // bucket (12:00Z) starts before 09:30 yet spans 08:00–12:00, so it overlaps
+    // the open and must be kept with its OHLCV preserved; the premarket 04:00 and
+    // after-hours 16:00 buckets lie entirely outside the session and are dropped.
+    const result = (iso: string, close: number) => ({ t: Date.parse(iso), o: close - 1, h: close + 1, l: close - 2, c: close, v: 100 });
+    const fetcher = vi.fn(async () => json({ status: 'OK', ticker: 'AAPL', results: [
+      result('2026-07-20T08:00:00.000Z', 40), // 04:00 ET premarket → excluded
+      result('2026-07-20T12:00:00.000Z', 41), // 08:00 ET, 08:00–12:00 overlaps 09:30 → kept
+      result('2026-07-20T16:00:00.000Z', 42), // 12:00 ET, fully regular → kept
+      result('2026-07-20T20:00:00.000Z', 43), // 16:00 ET after-hours → excluded
+    ] }));
+    const provider = new PolygonMarketDataProvider('secret', () => new Date('2026-07-21T14:00:00.000Z'), fetcher as typeof fetch);
+
+    const regular = await provider.getBars({ instrument, interval: '4h', range: '1m', adjusted: false, session: 'regular' });
+    expect(regular.bars.map((bar) => bar.close)).toEqual([41, 42]);
+    // The kept bucket's provider OHLCV is preserved unchanged (not split/clipped).
+    expect(regular.bars[0]).toMatchObject({ open: 40, high: 42, low: 39, close: 41, volume: 100 });
+
+    // Extended session is separate and never silently substituted: nothing is
+    // filtered out, so regular and extended data can never mix.
+    const extended = await provider.getBars({ instrument, interval: '4h', range: '1m', adjusted: false, session: 'extended' });
+    expect(extended.bars.map((bar) => bar.close)).toEqual([40, 41, 42, 43]);
+  });
+
+  it('keeps a 1h bucket straddling the open and drops fully pre/after-hours 1h buckets', async () => {
+    const result = (iso: string, close: number) => ({ t: Date.parse(iso), o: close, h: close, l: close, c: close, v: 10 });
+    const fetcher = vi.fn(async () => json({ status: 'OK', ticker: 'AAPL', results: [
+      result('2026-07-20T12:00:00.000Z', 8),  // 08:00–09:00 ET premarket → excluded
+      result('2026-07-20T13:00:00.000Z', 9),  // 09:00–10:00 ET straddles the open → kept
+      result('2026-07-20T19:00:00.000Z', 15), // 15:00–16:00 ET regular → kept
+      result('2026-07-20T20:00:00.000Z', 16), // 16:00–17:00 ET after-hours → excluded
+    ] }));
+    const provider = new PolygonMarketDataProvider('secret', () => new Date('2026-07-21T14:00:00.000Z'), fetcher as typeof fetch);
+    const output = await provider.getBars({ instrument, interval: '1h', range: '1m', adjusted: false, session: 'regular' });
+    expect(output.bars.map((bar) => bar.close)).toEqual([9, 15]);
+  });
+
   it('rejects response ticker mismatch and malformed OHLC instead of substituting data', async () => {
     const mismatch = vi.fn(async () => json({ status: 'OK', ticker: 'MSFT', results: [] }));
     await expect(new PolygonMarketDataProvider('secret', undefined, mismatch as typeof fetch).getBars({ instrument, interval: '5m', range: '1d', adjusted: false, session: 'regular' })).rejects.toMatchObject({ code: 'invalid-provider-response' });
@@ -56,7 +94,8 @@ describe('PolygonMarketDataProvider', () => {
   });
 
   it.each([
-    [403, {}, 'provider-unauthorized'],
+    // A bare 403 is a plan entitlement boundary (valid key, not permitted): non-retryable forbidden.
+    [403, {}, 'forbidden'],
     [429, { 'retry-after': '17' }, 'rate-limited'],
   ] as const)('maps entitlement/rate failures without retry loops (%s)', async (status, headers, code) => {
     const fetcher = vi.fn(async () => json({ message: 'provider rejected request' }, status, headers));

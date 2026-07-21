@@ -1,7 +1,7 @@
 'use client';
 
 import dynamic from 'next/dynamic';
-import { useCallback, useEffect, useRef, useState, useTransition } from 'react';
+import { useCallback, useEffect, useState, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
 import { Activity, ArrowLeft, Bell, Share2, Star } from 'lucide-react';
 import { addWatchlistItemAction, removeWatchlistItemAction } from '@/app/watchlist/actions';
@@ -9,11 +9,12 @@ import { Tabs } from '@/src/components/ui/Tabs';
 import { useToast } from '@/src/components/ui/Toast';
 import { useOnlineStatus } from '@/src/hooks/useOnlineStatus';
 import { useAppActive } from '@/src/hooks/useAppActive';
+import { useMarketSource } from './useMarketSource';
+import { selectionKeyOf, type AcceptedPriceCandidate, type MarketSelection, type MarketSessionKind } from '@/src/lib/stock-detail/market-source';
 import { KeyStatisticsSection } from '@/src/components/analytics/key-statistics/KeyStatisticsSection';
 import { FairValueSection } from '@/src/components/analytics/fair-value/FairValueSection';
 import { FairValueCard } from '@/src/components/analytics/fair-value/FairValueCard';
 import type { FxQuote } from '@/src/lib/market-data/fx/types';
-import { quoteEnvelopeSchema } from '@/src/lib/stock-detail/api-schemas';
 import { formatMarketCapitalization } from '@/src/lib/stock-detail/profile-presentation';
 import type { CompanyProfileLanguage } from '@/src/lib/stock-detail/profile-presentation';
 import { resolveCompanyIdentity } from '@/src/lib/stock-detail/identity';
@@ -123,12 +124,6 @@ export function StockDetailClient({
   const [tab, setTab] = useState('Overview');
   const [watched, setWatched] = useState(initialWatched);
   const [pending, startTransition] = useTransition();
-  const [quoteResource, setQuoteResource] = useState(initialQuoteResource);
-  const [quoteLoading, setQuoteLoading] = useState(false);
-  const [quoteRetryAt, setQuoteRetryAt] = useState(0);
-  const quoteAbort = useRef<AbortController | null>(null);
-  const quoteGeneration = useRef(0);
-  const quoteInflight = useRef<Promise<void> | null>(null);
   const [profileResource, setProfileResource] = useState(initialProfileResource);
   const [profileLoading, setProfileLoading] = useState(false);
   const [profileRetryAt, setProfileRetryAt] = useState(() => {
@@ -142,6 +137,23 @@ export function StockDetailClient({
   );
   const isOnline = useOnlineStatus();
   const appActive = useAppActive();
+  // The chart reports its live-relevant selection (interval/session/adjusted) so
+  // the single shared market source follows it: the header price and the chart's
+  // active candle then derive from one accepted event. Default is the header's
+  // 5m/regular current-price proxy used before the chart drives a selection.
+  const [chartSelection, setChartSelection] = useState<MarketSelection>({
+    interval: '5m', session: 'regular', adjusted: false,
+  });
+  const handleSelectionChange = useCallback((next: MarketSelection) => {
+    setChartSelection((previous) => (
+      selectionKeyOf(previous) === selectionKeyOf(next) ? previous : next
+    ));
+  }, []);
+  // The chart reports its newest completed displayed bar as the header's
+  // history-fallback price (last-resort priority). It flows back into the shared
+  // market source so the header, chart price line and S/R currentPrice all read
+  // one accepted value and timestamp.
+  const [chartHistoryFallback, setChartHistoryFallback] = useState<AcceptedPriceCandidate | null>(null);
 
   useEffect(() => {
     if (profileRetryAt <= 0) return;
@@ -154,6 +166,37 @@ export function StockDetailClient({
 
   const profile = profileResource.data;
   const overview = overviewResource.data;
+  const market = overview?.markets.find((item) => (
+    item.primaryExchanges.some((exchange) => (
+      profile?.exchange?.toLowerCase().includes(exchange.toLowerCase())
+      || instrumentExchange?.toLowerCase().includes(exchange.toLowerCase())
+    ))
+  )) ?? overview?.markets[0] ?? null;
+  // The transport-agnostic market source refreshes the header/price in place via
+  // entitlement-aware REST polling (12s in a live session, slower when closed),
+  // pausing when hidden/offline. It never claims real-time data.
+  const marketSession: MarketSessionKind = market
+    && ['pre-market', 'open', 'after-hours', 'early-close'].includes(market.currentStatus)
+    ? 'regular'
+    : 'closed';
+  const {
+    quoteResource,
+    quoteLoading,
+    quoteRetryAt,
+    liveCandle,
+    dataLabel,
+    refresh: refreshQuote,
+  } = useMarketSource({
+    symbol,
+    initialQuote: initialQuoteResource,
+    session: marketSession,
+    selection: chartSelection,
+    historyFallback: chartHistoryFallback,
+    active: appActive,
+    online: isOnline,
+    enabled: providerConfigured,
+  });
+
   const quote = quoteResource.data;
   const identity = resolveCompanyIdentity({
     symbol,
@@ -173,12 +216,6 @@ export function StockDetailClient({
     instrumentCurrency,
     exchange,
   }).currency;
-  const market = overview?.markets.find((item) => (
-    item.primaryExchanges.some((exchange) => (
-      profile?.exchange?.toLowerCase().includes(exchange.toLowerCase())
-      || instrumentExchange?.toLowerCase().includes(exchange.toLowerCase())
-    ))
-  )) ?? overview?.markets[0] ?? null;
 
   const toggleWatch = () => {
     if (!isOnline) {
@@ -211,89 +248,6 @@ export function StockDetailClient({
       // The user cancelled the share sheet.
     }
   };
-
-  const retryQuote = useCallback(async () => {
-    const now = Date.now();
-    if (quoteInflight.current || now < quoteRetryAt) return quoteInflight.current ?? undefined;
-    const requestGeneration = ++quoteGeneration.current;
-    const controller = new AbortController();
-    quoteAbort.current?.abort();
-    quoteAbort.current = controller;
-    setQuoteLoading(true);
-    const operation = (async () => { try {
-      const response = await fetch(`/api/market/quote/${encodeURIComponent(symbol)}`, {
-        headers: { Accept: 'application/json' },
-        cache: 'no-store',
-        signal: controller.signal,
-      });
-      const body = quoteEnvelopeSchema.safeParse(await response.json());
-      if (!body.success) throw new Error('Quote API returned an invalid response');
-      if (!response.ok || !body.data.data) {
-        const error = body.data.error ?? {
-          code: 'internal-error' as const,
-          message: 'Quote is unavailable',
-          retryable: true,
-        };
-        const retryAfterSeconds = body.data.error?.retryAfterSeconds ?? 0;
-        if (retryAfterSeconds > 0) {
-          setQuoteRetryAt(Date.now() + retryAfterSeconds * 1_000);
-          window.setTimeout(() => setQuoteRetryAt(0), retryAfterSeconds * 1_000);
-        }
-        setQuoteResource((current) => ({
-          ...current,
-          reason: `${error.code}: ${error.message}`,
-          error,
-        }));
-        console.warn('[stock-detail:quote-retry]', { code: error.code });
-        return;
-      }
-      const intradayFallback = body.data.meta.provider?.includes('intraday fallback') ?? false;
-      const dailyFallback = body.data.meta.provider?.includes('(daily history)') ?? false;
-      const fallback = intradayFallback || dailyFallback;
-      if (quoteGeneration.current !== requestGeneration) return;
-      setQuoteResource({
-        data: body.data.data,
-        freshness: body.data.meta.freshness,
-        provider: body.data.meta.provider,
-        reason: intradayFallback ? 'Primary quote unavailable; using newest verified intraday close' : dailyFallback ? 'Primary quote unavailable; using verified daily OHLCV' : null,
-        error: null,
-        fallbackLabel: intradayFallback ? 'Intraday close fallback' : dailyFallback ? 'Previous trading day' : null,
-      });
-      setQuoteRetryAt(0);
-    } catch (cause) {
-      if (controller.signal.aborted || quoteGeneration.current !== requestGeneration) return;
-      const error: MarketDataApiError = {
-        code: 'internal-error',
-        message: cause instanceof Error ? cause.message : 'Quote is unavailable',
-        retryable: true,
-      };
-      setQuoteResource((current) => ({
-        ...current,
-        reason: `${error.code}: ${error.message}`,
-        error,
-      }));
-      console.warn('[stock-detail:quote-retry]', { code: error.code });
-    } finally {
-      if (quoteGeneration.current === requestGeneration) setQuoteLoading(false);
-    } })().finally(() => {
-      if (quoteInflight.current === operation) quoteInflight.current = null;
-    });
-    quoteInflight.current = operation;
-    return operation;
-  }, [quoteRetryAt, symbol]);
-
-  useEffect(() => {
-    const liveSession = market && ['pre-market', 'open', 'after-hours', 'early-close'].includes(market.currentStatus);
-    if (!appActive || !isOnline || !liveSession) return;
-    void retryQuote();
-    const timer = window.setInterval(() => { void retryQuote(); }, 60_000);
-    return () => {
-      window.clearInterval(timer);
-      quoteGeneration.current += 1;
-      quoteAbort.current?.abort();
-      quoteInflight.current = null;
-    };
-  }, [appActive, isOnline, market, retryQuote]);
 
   const retryProfile = async () => {
     const now = Date.now();
@@ -394,7 +348,7 @@ export function StockDetailClient({
           fallbackLabel={quoteResource.fallbackLabel}
           quoteLoading={quoteLoading}
           quoteRetryAt={quoteRetryAt}
-          onRetryQuote={() => void retryQuote()}
+          onRetryQuote={refreshQuote}
           fxQuote={fxQuote}
           evaluatedAt={evaluatedAt}
         />
@@ -424,7 +378,17 @@ export function StockDetailClient({
               symbol={symbol}
               active={tab === 'Chart'}
               initialHistory={initialHistory}
+              // Header price, chart current candle and S/R distance all derive
+              // from the same accepted market event: `currentPrice` and
+              // `liveCandle` come from one `useMarketSource` subscription.
               currentPrice={quote?.price ?? null}
+              marketLabel={dataLabel}
+              liveCandle={liveCandle}
+              liveActive={providerConfigured}
+              onLiveRefresh={refreshQuote}
+              liveRefreshDisabled={quoteLoading}
+              onSelectionChange={handleSelectionChange}
+              onHistoryFallbackChange={setChartHistoryFallback}
               technicalIndicatorsEnabled={technicalIndicatorsEnabled}
               advancedChartTypesEnabled={advancedChartTypesEnabled}
               extendedIndicatorsEnabled={extendedIndicatorsEnabled}

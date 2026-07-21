@@ -98,11 +98,16 @@ export function mapProviderFailure(input: ProviderFailureInput): MarketDataError
       input.retryAfterSeconds,
     );
   }
-  if (input.status === 402 || /premium endpoint|subscription|current plan|upgrade.*plan/i.test(message ?? '')) {
+  if (input.status === 402 || /premium endpoint|subscription|current plan|upgrade.*plan|not entitled|entitlement/i.test(message ?? '')) {
     return new MarketDataError('forbidden', 'The configured provider plan does not authorize this market data operation');
   }
-  if (input.status === 401 || input.status === 403 || /invalid api key|invalid apikey|api key is invalid|apikey is invalid/i.test(message ?? '')) {
+  // 401 (or an explicit invalid-key message) means the credential itself was rejected.
+  if (input.status === 401 || /invalid api key|invalid apikey|api key is invalid|apikey is invalid/i.test(message ?? '')) {
     return new MarketDataError('provider-unauthorized', 'Market data provider rejected the API key');
+  }
+  // A bare 403 is an entitlement/authorization boundary (valid key, plan not permitted).
+  if (input.status === 403) {
+    return new MarketDataError('forbidden', 'The configured provider plan is not entitled to this market data operation');
   }
   if (/invalid api call|invalid symbol|symbol.*invalid/i.test(message ?? '')) {
     return new MarketDataError('invalid-symbol', 'The market symbol is invalid or unsupported');

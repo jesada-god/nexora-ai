@@ -46,6 +46,16 @@ export async function marketDataResponse<T>(
       : cause instanceof MarketDataError
         ? cause
         : new MarketDataError('internal-error', 'Unexpected market data error');
+    // Sanitized structured log: identifies the classified error source and HTTP
+    // status without ever emitting the API key, upstream URL or raw provider text.
+    console.warn(JSON.stringify({
+      event: 'market_data_error',
+      source: 'market-data-gateway',
+      code: error.code,
+      status: error.status,
+      retryable: error.retryable,
+      ...(error.retryAfterSeconds ? { retryAfterSeconds: error.retryAfterSeconds } : {}),
+    }));
     const response = NextResponse.json({
       data: null,
       error: error.toApiError(),

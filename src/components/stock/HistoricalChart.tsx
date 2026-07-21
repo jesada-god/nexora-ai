@@ -6,6 +6,7 @@ import type { AdvancedChartType } from '@/src/lib/analytics/chart-types/types';
 import type { SupportResistanceResult } from '@/src/lib/analytics/support-resistance/types';
 import type { VolumeProfileResult } from '@/src/lib/analytics/volume-profile/types';
 import type { FibonacciResult } from '@/src/lib/analytics/fibonacci/types';
+import type { MarketDataLabel } from '@/src/lib/stock-detail/market-source';
 import { StockChart } from './chart/StockChart';
 import type { ChartTooltipContext } from './chart/chart-types';
 
@@ -21,6 +22,8 @@ export function formatChartTime(time: string): string {
 interface Props {
   prices: readonly OhlcvInputBar[];
   symbol?: string;
+  /** Selected candle interval; forwarded so D1 institutional zones only build on '1D'. */
+  interval?: string;
   visibleBarCount?: number;
   technical?: TechnicalAnalysis;
   enabledIndicators?: TechnicalIndicatorId[];
@@ -33,6 +36,8 @@ interface Props {
   showVpvr?: boolean;
   showFibonacci?: boolean;
   currentPrice?: number | null;
+  /** Provenance of the accepted price for the decision panel (never REAL-TIME). */
+  marketLabel?: MarketDataLabel | null;
   datasetKey?: string;
   tooltipContext?: ChartTooltipContext;
 }

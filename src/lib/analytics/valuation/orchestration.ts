@@ -264,6 +264,30 @@ export async function loadFairValue(symbol: string): Promise<FairValueResult> {
       ...financials.missingInputs,
       'historicalFinancials>=3Periods',
     ];
+    // If the shortfall is because the fundamentals provider throttled or blocked
+    // the dataset requests (not because the filings are genuinely absent), report
+    // that truthfully instead of implying the company lacks financial data.
+    const errorCodes = Object.values(financials.datasetErrors ?? {});
+    const rateLimited = errorCodes.length > 0 && errorCodes.every((code) => code === 'rate-limited');
+    const unauthorized = errorCodes.length > 0 && errorCodes.every((code) => code === 'provider-unauthorized' || code === 'provider-not-configured');
+    if (financials.periods.length === 0 && (rateLimited || unauthorized)) {
+      return logUnavailable(
+        unavailable(
+          rateLimited ? 'provider-rate-limited' : 'provider-unavailable',
+          symbol,
+          calculatedAt,
+          rateLimited
+            ? 'ผู้ให้บริการงบการเงินจำกัดคำขอชั่วคราว จึงยังไม่คำนวณ Fair Value กรุณาลองใหม่ภายหลัง'
+            : 'บัญชีผู้ให้บริการงบการเงินไม่มีสิทธิ์เข้าถึงข้อมูลที่จำเป็น จึงยังไม่คำนวณ Fair Value',
+          missingFields,
+          financials.currency || null,
+          fundamentals.id,
+          financials.asOf || calculatedAt,
+        ),
+        fundamentals.id,
+        rateLimited ? 'rate-limited' : 'provider-unauthorized',
+      );
+    }
     return logUnavailable(
       unavailable(
         financials.annualRecords.length > 0 ? 'mapping-error' : financials.periods.length > 0 ? 'insufficient-periods' : 'missing-field',
@@ -333,6 +357,19 @@ export async function loadFairValue(symbol: string): Promise<FairValueResult> {
   const periods = sourceCurrency === 'THB'
     ? financials.periods.map((period) => convertPeriodToUsd(period, fxRate!))
     : financials.periods;
+  // Truthful provider provenance: the source that actually supplied the periods,
+  // which may be the configured secondary after an eligible primary failure.
+  const fundamentalsProviderUsed = financials.providerUsed ?? fundamentals.id;
+  if (process.env.NODE_ENV !== 'production') {
+    console.info(JSON.stringify({
+      event: 'fair-value-provider-provenance',
+      symbol,
+      primaryProvider: financials.primaryProvider ?? fundamentals.id,
+      providerUsed: fundamentalsProviderUsed,
+      fallbackUsed: financials.fallbackUsed ?? false,
+      fallbackReason: financials.fallbackReason ?? null,
+    }));
+  }
   const providerStatus = Object.values(financials.diagnostics.cache).includes('stale')
     ? 'stale'
     : Object.values(financials.diagnostics.cache).every((status) => status === 'hit')
@@ -359,7 +396,7 @@ export async function loadFairValue(symbol: string): Promise<FairValueResult> {
       ? null
       : toUsd(profile.data.marketCapitalization),
     priceAsOf: marketPriceAsOf,
-    source: fundamentals.id,
+    source: fundamentalsProviderUsed,
     sourceType: 'provider-supplied',
     sector: profile.data.sector ?? '',
     industry: profile.data.industry ?? '',

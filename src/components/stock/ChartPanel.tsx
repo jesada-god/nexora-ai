@@ -1,11 +1,12 @@
 'use client';
 
 import dynamic from 'next/dynamic';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Skeleton } from '@/src/components/ui/Skeleton';
 import { useToast } from '@/src/components/ui/Toast';
 import { compatibleSelection, GATEWAY_INTERVALS, GATEWAY_RANGES } from '@/src/lib/market-data/gateway/capabilities';
 import type { CandleInterval, HistoricalRange, MarketSessionMode } from '@/src/lib/market-data/gateway/contracts';
+import type { AcceptedPriceCandidate, LiveCandle, MarketDataLabel, MarketSelection } from '@/src/lib/stock-detail/market-source';
 import type { HistoryResponse } from './history-request';
 
 const MarketCandleChartPanel = dynamic(
@@ -23,6 +24,20 @@ interface Props {
   active: boolean;
   initialHistory?: HistoryResponse | null;
   currentPrice?: number | null;
+  /** Provenance of the accepted price for the decision panel (never REAL-TIME). */
+  marketLabel?: MarketDataLabel | null;
+  /** Latest accepted candle from the shared market source (single source of truth). */
+  liveCandle?: LiveCandle | null;
+  /** Whether the shared market source is running (provider configured). */
+  liveActive?: boolean;
+  /** Trigger one shared-source refresh (header + candle) instead of a history reload. */
+  onLiveRefresh?: () => void;
+  /** Disable the shared-refresh button while the source is loading or cooling down. */
+  liveRefreshDisabled?: boolean;
+  /** Report the live-relevant selection (interval/session/adjusted) up so the shared source follows it. */
+  onSelectionChange?: (selection: MarketSelection) => void;
+  /** Report the chart's newest completed displayed bar up as the header's history-fallback price. */
+  onHistoryFallbackChange?: (fallback: AcceptedPriceCandidate | null) => void;
   technicalIndicatorsEnabled: boolean;
   advancedChartTypesEnabled: boolean;
   extendedIndicatorsEnabled: boolean;
@@ -35,6 +50,13 @@ export function ChartPanel({
   active,
   initialHistory: _initialHistory,
   currentPrice,
+  marketLabel,
+  liveCandle,
+  liveActive,
+  onLiveRefresh,
+  liveRefreshDisabled,
+  onSelectionChange,
+  onHistoryFallbackChange,
   technicalIndicatorsEnabled,
   advancedChartTypesEnabled,
   extendedIndicatorsEnabled,
@@ -48,6 +70,12 @@ export function ChartPanel({
   const [adjusted, setAdjusted] = useState(false);
   const [selectionNotice, setSelectionNotice] = useState<string | null>(null);
   const intraday = !['1D', 'Week', 'Month'].includes(interval);
+
+  // Report only the live-relevant dimensions (range is a history scope, not part
+  // of the live bucket). The single shared source reconfigures to follow this.
+  useEffect(() => {
+    onSelectionChange?.({ interval, session, adjusted });
+  }, [interval, session, adjusted, onSelectionChange]);
 
   const applySelection = (nextInterval: CandleInterval, nextRange: HistoricalRange, changedControl: 'interval' | 'range') => {
     const next = compatibleSelection(nextInterval, nextRange, changedControl);
@@ -77,6 +105,6 @@ export function ChartPanel({
     </div>
     {selectionNotice && <p role="status" className="text-xs text-amber-300">{selectionNotice}</p>}
 
-    <MarketCandleChartPanel symbol={symbol} active={active} interval={interval} range={range} session={session} adjusted={adjusted} currentPrice={currentPrice} technicalIndicatorsEnabled={technicalIndicatorsEnabled} advancedChartTypesEnabled={advancedChartTypesEnabled} extendedIndicatorsEnabled={extendedIndicatorsEnabled} supportResistanceEnabled={supportResistanceEnabled} fairValueEnabled={fairValueEnabled} />
+    <MarketCandleChartPanel symbol={symbol} active={active} interval={interval} range={range} session={session} adjusted={adjusted} currentPrice={currentPrice} marketLabel={marketLabel} liveCandle={liveCandle} liveActive={liveActive} onLiveRefresh={onLiveRefresh} liveRefreshDisabled={liveRefreshDisabled} onHistoryFallbackChange={onHistoryFallbackChange} technicalIndicatorsEnabled={technicalIndicatorsEnabled} advancedChartTypesEnabled={advancedChartTypesEnabled} extendedIndicatorsEnabled={extendedIndicatorsEnabled} supportResistanceEnabled={supportResistanceEnabled} fairValueEnabled={fairValueEnabled} />
   </div>;
 }

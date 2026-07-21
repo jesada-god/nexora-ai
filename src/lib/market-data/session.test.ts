@@ -1,5 +1,33 @@
 import { describe, expect, it } from 'vitest';
-import { classifyUsEquitySession, previousCompletedUsSession, zonedLocalToUtc } from './session';
+import { bucketOverlapsRegularSession, classifyUsEquitySession, previousCompletedUsSession, zonedLocalToUtc } from './session';
+
+const H = (hour: number, minute = 0) => hour * 60 + minute;
+
+describe('bucketOverlapsRegularSession — regular-session bucket filtering', () => {
+  it('keeps a multi-hour bucket that starts before 09:30 but overlaps the open', () => {
+    // A provider-native 4h bucket 08:00–12:00 overlaps [09:30, 16:00): keep it.
+    expect(bucketOverlapsRegularSession(H(8), 240)).toBe(true);
+    // A 1h bucket 09:00–10:00 straddles the open: keep it.
+    expect(bucketOverlapsRegularSession(H(9), 60)).toBe(true);
+    // A 2h bucket 08:00–10:00 straddles the open: keep it.
+    expect(bucketOverlapsRegularSession(H(8), 120)).toBe(true);
+    // A regular bucket fully inside the session.
+    expect(bucketOverlapsRegularSession(H(12), 240)).toBe(true); // 12:00–16:00
+  });
+
+  it('excludes buckets that lie entirely outside the regular session', () => {
+    expect(bucketOverlapsRegularSession(H(4), 240)).toBe(false);  // 04:00–08:00 premarket
+    expect(bucketOverlapsRegularSession(H(5), 60)).toBe(false);   // 05:00–06:00 premarket
+    expect(bucketOverlapsRegularSession(H(16), 240)).toBe(false); // 16:00–20:00 after-hours
+    expect(bucketOverlapsRegularSession(H(17), 60)).toBe(false);  // 17:00–18:00 after-hours
+  });
+
+  it('treats a bucket that only touches a boundary as non-overlapping (half-open)', () => {
+    expect(bucketOverlapsRegularSession(H(8, 30), 60)).toBe(false); // 08:30–09:30 ends at open
+    expect(bucketOverlapsRegularSession(H(9), 30)).toBe(false);     // 09:00–09:30 ends at open
+    expect(bucketOverlapsRegularSession(H(16), 60)).toBe(false);    // 16:00–17:00 starts at close
+  });
+});
 
 describe('market session correctness', () => {
   it('converts New York wall time across DST without using the client timezone', () => {

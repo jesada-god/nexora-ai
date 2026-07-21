@@ -28,6 +28,13 @@ describe('Alpha Vantage fundamentals provider', () => {
     const provider = new AlphaVantageFundamentalsProvider('secret', fetcher as typeof fetch, () => Date.parse('2025-01-01'), async () => {});
     const result = await provider.getFinancialPeriods('ONLYME'); expect(result.symbol).toBe('ONLYME'); expect(result.periods).toHaveLength(0); expect(result.dilutedEpsTtm).toBe(8); expect(result.missingInputs).toContain('dataset:cash-flow');
   });
+  it('records a per-dataset rate-limit code so the orchestration can report a truthful reason', async () => {
+    const fetcher = vi.fn(async () => new Response(JSON.stringify({ Information: 'call frequency limit reached' }), { status: 200 }));
+    const provider = new AlphaVantageFundamentalsProvider('secret', fetcher as typeof fetch, () => Date.parse('2025-01-01'), async () => {});
+    const result = await provider.getFinancialPeriods('LIMITED');
+    expect(result.periods).toHaveLength(0);
+    expect(Object.values(result.datasetErrors)).toEqual(['rate-limited', 'rate-limited', 'rate-limited']);
+  });
   it('classifies timeouts as unavailable datasets without leaking another symbol cache', async () => {
     const timeout = Object.assign(new Error('timed out'), { name: 'TimeoutError' });
     const provider = new AlphaVantageFundamentalsProvider('secret', vi.fn(async () => { throw timeout; }) as unknown as typeof fetch, () => Date.parse('2025-01-01'), async () => {});

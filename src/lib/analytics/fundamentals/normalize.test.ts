@@ -32,6 +32,21 @@ describe('fundamentals normalization', () => {
     expect(result.quarterly).toHaveLength(4); expect(result.dilutedEpsTtm).toBe(10);
     expect(result.quarterlyRecords[0]).toMatchObject({ frequency: 'quarterly', source: 'test', currency: 'USD' });
   });
+  it('derives dilutedShares from the balance-sheet shares outstanding when the income statement omits a share count', () => {
+    // Mirrors the real Alpha Vantage schema: INCOME_STATEMENT carries no share
+    // count, while BALANCE_SHEET exposes commonStockSharesOutstanding. Without the
+    // fallback every period is dropped as "missing dilutedShares" (the Fair Value
+    // mapping-error root cause).
+    const annualDates = ['2024-12-31', '2023-12-31', '2022-12-31'];
+    const income = annualDates.map((fiscalDateEnding, index) => ({ fiscalDateEnding, reportedCurrency: 'USD', totalRevenue: '1000', operatingIncome: '200', netIncome: '100', interestExpense: '10', dilutedEPS: String(index + 1) }));
+    const balance = annualDates.map((fiscalDateEnding) => ({ fiscalDateEnding, reportedCurrency: 'USD', cashAndCashEquivalentsAtCarryingValue: '100', shortLongTermDebtTotal: '200', totalAssets: '2000', totalLiabilities: '800', commonStockSharesOutstanding: '50' }));
+    const cash = annualDates.map((fiscalDateEnding) => ({ fiscalDateEnding, reportedCurrency: 'USD', operatingCashflow: '180', capitalExpenditures: '30', depreciationDepletionAndAmortization: '20', changeInOperatingLiabilities: '15', changeInOperatingAssets: '5' }));
+    const result = normalizeFinancialStatements('SHR', payload(income, []), payload(balance, []), payload(cash, []), { source: 'test', fetchedAt: '2025-01-01T00:00:00.000Z' });
+    expect(result.annual).toHaveLength(3);
+    expect(result.annual.every((period) => period.dilutedShares === 50)).toBe(true);
+    expect(result.missingInputs.some((value) => value.includes('dilutedShares'))).toBe(false);
+  });
+
   it('detects duplicate periods, incomplete aligned statements and currency mismatch', () => {
     const dates = ['2024-12-31']; const duplicateIncome = [...rows(dates, 'income'), ...rows(dates, 'income')];
     const balance = rows(dates, 'balance'); balance[0].reportedCurrency = 'EUR';

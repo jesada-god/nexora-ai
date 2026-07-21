@@ -63,4 +63,24 @@ describe('market data provider error mapping', () => {
     expect(mapProviderFailure({ status: 401 }).code).toBe('provider-unauthorized');
     expect(mapProviderFailure({ status: 503 }).code).toBe('upstream-unavailable');
   });
+
+  it('classifies a bare 403 as a non-retryable entitlement (forbidden), distinct from a 401 auth failure', () => {
+    const entitlement = mapProviderFailure({ status: 403 });
+    expect(entitlement.code).toBe('forbidden');
+    expect(entitlement.status).toBe(403);
+    expect(entitlement.retryable).toBe(false);
+
+    const auth = mapProviderFailure({ status: 401 });
+    expect(auth.code).toBe('provider-unauthorized');
+    expect(auth.retryable).toBe(false);
+  });
+
+  it('maps a Polygon NOT_AUTHORIZED entitlement payload to forbidden', () => {
+    const error = mapProviderFailure({
+      status: 403,
+      payload: { status: 'NOT_AUTHORIZED', message: 'You are not entitled to this data. Please upgrade your plan.' },
+    });
+    expect(error.code).toBe('forbidden');
+    expect(error.retryable).toBe(false);
+  });
 });

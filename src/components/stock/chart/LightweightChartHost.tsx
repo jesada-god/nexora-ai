@@ -12,11 +12,18 @@ import {
   type Time,
 } from 'lightweight-charts';
 import type { AdvancedChartType } from '@/src/lib/analytics/chart-types/types';
+import type { InstitutionalOverlaySpec } from '@/src/lib/analytics/institutional-sr/overlay-spec';
 import { canUpdateLatest } from './chart-data-adapter';
 import { asLineStyle } from './chart-overlays';
+import { InstitutionalOverlayPrimitive } from './chart-institutional-primitive';
 import { addPrimarySeries, addVolumeSeries, setPrimaryData, setVolumeData, updatePrimary, updateVolume, type PrimarySeries } from './chart-series-manager';
 import { ChartTooltip } from './chart-tooltip';
 import type { ChartActions, ChartBar, ChartIndicatorLine, ChartPriceLine, ChartTooltipContext } from './chart-types';
+
+/** A visible logical bar-index range, reported for viewport-scoped analytics. */
+export interface VisibleLogicalRange { from: number; to: number; }
+
+const EMPTY_OVERLAY_SPEC: InstitutionalOverlaySpec = { bands: [], lines: [] };
 
 export function LightweightChartHost({
   bars,
@@ -26,6 +33,8 @@ export function LightweightChartHost({
   indicatorLines,
   datasetKey,
   tooltipContext,
+  overlaySpec,
+  onVisibleRangeChange,
   onActions,
 }: {
   bars: readonly ChartBar[];
@@ -35,6 +44,10 @@ export function LightweightChartHost({
   indicatorLines: readonly ChartIndicatorLine[];
   datasetKey: string;
   tooltipContext: ChartTooltipContext;
+  /** Institutional overlay bands/lines painted by a series primitive (never refetches). */
+  overlaySpec?: InstitutionalOverlaySpec;
+  /** Reports the visible logical bar-index range for viewport-scoped analytics (VRVP). */
+  onVisibleRangeChange?(range: VisibleLogicalRange | null): void;
   onActions(actions: ChartActions | null): void;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -47,14 +60,28 @@ export function LightweightChartHost({
   const barsRef = useRef<readonly ChartBar[]>(bars);
   const fittedDatasetRef = useRef<string | null>(null);
   const resizeFrameRef = useRef<number | null>(null);
+  // The institutional overlay primitive lives for the chart's lifetime and is
+  // re-attached to whichever primary series is current (chart type can swap it).
+  const primitiveRef = useRef<InstitutionalOverlayPrimitive | null>(null);
+  // Latest spec/handler kept in refs so overlay-spec or callback changes never
+  // recreate the series (which would reset zoom/pan).
+  const overlaySpecRef = useRef<InstitutionalOverlaySpec | undefined>(overlaySpec);
+  const visibleRangeHandlerRef = useRef(onVisibleRangeChange);
+  const visibleRangeFrameRef = useRef<number | null>(null);
+  // Guards every chart/series call against a torn-down instance. lightweight-charts
+  // throws an uncaught "Object is disposed" if any method (applyOptions, createPriceLine,
+  // update, removeSeries…) runs after chart.remove(). Set true in cleanup, reset per mount.
+  const disposedRef = useRef(false);
   const [chartReady, setChartReady] = useState(false);
   const [tooltipBar, setTooltipBar] = useState<ChartBar | null>(null);
 
   useEffect(() => { barsRef.current = bars; }, [bars]);
+  useEffect(() => { visibleRangeHandlerRef.current = onVisibleRangeChange; }, [onVisibleRangeChange]);
 
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
+    disposedRef.current = false;
     const chart = createChart(container, {
       autoSize: false,
       layout: { background: { type: ColorType.Solid, color: '#101621' }, textColor: '#94a3b8', attributionLogo: true },
@@ -73,10 +100,32 @@ export function LightweightChartHost({
       setTooltipBar(match ?? null);
     };
     chart.subscribeCrosshairMove(crosshair);
+    // Report the visible logical range for viewport-scoped analytics (VRVP). Debounced
+    // through requestAnimationFrame; a late frame after teardown is dropped. This only
+    // re-slices already-loaded candles upstream — it never triggers a market request.
+    const emitVisibleRange = () => {
+      if (visibleRangeFrameRef.current != null) cancelAnimationFrame(visibleRangeFrameRef.current);
+      visibleRangeFrameRef.current = requestAnimationFrame(() => {
+        visibleRangeFrameRef.current = null;
+        if (disposedRef.current || chartRef.current !== chart) return;
+        let range: VisibleLogicalRange | null = null;
+        try {
+          const logical = chart.timeScale().getVisibleLogicalRange();
+          range = logical ? { from: logical.from, to: logical.to } : null;
+        } catch {
+          return; // time scale may be mid-teardown
+        }
+        visibleRangeHandlerRef.current?.(range);
+      });
+    };
+    chart.timeScale().subscribeVisibleLogicalRangeChange(emitVisibleRange);
     const resize = () => {
       if (resizeFrameRef.current != null) cancelAnimationFrame(resizeFrameRef.current);
       resizeFrameRef.current = requestAnimationFrame(() => {
         resizeFrameRef.current = null;
+        // A late frame can fire after the chart was removed or replaced; never
+        // apply options to a disposed/stale instance.
+        if (disposedRef.current || chartRef.current !== chart) return;
         const width = Math.max(1, container.clientWidth);
         const height = Math.max(280, container.clientHeight);
         chart.applyOptions({ width, height });
@@ -92,15 +141,22 @@ export function LightweightChartHost({
     onActions(actions);
     setChartReady(true);
     return () => {
+      disposedRef.current = true;
       onActions(null);
       setChartReady(false);
       observer.disconnect();
       chart.unsubscribeCrosshairMove(crosshair);
-      if (resizeFrameRef.current != null) cancelAnimationFrame(resizeFrameRef.current);
+      chart.timeScale().unsubscribeVisibleLogicalRangeChange(emitVisibleRange);
+      if (resizeFrameRef.current != null) { cancelAnimationFrame(resizeFrameRef.current); resizeFrameRef.current = null; }
+      if (visibleRangeFrameRef.current != null) { cancelAnimationFrame(visibleRangeFrameRef.current); visibleRangeFrameRef.current = null; }
       chart.remove();
       chartRef.current = null;
       primaryRef.current = null;
       volumeRef.current = null;
+      // The primitive was disposed with the series by chart.remove(); drop the ref.
+      primitiveRef.current = null;
+      overlayRefs.current = [];
+      indicatorRefs.current = [];
       previousBarsRef.current = [];
       fittedDatasetRef.current = null;
     };
@@ -108,21 +164,42 @@ export function LightweightChartHost({
 
   useEffect(() => {
     const chart = chartRef.current;
-    if (!chartReady || !chart) return;
-    if (primaryRef.current) chart.removeSeries(primaryRef.current);
+    if (!chartReady || !chart || disposedRef.current) return;
+    if (primaryRef.current) {
+      // Detach the overlay from the outgoing series before it is removed.
+      if (primitiveRef.current) {
+        try { primaryRef.current.detachPrimitive(primitiveRef.current); } catch { /* series may already be gone */ }
+      }
+      chart.removeSeries(primaryRef.current);
+    }
     primaryRef.current = addPrimarySeries(chart, chartType);
+    // Re-attach the institutional overlay primitive to the current primary series
+    // and repaint it with the latest spec. This follows zoom/pan without recreating.
+    if (!primitiveRef.current) primitiveRef.current = new InstitutionalOverlayPrimitive();
+    try {
+      primaryRef.current.attachPrimitive(primitiveRef.current);
+      primitiveRef.current.setSpec(overlaySpecRef.current ?? EMPTY_OVERLAY_SPEC);
+    } catch { /* attach can throw only on a disposed series; guarded elsewhere */ }
     previousBarsRef.current = [];
   }, [chartReady, chartType]);
 
+  // Push a new overlay spec to the live primitive without touching the series/chart
+  // geometry. Guarded against a disposed instance so a late update is disposal-safe.
+  useEffect(() => {
+    overlaySpecRef.current = overlaySpec;
+    if (!chartReady || disposedRef.current || !primitiveRef.current) return;
+    primitiveRef.current.setSpec(overlaySpec ?? EMPTY_OVERLAY_SPEC);
+  }, [chartReady, overlaySpec]);
+
   useEffect(() => {
     const chart = chartRef.current;
-    if (!chartReady || !chart) return;
+    if (!chartReady || !chart || disposedRef.current) return;
     if (!volumeRef.current) volumeRef.current = addVolumeSeries(chart);
     volumeRef.current.applyOptions({ visible: volumeVisible });
   }, [chartReady, volumeVisible]);
 
   useEffect(() => {
-    if (!chartReady) return;
+    if (!chartReady || disposedRef.current) return;
     const primary = primaryRef.current;
     const volume = volumeRef.current;
     if (!primary || !volume) return;
@@ -147,8 +224,10 @@ export function LightweightChartHost({
 
   useEffect(() => {
     const primary = primaryRef.current;
-    if (!primary) return;
-    overlayRefs.current.forEach(({ series, line }) => series.removePriceLine(line));
+    if (!chartReady || !chartRef.current || !primary || disposedRef.current) return;
+    overlayRefs.current.forEach(({ series, line }) => {
+      try { series.removePriceLine(line); } catch { /* series may already be removed */ }
+    });
     overlayRefs.current = priceLines.map((item) => ({
       series: primary,
       line: primary.createPriceLine({
@@ -170,7 +249,7 @@ export function LightweightChartHost({
 
   useEffect(() => {
     const chart = chartRef.current;
-    if (!chartReady || !chart) return;
+    if (!chartReady || !chart || disposedRef.current) return;
     indicatorRefs.current.forEach((series) => chart.removeSeries(series));
     indicatorRefs.current = indicatorLines.map((indicator) => {
       const series = chart.addSeries(LineSeries, { color: indicator.color, lineWidth: 1, title: indicator.label, lastValueVisible: false }, indicator.pane);

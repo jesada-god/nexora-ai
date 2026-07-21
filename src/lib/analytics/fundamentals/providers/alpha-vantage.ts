@@ -61,9 +61,16 @@ export class AlphaVantageFundamentalsProvider implements FundamentalsProvider {
 
   async getFinancialPeriods(rawSymbol: string, signal?: AbortSignal): Promise<FundamentalsSnapshot> {
     const symbol = rawSymbol.trim().toUpperCase(); const started = this.now();
-    const settled = await Promise.allSettled((Object.keys(FUNCTIONS) as DatasetName[]).map(async (dataset) => ({ dataset, result: await this.load(symbol, dataset, signal) })));
+    const settled = await Promise.all((Object.keys(FUNCTIONS) as DatasetName[]).map(async (dataset) => {
+      try { return { dataset, result: await this.load(symbol, dataset, signal), error: null as string | null }; }
+      catch (cause) { return { dataset, result: null, error: cause && typeof cause === 'object' && 'code' in cause && typeof cause.code === 'string' ? cause.code : 'upstream-unavailable' }; }
+    }));
     const available = new Map<DatasetName, Awaited<ReturnType<AlphaVantageFundamentalsProvider['load']>>>();
-    for (const item of settled) if (item.status === 'fulfilled') available.set(item.value.dataset, item.value.result);
+    const datasetErrors: Record<string, string> = {};
+    for (const item of settled) {
+      if (item.result) available.set(item.dataset, item.result);
+      else if (item.error) datasetErrors[item.dataset] = item.error;
+    }
     const missingDatasets = (Object.keys(FUNCTIONS) as DatasetName[]).filter((dataset) => !available.has(dataset));
     const empty: RawStatementPayload = { symbol, annualReports: [], quarterlyReports: [] };
     const fetchedAtMs = available.size ? Math.max(...[...available.values()].map((item) => item.fetchedAt)) : this.now(); const fetchedAt = new Date(fetchedAtMs).toISOString();
@@ -78,6 +85,6 @@ export class AlphaVantageFundamentalsProvider implements FundamentalsProvider {
       }));
       console.info({ event: 'fundamentals_provider_snapshot', ...diagnostics, sanitizedPayloadShape });
     }
-    return { symbol, periods: normalized.annual, quarterlyPeriods: normalized.quarterly, annualRecords: normalized.annualRecords, quarterlyRecords: normalized.quarterlyRecords, asOf: normalized.annual.at(-1)?.periodEnd ?? normalized.quarterly.at(-1)?.periodEnd ?? normalized.dilutedEpsAsOf ?? fetchedAt, fetchedAt, currency: normalized.currency, dilutedEpsTtm: normalized.dilutedEpsTtm, dilutedEpsAsOf: normalized.dilutedEpsAsOf, missingInputs: [...missingDatasets.map((dataset) => `dataset:${dataset}`), ...normalized.missingInputs], diagnostics };
+    return { symbol, periods: normalized.annual, quarterlyPeriods: normalized.quarterly, annualRecords: normalized.annualRecords, quarterlyRecords: normalized.quarterlyRecords, asOf: normalized.annual.at(-1)?.periodEnd ?? normalized.quarterly.at(-1)?.periodEnd ?? normalized.dilutedEpsAsOf ?? fetchedAt, fetchedAt, currency: normalized.currency, dilutedEpsTtm: normalized.dilutedEpsTtm, dilutedEpsAsOf: normalized.dilutedEpsAsOf, missingInputs: [...missingDatasets.map((dataset) => `dataset:${dataset}`), ...normalized.missingInputs], datasetErrors, diagnostics };
   }
 }

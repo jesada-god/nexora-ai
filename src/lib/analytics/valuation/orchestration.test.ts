@@ -69,6 +69,7 @@ function arrangeRequiredProviderData() {
       dilutedEpsTtm: null,
       dilutedEpsAsOf: null,
       missingInputs: [],
+      datasetErrors: {},
       diagnostics: {
         provider: 'alpha-vantage',
         capabilities: [],
@@ -138,6 +139,25 @@ describe('Fair Value orchestration failures', () => {
     });
   });
 
+  it('reports provider-rate-limited (not insufficient-data) when the fundamentals provider is throttled', async () => {
+    arrangeRequiredProviderData();
+    mocks.getFundamentalsProvider.mockReturnValue({
+      id: 'alpha-vantage',
+      getFinancialPeriods: vi.fn().mockResolvedValue({
+        symbol: 'RKLB', periods: [], quarterlyPeriods: [], annualRecords: [], quarterlyRecords: [],
+        asOf: '2025-12-31', fetchedAt: '2026-07-20T00:00:00.000Z', currency: 'USD',
+        dilutedEpsTtm: null, dilutedEpsAsOf: null,
+        missingInputs: ['dataset:income-statement', 'dataset:balance-sheet', 'dataset:cash-flow'],
+        datasetErrors: { 'income-statement': 'rate-limited', 'balance-sheet': 'rate-limited', 'cash-flow': 'rate-limited' },
+        diagnostics: { provider: 'alpha-vantage', capabilities: [], datasets: {}, cache: {}, datasetFetchedAt: {}, latencyMs: 1, normalizedPeriodCount: { annual: 0, quarterly: 0 } },
+      }),
+    });
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    const result = await loadFairValue('RKLB');
+    expect(result).toMatchObject({ status: 'unavailable', failureKind: 'provider-rate-limited' });
+  });
+
   it('converts a calculation exception to a safe typed failure without logging secrets', () => {
     const logger = vi.fn();
     const input = {
@@ -187,6 +207,52 @@ describe('Fair Value orchestration failures', () => {
     if (result.status === 'available') {
       expect(result.modelResults.map((model) => model.model)).toEqual(['ev-sales']);
       expect(result.displayFx).toBeNull();
+    }
+  });
+
+  it('reports the truthful provider used when a secondary provider supplied the fundamentals', async () => {
+    arrangeRequiredProviderData();
+    mocks.getFundamentalsProvider.mockReturnValue({
+      id: 'alpha-vantage',
+      getFinancialPeriods: vi.fn().mockResolvedValue({
+        symbol: 'RKLB', periods, quarterlyPeriods: [], annualRecords: [], quarterlyRecords: [],
+        asOf: '2025-12-31', fetchedAt: '2026-07-20T00:00:00.000Z', currency: 'USD',
+        dilutedEpsTtm: null, dilutedEpsAsOf: null, missingInputs: [], datasetErrors: {},
+        diagnostics: { provider: 'financial-modeling-prep', capabilities: [], datasets: {}, cache: { income: 'miss' }, datasetFetchedAt: {}, latencyMs: 1, normalizedPeriodCount: { annual: 3, quarterly: 0 } },
+        primaryProvider: 'alpha-vantage', providerUsed: 'financial-modeling-prep', fallbackUsed: true, fallbackReason: 'PRIMARY_RATE_LIMITED',
+      }),
+    });
+
+    const result = await loadFairValue('RKLB');
+    expect(result.status).toBe('available');
+    if (result.status === 'available') {
+      expect(result.marketPrice.source).toBe('financial-modeling-prep');
+      expect(result.sources.some((source) => source.name.includes('financial-modeling-prep'))).toBe(true);
+    }
+  });
+
+  it('produces an identical fundamental fair value regardless of which provider supplied identical periods', async () => {
+    arrangeRequiredProviderData();
+    const alphaResult = await loadFairValue('RKLB');
+
+    arrangeRequiredProviderData();
+    mocks.getFundamentalsProvider.mockReturnValue({
+      id: 'alpha-vantage',
+      getFinancialPeriods: vi.fn().mockResolvedValue({
+        symbol: 'RKLB', periods, quarterlyPeriods: [], annualRecords: [], quarterlyRecords: [],
+        asOf: '2025-12-31', fetchedAt: '2026-07-20T00:00:00.000Z', currency: 'USD',
+        dilutedEpsTtm: null, dilutedEpsAsOf: null, missingInputs: [], datasetErrors: {},
+        diagnostics: { provider: 'financial-modeling-prep', capabilities: [], datasets: {}, cache: { income: 'miss' }, datasetFetchedAt: {}, latencyMs: 1, normalizedPeriodCount: { annual: 3, quarterly: 0 } },
+        primaryProvider: 'alpha-vantage', providerUsed: 'financial-modeling-prep', fallbackUsed: true, fallbackReason: 'PRIMARY_RATE_LIMITED',
+      }),
+    });
+    const fmpResult = await loadFairValue('RKLB');
+
+    expect(alphaResult.status).toBe('available');
+    expect(fmpResult.status).toBe('available');
+    if (alphaResult.status === 'available' && fmpResult.status === 'available') {
+      expect(fmpResult.fundamentalFairValue.centralEstimate).toBe(alphaResult.fundamentalFairValue.centralEstimate);
+      expect(fmpResult.methodologyVersion).toBe(alphaResult.methodologyVersion);
     }
   });
 });

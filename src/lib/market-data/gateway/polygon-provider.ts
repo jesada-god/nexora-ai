@@ -5,6 +5,7 @@ import { candleRangeBounds } from '../candles/range';
 import { normalizedBarSchema, normalizedBarsResultSchema, normalizedMarketSessionSchema, normalizedQuoteSchema } from './contracts';
 import type { CandleInterval, HistoricalRange, MarketDataStatus, MarketSessionMode, NormalizedBar, ResolvedInstrument } from './contracts';
 import { polygonAggregateResolution } from './capabilities';
+import { bucketOverlapsRegularSession } from '../session';
 import type { MarketDataProviderV2 } from './provider';
 
 const BASE_URL = 'https://api.polygon.io';
@@ -199,11 +200,15 @@ export class PolygonMarketDataProvider implements MarketDataProviderV2 {
       for (const result of payload.results ?? []) {
         const time = epochSeconds(result.t);
         if (!time) continue;
-        if (input.session === 'regular') {
-          const minute = localMinutes(time, input.instrument.timezone);
-          if (resolution.timespan === 'minute' || resolution.timespan === 'hour') {
-            if (minute < 9 * 60 + 30 || minute >= 16 * 60) continue;
-          }
+        if (input.session === 'regular' && (resolution.timespan === 'minute' || resolution.timespan === 'hour')) {
+          // Filter by the bucket's actual overlap with [09:30, 16:00), not by its
+          // start alone: a provider-native multi-hour bucket (e.g. 08:00–12:00 4h,
+          // or 09:00–10:00 1h) starts before 09:30 yet overlaps the open, so it
+          // must be kept with its OHLCV preserved unchanged. Only buckets lying
+          // entirely outside the regular session are dropped. (Extended-session
+          // requests skip this filter entirely and are never substituted.)
+          const startMinute = localMinutes(time, input.instrument.timezone);
+          if (!bucketOverlapsRegularSession(startMinute, resolution.seconds / 60)) continue;
         }
         const parsed = normalizedBarSchema.safeParse({
           time, open: result.o, high: result.h, low: result.l, close: result.c,

@@ -84,6 +84,33 @@ export function exchangeSessionDate(timestamp: string, timeZone: string): string
   return `${parts.year}-${String(parts.month).padStart(2, '0')}-${String(parts.day).padStart(2, '0')}`;
 }
 
+/** Regular US-equity session in exchange-local minutes past midnight: [09:30, 16:00). */
+export const REGULAR_SESSION_OPEN_MINUTE = 9 * 60 + 30;
+export const REGULAR_SESSION_CLOSE_MINUTE = 16 * 60;
+
+/**
+ * Whether an OHLCV bucket that STARTS at `startMinuteOfDay` (exchange-local
+ * minutes past midnight) and spans `durationMinutes` overlaps the regular
+ * session [09:30, 16:00).
+ *
+ * This governs regular-session filtering of provider-native aggregates. A bucket
+ * must be judged by its full [start, start+duration) span, not its start alone:
+ * a provider-native multi-hour bucket (e.g. Polygon's 08:00–12:00 4h bar, or a
+ * 09:00–10:00 1h bar) begins before 09:30 yet clearly overlaps the open, so it
+ * must be kept — its provider OHLCV is preserved unchanged and never split,
+ * interpolated or resampled. Consequently a kept multi-hour bucket may include
+ * some data outside the exact regular boundary whenever the provider returns it
+ * that way. Buckets lying entirely in pre-market or after-hours are excluded, as
+ * is a bucket that only touches a boundary (ends exactly at 09:30, or starts
+ * exactly at 16:00), since a half-open interval does not overlap at a shared
+ * endpoint.
+ */
+export function bucketOverlapsRegularSession(startMinuteOfDay: number, durationMinutes: number): boolean {
+  const endMinuteOfDay = startMinuteOfDay + durationMinutes;
+  return startMinuteOfDay < REGULAR_SESSION_CLOSE_MINUTE
+    && endMinuteOfDay > REGULAR_SESSION_OPEN_MINUTE;
+}
+
 export function classifyUsEquitySession(timestamp: string, timeZone = US_EQUITY_TIMEZONE): EquitySessionType | null {
   const parsed = new Date(timestamp);
   if (Number.isNaN(parsed.valueOf())) return null;
