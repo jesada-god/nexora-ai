@@ -143,6 +143,17 @@ export class CoordinatedMarketSource implements MarketSource {
     (this.poll as MarketSource & { setSelection?: (s: MarketSelection) => void }).setSelection?.(selection);
   }
 
+  /**
+   * Follow a symbol change on the SAME connection: both transports resubscribe in
+   * place (the WS unsubscribes the old symbol and subscribes the new one on the
+   * live socket; the REST loop retargets) so the shared socket is never closed and
+   * reopened just because the viewed instrument changed.
+   */
+  setSymbol(symbol: string): void {
+    (this.ws as MarketSource & { setSymbol?: (s: string) => void }).setSymbol?.(symbol);
+    (this.poll as MarketSource & { setSymbol?: (s: string) => void }).setSymbol?.(symbol);
+  }
+
   refresh(): Promise<void> {
     return this.state === 'live' ? this.ws.refresh() : this.poll.refresh();
   }

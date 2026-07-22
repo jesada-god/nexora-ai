@@ -72,7 +72,7 @@ function isEntitlementError(error: MarketDataApiError): boolean {
 export class PollingMarketSource implements MarketSource {
   readonly transport = 'polling' as const;
 
-  private readonly symbol: string;
+  private symbol: string;
   private readonly api: MarketSourceTransport;
   private readonly cadence: PollingCadence;
   private readonly now: () => number;
@@ -196,6 +196,29 @@ export class PollingMarketSource implements MarketSource {
     this.inflight = null;
     this.backoffAttempt = 0;
     this.fatal = false;
+    this.clearPendingTimer();
+    if (this.running) this.beginCycle();
+  }
+
+  /**
+   * Switch the polled instrument in place: abort the previous generation, reset
+   * all per-symbol state (candle, entitlement probe, backoff/cooldown) so the old
+   * instrument's price or bucket can never enter the new series, and start exactly
+   * one new loop for the new symbol.
+   */
+  setSymbol(symbol: string): void {
+    if (symbol === this.symbol) return;
+    this.symbol = symbol;
+    this.activeCandle = null;
+    this.lastAppliedTime = null;
+    this.snapshotEntitled = true;
+    this.backoffAttempt = 0;
+    this.cooldownUntil = 0;
+    this.fatal = false;
+    this.generation += 1;
+    this.abort?.abort();
+    this.abort = null;
+    this.inflight = null;
     this.clearPendingTimer();
     if (this.running) this.beginCycle();
   }

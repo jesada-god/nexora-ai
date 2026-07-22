@@ -152,4 +152,47 @@ describe('WebSocketMarketSource lifecycle', () => {
     source.setVisible(true);
     expect(sockets).toHaveLength(2);
   });
+
+  it('does NOT tear down a still-CONNECTING socket when hidden (defers the hide)', () => {
+    const { source, sockets } = setup();
+    source.start(); // socket is CONNECTING (no "connected" frame yet)
+    expect(sockets).toHaveLength(1);
+    source.setVisible(false); // must not close a socket mid-handshake (the 1006 bug)
+    expect(sockets[0].closed).toBe(false);
+    expect(source.connectionState).toBe('connecting');
+    // Once the handshake completes while still hidden, it releases cleanly.
+    sockets[0].emitOpen();
+    sockets[0].emit({ type: 'connected', feed: 'iex', realtime: true });
+    expect(sockets[0].closed).toBe(true);
+  });
+
+  it('cancels a deferred hide when shown again before the handshake completes', () => {
+    const { source, sockets, connect } = setup();
+    source.start();
+    source.setVisible(false); // defer hide
+    source.setVisible(true);  // shown again before connect → cancel the hide
+    connect(sockets[0]);
+    expect(sockets[0].closed).toBe(false);
+    expect(source.connectionState).toBe('open');
+    expect(sockets).toHaveLength(1); // no reconnect, no second socket
+  });
+
+  it('resubscribes on the SAME socket when the symbol changes (no reconnect)', () => {
+    const { source, sockets, updates, connect } = setup();
+    source.start();
+    connect(sockets[0]);
+    sockets[0].sent.length = 0; // drop the initial AAPL subscribe
+    source.setSymbol('MSFT');
+    expect(sockets).toHaveLength(1); // same socket, never closed/reopened
+    expect(sockets[0].closed).toBe(false);
+    const frames = sockets[0].frames();
+    expect(frames.some((f) => f.type === 'unsubscribe' && (f.symbols as string[])[0] === 'AAPL')).toBe(true);
+    expect(frames.some((f) => f.type === 'subscribe' && (f.symbols as string[])[0] === 'MSFT')).toBe(true);
+    // The new symbol's trades are accepted; the old symbol is ignored.
+    sockets[0].emit({ type: 'event', event: { kind: 'trade', symbol: 'AAPL', price: 999, size: 1, timestampMs: Date.parse('2024-01-02T15:05:00Z') } });
+    sockets[0].emit({ type: 'event', event: { kind: 'trade', symbol: 'MSFT', price: 300, size: 1, timestampMs: Date.parse('2024-01-02T15:05:01Z') } });
+    const last = updates[updates.length - 1];
+    expect(last.symbol).toBe('MSFT');
+    expect(last.price).toBe(300);
+  });
 });

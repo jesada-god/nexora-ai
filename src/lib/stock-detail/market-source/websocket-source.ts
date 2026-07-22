@@ -56,7 +56,7 @@ const defaultScheduler = (callback: () => void, delayMs: number): (() => void) =
 export class WebSocketMarketSourceImpl implements WebSocketMarketSource {
   readonly transport = 'websocket' as const;
 
-  private readonly symbol: string;
+  private symbol: string;
   private readonly url: string;
   private readonly createSocket: RealtimeSocketFactory;
   private readonly now: () => number;
@@ -68,7 +68,7 @@ export class WebSocketMarketSourceImpl implements WebSocketMarketSource {
   private selection: MarketSelection;
   private session: MarketSessionKind;
 
-  private readonly store = new LiveBucketStore();
+  private store = new LiveBucketStore();
   private readonly listeners = new Set<MarketUpdateListener>();
 
   private socket: RealtimeSocket | null = null;
@@ -76,6 +76,14 @@ export class WebSocketMarketSourceImpl implements WebSocketMarketSource {
   private running = false;
   private visible = true;
   private degraded = false;
+  /**
+   * A hide (`setVisible(false)`) requested while the socket is still CONNECTING
+   * is deferred here rather than tearing the pending socket down mid-handshake
+   * (which yields "closed before the connection is established" / code 1006). It
+   * is applied once the connection resolves, or cancelled if we become visible
+   * again first.
+   */
+  private pendingHide = false;
 
   private attempt = 0;
   private reconnectPending = false;
@@ -146,6 +154,12 @@ export class WebSocketMarketSourceImpl implements WebSocketMarketSource {
     this.visible = visible;
     if (!this.running) return;
     if (!visible) {
+      if (this.state === 'connecting' && this.socket) {
+        // Do NOT tear down a socket that is still completing its handshake — that
+        // is the production 1006 bug. Defer the hide until the socket opens.
+        this.pendingHide = true;
+        return;
+      }
       // Hidden: release the socket to save resources; the coordinator may poll.
       this.teardownSocket();
       this.clearReconnect();
@@ -155,8 +169,11 @@ export class WebSocketMarketSourceImpl implements WebSocketMarketSource {
       this.emit(false);
       return;
     }
-    // Shown again: reconnect (which resubscribes). The coordinator reconciles a
-    // REST snapshot around this transition.
+    // Shown again before/after the socket resolved: cancel any deferred hide and
+    // reconnect (which resubscribes) if we are not already connecting/open. The
+    // coordinator reconciles a REST snapshot around this transition.
+    this.pendingHide = false;
+    if (this.state === 'connecting' || this.state === 'open') return;
     this.attempt = 0;
     this.open();
   }
@@ -176,6 +193,38 @@ export class WebSocketMarketSourceImpl implements WebSocketMarketSource {
     this.selection = selection;
     // Aggregation is client-side, so no resubscribe is needed: re-derive the
     // active candle for the new interval from the existing 1m buckets and emit.
+    this.emit(false);
+  }
+
+  /**
+   * Switch the streamed instrument WITHOUT dropping the socket: unsubscribe the
+   * previous symbol and subscribe the new one on the same live connection. All
+   * per-symbol state (buckets, last trade/quote, halt) is reset so the previous
+   * instrument's data can never leak into the new one. When the socket is not
+   * open the resubscribe is deferred to the next `connected` handshake, which
+   * always subscribes the current symbol.
+   */
+  setSymbol(symbol: string): void {
+    const next = symbol.toUpperCase();
+    if (next === this.symbol) return;
+    const previous = this.symbol;
+    if (this.state === 'open') this.sendUnsubscribe(previous);
+    this.symbol = next;
+    // Reset all per-symbol state: a fresh bucket store and cleared book/price so
+    // the old instrument's candle or last price can never surface for the new one.
+    this.store = new LiveBucketStore();
+    this.lastPrice = null;
+    this.lastPriceMs = 0;
+    this.lastTradeIso = null;
+    this.bid = undefined;
+    this.ask = undefined;
+    this.bidSize = undefined;
+    this.askSize = undefined;
+    this.lastQuoteMs = 0;
+    this.quoteIso = undefined;
+    this.halted = false;
+    this.haltReason = undefined;
+    if (this.state === 'open') this.sendSubscribe();
     this.emit(false);
   }
 
@@ -212,6 +261,19 @@ export class WebSocketMarketSourceImpl implements WebSocketMarketSource {
         this.sendSubscribe();
         this.startHeartbeat();
         this.emit(false);
+        // A hide arrived mid-handshake: now that the socket is cleanly open we can
+        // release it without tripping the "closed before established" warning.
+        if (this.pendingHide && !this.visible) {
+          this.pendingHide = false;
+          this.teardownSocket();
+          this.clearReconnect();
+          this.clearHeartbeat();
+          this.state = 'idle';
+          this.degraded = true;
+          this.emit(false);
+        } else {
+          this.pendingHide = false;
+        }
         break;
       case 'event':
         this.applyEvent(frame.event);
@@ -227,6 +289,10 @@ export class WebSocketMarketSourceImpl implements WebSocketMarketSource {
   private sendSubscribe(): void {
     this.socket?.send(JSON.stringify({ type: 'subscribe', symbols: [this.symbol], channels: [...MARKET_CHANNELS] }));
     console.info('[market-ws] subscribed', this.symbol);
+  }
+
+  private sendUnsubscribe(symbol: string): void {
+    this.socket?.send(JSON.stringify({ type: 'unsubscribe', symbols: [symbol], channels: [...MARKET_CHANNELS] }));
   }
 
   private applyEvent(event: NormalizedMarketEvent): void {

@@ -2,20 +2,20 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  acquireMarketConnection,
   buildAcceptedResource,
   candidateFromUpdate,
   createBrowserMarketTransport,
-  createMarketSource,
   freshnessFromMode,
   labelFromAccepted,
   resolveAcceptedPrice,
   selectionKeyOf,
   type AcceptedPriceCandidate,
   type LiveCandle,
+  type ManagedMarketSource,
   type MarketDataLabel,
   type MarketSelection,
   type MarketSessionKind,
-  type MarketSource,
 } from '@/src/lib/stock-detail/market-source';
 import { resolvePublicMarketWsUrl } from '@/src/lib/market-data/realtime';
 import type { MarketDataApiError } from '@/src/lib/market-data/types';
@@ -86,9 +86,6 @@ export interface UseMarketSourceResult {
   refresh: () => void;
 }
 
-/** A market source that additionally follows the chart selection. */
-type SelectableSource = MarketSource & { setSelection: (selection: MarketSelection) => void };
-
 interface LiveMeta {
   symbol: string;
   bid: number | null;
@@ -158,7 +155,8 @@ export function useMarketSource(options: UseMarketSourceOptions): UseMarketSourc
   const [candleState, setCandleState] = useState<{ symbol: string; selectionKey: string; candle: LiveCandle } | null>(null);
   const [liveMeta, setLiveMeta] = useState<LiveMeta>(EMPTY_META);
 
-  const sourceRef = useRef<SelectableSource | null>(null);
+  const sourceRef = useRef<ManagedMarketSource | null>(null);
+  const symUpper = symbol.toUpperCase();
   const transport = useMemo(() => createBrowserMarketTransport(), []);
   // Public Gateway URL (null → REST-only). Built from the statically-inlined
   // client config above and validated (wss + non-loopback in production) here.
@@ -184,22 +182,33 @@ export function useMarketSource(options: UseMarketSourceOptions): UseMarketSourc
     // Temporary, secret-free production diagnostic: confirms whether a Gateway URL
     // was inlined into the client bundle (true) or the source is REST-only (false).
     console.info('[market-ws] configured', Boolean(wsUrl));
-    const source = createMarketSource({
+    // Acquire the tab-shared connection instead of building a fresh source here.
+    // A Strict-Mode double-invoke (mount → cleanup → remount) or a transient
+    // re-render releases and re-acquires within the manager's grace window, so the
+    // SAME live socket is reused and never torn down mid-handshake (the 1006 bug).
+    // `symbol` is intentionally NOT a dependency: a symbol change resubscribes on
+    // the same socket via the dedicated `setSymbol` effect below.
+    const handle = acquireMarketConnection({
+      wsUrl,
       symbol,
       transport,
       session,
       selection,
       cadence: CADENCE,
-      wsUrl,
-    }) as SelectableSource;
+      visible: active && online,
+    });
+    const source = handle.source;
     sourceRef.current = source;
     const unsubscribe = source.subscribe((update) => {
       const tag = selectionKeyRef.current;
+      // Tag by the event's own symbol so a stray emit from a just-superseded
+      // instrument can never surface for the current one.
+      const updateSymbol = update.symbol.toUpperCase();
       setLastError(update.error);
       const candidate = candidateFromUpdate(update);
       if (candidate?.source === 'snapshot' && update.quote) {
         setSnapState({
-          symbol,
+          symbol: updateSymbol,
           candidate,
           resource: {
             data: update.quote,
@@ -211,14 +220,14 @@ export function useMarketSource(options: UseMarketSourceOptions): UseMarketSourc
           },
         });
       } else if (candidate?.source === 'aggregate-fallback') {
-        setAggState({ symbol, selectionKey: tag, candidate });
+        setAggState({ symbol: updateSymbol, selectionKey: tag, candidate });
       }
       // The candle and the header price come from the same accepted event.
-      if (update.candle) setCandleState({ symbol, selectionKey: tag, candle: update.candle });
+      if (update.candle) setCandleState({ symbol: updateSymbol, selectionKey: tag, candle: update.candle });
       // Capture top-of-book / halt state; only rerender when something the header
       // or chart actually reads has changed (or a bar just finalized).
       const nextMeta: LiveMeta = {
-        symbol,
+        symbol: updateSymbol,
         bid: update.bid ?? null,
         ask: update.ask ?? null,
         bidSize: update.bidSize ?? null,
@@ -237,34 +246,37 @@ export function useMarketSource(options: UseMarketSourceOptions): UseMarketSourc
       const remaining = source.cooldownRemainingMs();
       setQuoteRetryAt(remaining > 0 ? Date.now() + remaining : 0);
     });
-    source.setVisible(active && online);
-    source.start();
     return () => {
       unsubscribe();
-      source.stop();
+      // Release the subscriber; the manager tears the socket down only if no other
+      // subscriber remains after the grace period (Strict-Mode/re-render safe).
+      handle.release('effect-cleanup');
       sourceRef.current = null;
     };
-    // `session`/`selection` are applied via dedicated effects so cadence and
-    // selection changes never tear down and rebuild the source (which would drop
-    // the active candle). `selection.*` is read once here for the initial config.
+    // `symbol`/`session`/`selection`/visibility are applied via dedicated effects
+    // so those changes never re-acquire the connection (which would drop the live
+    // socket + active candle). They are read once here only for the initial config.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [symbol, transport, enabled, wsUrl]);
+  }, [transport, enabled, wsUrl]);
 
   useEffect(() => { sourceRef.current?.setSession(session); }, [session]);
   useEffect(() => { sourceRef.current?.setVisible(active && online); }, [active, online]);
   // Reconfigure the single loop to follow the chart selection: abort the previous
   // generation, clear the incompatible candle, start exactly one new loop.
   useEffect(() => {
-    sourceRef.current?.setSelection(selection);
+    sourceRef.current?.setSelection?.(selection);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectionKey]);
+  // Follow a symbol change on the SAME socket: unsubscribe the old symbol and
+  // subscribe the new one in place (no socket close/reopen).
+  useEffect(() => { sourceRef.current?.setSymbol?.(symUpper); }, [symUpper]);
 
   // The candidates valid for the CURRENT symbol + selection. The snapshot is
   // symbol-scoped; the aggregate and history bar are selection-scoped, so a
   // superseded selection's aggregate/bar can never enter the current price.
-  const snapshotResource = snapState?.symbol === symbol ? snapState.resource : null;
-  const snapCandidate = snapState?.symbol === symbol ? snapState.candidate : null;
-  const aggCandidate = aggState?.symbol === symbol && aggState.selectionKey === selectionKey ? aggState.candidate : null;
+  const snapshotResource = snapState?.symbol === symUpper ? snapState.resource : null;
+  const snapCandidate = snapState?.symbol === symUpper ? snapState.candidate : null;
+  const aggCandidate = aggState?.symbol === symUpper && aggState.selectionKey === selectionKey ? aggState.candidate : null;
   const historyCandidate = historyFallback && historyFallback.source === 'history-fallback' ? historyFallback : null;
 
   const accepted = useMemo(
@@ -296,13 +308,13 @@ export function useMarketSource(options: UseMarketSourceOptions): UseMarketSourc
   }, []);
 
   const liveCandle = candleState
-    && candleState.symbol === symbol
+    && candleState.symbol === symUpper
     && candleState.selectionKey === selectionKey
     ? candleState.candle
     : null;
 
   // Live meta is symbol-scoped; a stale instrument's book never leaks through.
-  const meta = liveMeta.symbol === symbol ? liveMeta : EMPTY_META;
+  const meta = liveMeta.symbol === symUpper ? liveMeta : EMPTY_META;
 
   return {
     quoteResource,

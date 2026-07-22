@@ -1,21 +1,25 @@
 // @vitest-environment jsdom
 
 /**
- * Regression guard for the production bug where the live WebSocket was never
- * opened: `resolvePublicMarketWsUrl` was called through a dynamic `process.env`
- * read, which Next.js does NOT inline into the client bundle, so the Gateway URL
- * came back `undefined` → `null` → REST-only and no socket was ever constructed.
+ * Regression guard for the live-WebSocket wiring in {@link useMarketSource}.
  *
- * These tests exercise the real {@link useMarketSource} hook and assert it hands
- * the configured Gateway URL to `createMarketSource` (mocked to record the wiring),
- * that the live source is created on plain mount (Overview — never gated on the
- * Chart tab, the market session, or a cached snapshot), that a Strict-Mode remount
- * leaves exactly one active source, and that a symbol change swaps connections.
+ * History: the socket was first never OPENED because `resolvePublicMarketWsUrl`
+ * was read through a dynamic `process.env` access that Next.js does not inline, so
+ * the Gateway URL came back `undefined` → REST-only. It was then CLOSED before its
+ * handshake finished because a Strict-Mode/transient unmount tore the connecting
+ * socket down (code 1006). The hook now acquires a tab-shared, reference-counted
+ * connection (see the market-connection-manager) instead of building and tearing
+ * down a source per mount.
  *
- * The Gateway URL must be present in `process.env` BEFORE the hook module is
- * imported, because the client config constants are inlined at module load. So we
- * set the env and dynamic-import the hook in `beforeAll` (no `resetModules`, to
- * keep a single shared React instance for hooks).
+ * These tests exercise the real hook against a mocked `acquireMarketConnection`
+ * recorder and assert that it: hands over the inlined Gateway URL; acquires on
+ * plain mount (Overview — never gated on the Chart tab, the session or a cached
+ * snapshot); holds exactly one net subscriber across a Strict-Mode remount;
+ * reuses the SAME connection (no re-acquire) on a selection change AND on a symbol
+ * change, driving `setSelection` / `setSymbol` in place; and releases on unmount.
+ *
+ * The reference-counting, grace-period close and generation guard themselves live
+ * in `market-connection-manager.test.ts`.
  */
 
 import React, { act } from 'react';
@@ -27,44 +31,67 @@ import type { StockDetailQuoteResource } from '@/src/lib/stock-detail/types';
 
 const WS_URL = 'wss://loving-growth-production-0965.up.railway.app/ws';
 
-interface CreatedRecord {
-  symbol: string;
-  wsUrl: string | null;
+interface FakeSource {
   transport: 'polling' | 'websocket';
-  started: number;
-  stopped: number;
+  symbols: string[];
   selections: number;
+  sessions: number;
+  visibles: boolean[];
+  subscribe: () => () => void;
+  setSymbol: (s: string) => void;
+  setSelection: () => void;
+  setSession: () => void;
+  setVisible: (v: boolean) => void;
+  refresh: () => Promise<void>;
+  cooldownRemainingMs: () => number;
+  isSnapshotEntitled: () => boolean;
+  start: () => void;
+  stop: () => void;
 }
 
-const created: CreatedRecord[] = [];
+interface Acquisition {
+  wsUrl: string | null;
+  symbol: string;
+  source: FakeSource;
+  released: number;
+}
 
-// Keep every real export; only replace `createMarketSource` with a recorder that
-// returns a controllable fake source so we can observe the wsUrl the hook passes.
+const acquisitions: Acquisition[] = [];
+let acquireCount = 0;
+let releaseCount = 0;
+
+function makeFakeSource(wsUrl: string | null): FakeSource {
+  return {
+    transport: wsUrl ? 'websocket' : 'polling',
+    symbols: [],
+    selections: 0,
+    sessions: 0,
+    visibles: [],
+    subscribe: () => () => {},
+    setSymbol(s) { this.symbols.push(s); },
+    setSelection() { this.selections += 1; },
+    setSession() { this.sessions += 1; },
+    setVisible(v) { this.visibles.push(v); },
+    refresh: () => Promise.resolve(),
+    cooldownRemainingMs: () => 0,
+    isSnapshotEntitled: () => true,
+    start: () => {},
+    stop: () => {},
+  };
+}
+
 vi.mock('@/src/lib/stock-detail/market-source', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/src/lib/stock-detail/market-source')>();
   return {
     ...actual,
-    createMarketSource: vi.fn((opts: { symbol: string; wsUrl: string | null }) => {
-      const record: CreatedRecord = {
-        symbol: opts.symbol,
-        wsUrl: opts.wsUrl ?? null,
-        transport: opts.wsUrl ? 'websocket' : 'polling',
-        started: 0,
-        stopped: 0,
-        selections: 0,
-      };
-      created.push(record);
+    acquireMarketConnection: vi.fn((params: { wsUrl: string | null; symbol: string }) => {
+      acquireCount += 1;
+      const source = makeFakeSource(params.wsUrl);
+      const record: Acquisition = { wsUrl: params.wsUrl ?? null, symbol: params.symbol, source, released: 0 };
+      acquisitions.push(record);
       return {
-        transport: record.transport,
-        subscribe: () => () => {},
-        start: () => { record.started += 1; },
-        stop: () => { record.stopped += 1; },
-        setVisible: () => {},
-        setSession: () => {},
-        setSelection: () => { record.selections += 1; },
-        refresh: () => Promise.resolve(),
-        cooldownRemainingMs: () => 0,
-        isSnapshotEntitled: () => true,
+        source,
+        release: () => { releaseCount += 1; record.released += 1; },
       };
     }),
   };
@@ -125,59 +152,64 @@ afterAll(() => {
   delete process.env.NEXT_PUBLIC_APP_ENV;
 });
 
-beforeEach(() => { created.length = 0; });
+beforeEach(() => { acquisitions.length = 0; acquireCount = 0; releaseCount = 0; });
 afterEach(() => { vi.clearAllMocks(); });
 
 describe('useMarketSource live WebSocket wiring', () => {
-  it('creates a live WebSocket source on mount using the inlined Gateway URL (Overview, no Chart tab)', () => {
+  it('acquires the shared live connection on mount using the inlined Gateway URL (Overview, no Chart tab)', () => {
     const handle = mount(baseOptions());
-    expect(created).toHaveLength(1);
-    expect(created[0].wsUrl).toBe(WS_URL);
-    expect(created[0].transport).toBe('websocket');
-    expect(created[0].symbol).toBe('RKLB');
-    expect(created[0].started).toBe(1);
+    expect(acquireCount).toBe(1);
+    expect(acquisitions[0].wsUrl).toBe(WS_URL);
+    expect(acquisitions[0].symbol).toBe('RKLB');
+    expect(acquisitions[0].source.transport).toBe('websocket');
     handle.unmount();
+    expect(releaseCount).toBe(1);
   });
 
   it('keeps the WebSocket even when the market is closed and the snapshot is cached', () => {
     const handle = mount(baseOptions({ session: 'closed' }));
-    expect(created).toHaveLength(1);
+    expect(acquireCount).toBe(1);
     // A closed session / cached snapshot must NOT downgrade the transport to REST.
-    expect(created[0].transport).toBe('websocket');
-    expect(created[0].wsUrl).toBe(WS_URL);
+    expect(acquisitions[0].wsUrl).toBe(WS_URL);
+    expect(acquisitions[0].source.transport).toBe('websocket');
     handle.unmount();
   });
 
-  it('leaves exactly one active source across a Strict-Mode remount', () => {
+  it('holds exactly one net subscriber across a Strict-Mode mount→cleanup→remount', () => {
     const handle = mount(baseOptions(), /* strict */ true);
-    const active = created.filter((s) => s.started > s.stopped);
-    expect(active).toHaveLength(1);
-    expect(active[0].wsUrl).toBe(WS_URL);
+    // Strict Mode double-invokes: acquire, release, acquire → net one subscriber
+    // held on the shared connection (which is what keeps a single live socket).
+    expect(acquireCount - releaseCount).toBe(1);
+    expect(acquisitions.every((a) => a.wsUrl === WS_URL)).toBe(true);
     handle.unmount();
-    // After unmount nothing is left running.
-    expect(created.every((s) => s.stopped >= s.started)).toBe(true);
+    expect(acquireCount).toBe(releaseCount); // nothing left held
   });
 
-  it('does not open a second connection when only the chart selection changes (shared Overview/Chart socket)', () => {
+  it('does not re-acquire when only the chart selection changes (shared Overview/Chart socket)', () => {
     const handle = mount(baseOptions({ selection: { interval: '5m', session: 'regular', adjusted: false } }));
-    expect(created).toHaveLength(1);
+    expect(acquireCount).toBe(1);
     handle.rerender(baseOptions({ selection: { interval: '1m', session: 'regular', adjusted: false } }));
-    // The single source is reconfigured in place — no second socket.
-    expect(created).toHaveLength(1);
-    expect(created[0].selections).toBeGreaterThanOrEqual(1);
+    // Same connection reconfigured in place — no second socket.
+    expect(acquireCount).toBe(1);
+    expect(acquisitions[0].source.selections).toBeGreaterThanOrEqual(1);
     handle.unmount();
   });
 
-  it('tears down the old source and opens a new one when the symbol changes', () => {
+  it('reuses the SAME connection on a symbol change, resubscribing in place (no re-acquire)', () => {
     const handle = mount(baseOptions({ symbol: 'RKLB' }));
+    expect(acquireCount).toBe(1);
     handle.rerender(baseOptions({ symbol: 'AAPL' }));
-    const rklb = created.find((s) => s.symbol === 'RKLB');
-    const aapl = created.find((s) => s.symbol === 'AAPL');
-    expect(rklb?.stopped).toBe(1);
-    expect(aapl).toBeDefined();
-    expect(aapl?.wsUrl).toBe(WS_URL);
-    expect(aapl?.started).toBe(1);
-    expect(aapl?.stopped).toBe(0);
+    // Requirement: a symbol change unsubscribes the old symbol and subscribes the
+    // new one on the SAME socket — it must not release/re-acquire the connection.
+    expect(acquireCount).toBe(1);
+    expect(releaseCount).toBe(0);
+    expect(acquisitions[0].source.symbols).toContain('AAPL');
+    handle.unmount();
+  });
+
+  it('does not acquire a connection when the provider is not configured', () => {
+    const handle = mount(baseOptions({ enabled: false }));
+    expect(acquireCount).toBe(0);
     handle.unmount();
   });
 });

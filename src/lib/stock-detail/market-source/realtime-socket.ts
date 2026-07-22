@@ -23,13 +23,32 @@ export const browserSocketFactory: RealtimeSocketFactory = (url) => {
   // (`NEXT_PUBLIC_*`); no credential is ever logged.
   console.info('[market-ws] connecting', url);
   const socket = new WebSocket(url);
+  // A close requested while the socket is still `CONNECTING` is deferred to the
+  // `open` handler. Calling `WebSocket.close()` on a CONNECTING socket makes the
+  // browser log "WebSocket is closed before the connection is established" and
+  // drop the connection with code 1006 — exactly the production symptom when a
+  // transient React unmount / visibility blur tore the socket down mid-handshake.
+  // Deferring lets the handshake finish (101) and only then closes cleanly.
+  let closeRequested = false;
+  let openListener: (() => void) | undefined;
+  socket.addEventListener('open', () => {
+    if (closeRequested) {
+      socket.close();
+      return;
+    }
+    console.info('[market-ws] open');
+    openListener?.();
+  });
   return {
     send: (data) => socket.send(data),
-    close: () => socket.close(),
-    onOpen: (listener) => socket.addEventListener('open', () => {
-      console.info('[market-ws] open');
-      listener();
-    }),
+    close: () => {
+      if (socket.readyState === WebSocket.CONNECTING) {
+        closeRequested = true;
+        return;
+      }
+      socket.close();
+    },
+    onOpen: (listener) => { openListener = listener; },
     onMessage: (listener) => socket.addEventListener('message', (event) => {
       const data = (event as MessageEvent).data;
       listener(typeof data === 'string' ? data : String(data));

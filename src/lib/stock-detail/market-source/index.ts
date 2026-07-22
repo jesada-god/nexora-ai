@@ -19,6 +19,15 @@ export { buildLabel, buildRealtimeLabel, modeFromFreshness, unavailableLabel } f
 export { WebSocketMarketSourceImpl, type WebSocketMarketSourceOptions } from './websocket-source';
 export { CoordinatedMarketSource, createMarketSource, type CoordinatedMarketSourceOptions } from './coordinator';
 export {
+  acquireMarketConnection,
+  GRACE_MS,
+  __resetMarketConnectionsForTest,
+  __activeMarketConnectionsForTest,
+  type AcquireMarketConnectionParams,
+  type MarketConnectionHandle,
+  type ManagedMarketSource,
+} from './market-connection-manager';
+export {
   browserSocketFactory,
   type RealtimeSocket,
   type RealtimeSocketFactory,
