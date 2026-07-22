@@ -121,6 +121,23 @@ const EMPTY_META: LiveMeta = {
  */
 const DEFAULT_SELECTION: MarketSelection = { interval: '5m', session: 'regular', adjusted: false };
 
+/**
+ * Client-only Gateway configuration.
+ *
+ * These MUST be written as direct, static `process.env.NEXT_PUBLIC_*` member
+ * expressions. Next.js only inlines a `NEXT_PUBLIC_*` value into the browser
+ * bundle where that literal token appears in the source — a dynamic read
+ * (`process.env[key]`, destructuring `process.env`, or reading through a passed
+ * `process.env` object inside another module) is NOT inlined and comes back
+ * `undefined` in the browser. That is exactly what silently disabled the live
+ * WebSocket in production (the Gateway URL resolved to `null` → REST-only, so no
+ * socket was ever opened). Resolving the value here and handing it to
+ * {@link resolvePublicMarketWsUrl} explicitly keeps the inlined literal on the
+ * static path. The URL is public (never a secret).
+ */
+const PUBLIC_MARKET_WS_URL = process.env.NEXT_PUBLIC_MARKET_WS_URL?.trim() || null;
+const PUBLIC_APP_ENV = process.env.NEXT_PUBLIC_APP_ENV?.trim() || undefined;
+
 export function useMarketSource(options: UseMarketSourceOptions): UseMarketSourceResult {
   const { symbol, initialQuote, session, active, online, enabled } = options;
   const selection = options.selection ?? DEFAULT_SELECTION;
@@ -143,9 +160,17 @@ export function useMarketSource(options: UseMarketSourceOptions): UseMarketSourc
 
   const sourceRef = useRef<SelectableSource | null>(null);
   const transport = useMemo(() => createBrowserMarketTransport(), []);
-  // Public Gateway URL (empty → REST-only). NEXT_PUBLIC_* is inlined by Next at
-  // build time, so this is safe to read in the browser; it is never a secret.
-  const wsUrl = useMemo(() => resolvePublicMarketWsUrl(), []);
+  // Public Gateway URL (null → REST-only). Built from the statically-inlined
+  // client config above and validated (wss + non-loopback in production) here.
+  // `process.env.NODE_ENV` is likewise a direct static access so Next inlines it.
+  const wsUrl = useMemo(
+    () => resolvePublicMarketWsUrl({
+      NEXT_PUBLIC_MARKET_WS_URL: PUBLIC_MARKET_WS_URL ?? undefined,
+      NEXT_PUBLIC_APP_ENV: PUBLIC_APP_ENV,
+      NODE_ENV: process.env.NODE_ENV,
+    }),
+    [],
+  );
   // Kept current so the subscribe callback (registered once) tags every emission
   // with the source's live selection at emit time.
   const selectionKeyRef = useRef(selectionKey);
@@ -156,6 +181,9 @@ export function useMarketSource(options: UseMarketSourceOptions): UseMarketSourc
 
   useEffect(() => {
     if (!enabled) return;
+    // Temporary, secret-free production diagnostic: confirms whether a Gateway URL
+    // was inlined into the client bundle (true) or the source is REST-only (false).
+    console.info('[market-ws] configured', Boolean(wsUrl));
     const source = createMarketSource({
       symbol,
       transport,

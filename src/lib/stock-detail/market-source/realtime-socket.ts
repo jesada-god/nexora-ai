@@ -19,16 +19,28 @@ export type RealtimeSocketFactory = (url: string) => RealtimeSocket;
 
 /** Adapt a browser `WebSocket` to {@link RealtimeSocket}. */
 export const browserSocketFactory: RealtimeSocketFactory = (url) => {
+  // Temporary, secret-free lifecycle diagnostics. The Gateway URL is public
+  // (`NEXT_PUBLIC_*`); no credential is ever logged.
+  console.info('[market-ws] connecting', url);
   const socket = new WebSocket(url);
   return {
     send: (data) => socket.send(data),
     close: () => socket.close(),
-    onOpen: (listener) => socket.addEventListener('open', () => listener()),
+    onOpen: (listener) => socket.addEventListener('open', () => {
+      console.info('[market-ws] open');
+      listener();
+    }),
     onMessage: (listener) => socket.addEventListener('message', (event) => {
       const data = (event as MessageEvent).data;
       listener(typeof data === 'string' ? data : String(data));
     }),
-    onClose: (listener) => socket.addEventListener('close', () => listener()),
-    onError: (listener) => socket.addEventListener('error', (event) => listener(event)),
+    onClose: (listener) => socket.addEventListener('close', (event) => {
+      console.info('[market-ws] closed', (event as CloseEvent).code);
+      listener();
+    }),
+    onError: (listener) => socket.addEventListener('error', (event) => {
+      console.error('[market-ws] error');
+      listener(event);
+    }),
   };
 };

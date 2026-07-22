@@ -80,6 +80,13 @@ describe('resolvePublicMarketWsUrl', () => {
     })).toBe('wss://market-gateway.up.railway.app/ws');
   });
 
+  it('resolves the live production Railway Gateway URL', () => {
+    const url = 'wss://loving-growth-production-0965.up.railway.app/ws';
+    expect(resolvePublicMarketWsUrl({ NEXT_PUBLIC_APP_ENV: 'production', NEXT_PUBLIC_MARKET_WS_URL: url })).toBe(url);
+    // Same URL survives when only NODE_ENV signals production (NEXT_PUBLIC_APP_ENV unset on Vercel).
+    expect(resolvePublicMarketWsUrl({ NODE_ENV: 'production', NEXT_PUBLIC_MARKET_WS_URL: url })).toBe(url);
+  });
+
   it('falls back to NODE_ENV=production when NEXT_PUBLIC_APP_ENV is unset', () => {
     expect(resolvePublicMarketWsUrl({
       NODE_ENV: 'production',

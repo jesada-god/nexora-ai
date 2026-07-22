@@ -226,6 +226,7 @@ export class WebSocketMarketSourceImpl implements WebSocketMarketSource {
 
   private sendSubscribe(): void {
     this.socket?.send(JSON.stringify({ type: 'subscribe', symbols: [this.symbol], channels: [...MARKET_CHANNELS] }));
+    console.info('[market-ws] subscribed', this.symbol);
   }
 
   private applyEvent(event: NormalizedMarketEvent): void {
