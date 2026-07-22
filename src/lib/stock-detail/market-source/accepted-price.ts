@@ -34,9 +34,16 @@ export interface AcceptedPriceCandidate {
   source: MarketPriceSource;
   /** Provider/exchange timestamp for the value (ISO-8601), if known. */
   exchangeTimestamp: string | null;
-  /** Truthful display mode; REAL-TIME is not a member of the vocabulary. */
+  /**
+   * Truthful display mode. `REAL-TIME` is permitted ONLY on a candidate sourced
+   * from a genuine live entitled stream (Phase 12 WebSocket source); REST/history
+   * candidates never carry it.
+   */
   mode: MarketDataMode;
   provider: string | null;
+  /** Carried through from a live stream so the header can gate its badge. */
+  realtime?: boolean;
+  feed?: string | null;
 }
 
 /**

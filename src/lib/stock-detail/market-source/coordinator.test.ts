@@ -1,0 +1,142 @@
+import { describe, expect, it } from 'vitest';
+import { CoordinatedMarketSource, createMarketSource } from './coordinator';
+import type { MarketSource, MarketUpdate, MarketUpdateListener } from './types';
+
+function fakeSource() {
+  const listeners = new Set<MarketUpdateListener>();
+  const calls: string[] = [];
+  let started = false;
+  const source: MarketSource = {
+    transport: 'polling',
+    start() { started = true; calls.push('start'); },
+    stop() { started = false; calls.push('stop'); },
+    setVisible(v) { calls.push(`visible:${v}`); },
+    setSession() { calls.push('session'); },
+    refresh() { calls.push('refresh'); return Promise.resolve(); },
+    cooldownRemainingMs() { return 0; },
+    isSnapshotEntitled() { return true; },
+    subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
+  };
+  return { source, calls, emit: (u: MarketUpdate) => listeners.forEach((l) => l(u)), isStarted: () => started };
+}
+
+function liveUpdate(price: number): MarketUpdate {
+  return {
+    symbol: 'AAPL', price, quote: null, candle: null, error: null,
+    label: { mode: 'REAL-TIME', provider: 'alpaca:iex', source: 'aggregate-fallback', exchangeTimestamp: null, receivedAt: '', delayAgeSeconds: null, fallbackNote: null, realtime: true, feed: 'iex' },
+  };
+}
+
+function restUpdate(price: number): MarketUpdate {
+  return {
+    symbol: 'AAPL', price, quote: null, candle: null, error: null,
+    label: { mode: 'DELAYED', provider: 'polygon', source: 'aggregate-fallback', exchangeTimestamp: null, receivedAt: '', delayAgeSeconds: null, fallbackNote: null, realtime: false },
+  };
+}
+
+function setup(graceMs = 4_000) {
+  const ws = fakeSource();
+  const poll = fakeSource();
+  const pending: Array<() => void> = [];
+  const coord = new CoordinatedMarketSource({
+    symbol: 'AAPL',
+    transport: {} as never,
+    wsUrl: 'wss://gw/ws',
+    session: 'regular',
+    selection: { interval: '1m', session: 'regular', adjusted: false },
+    graceMs,
+    scheduler: (cb) => { pending.push(cb); return () => {}; },
+    createWsSource: () => ws.source,
+    createPollSource: () => poll.source,
+  });
+  const forwarded: MarketUpdate[] = [];
+  coord.subscribe((u) => forwarded.push(u));
+  const flush = (): void => { pending.splice(0).forEach((cb) => cb()); };
+  return { coord, ws, poll, forwarded, flush };
+}
+
+describe('CoordinatedMarketSource', () => {
+  it('forwards the live stream and keeps REST polling stopped while WS is live', () => {
+    const { coord, ws, poll, forwarded } = setup();
+    coord.start();
+    ws.emit(liveUpdate(100));
+    expect(poll.isStarted()).toBe(false);
+    expect(forwarded[forwarded.length - 1].label.realtime).toBe(true);
+  });
+
+  it('drops REST updates while WS is live (no overlap)', () => {
+    const { coord, ws, poll, forwarded } = setup();
+    coord.start();
+    ws.emit(liveUpdate(100));
+    const before = forwarded.length;
+    poll.emit(restUpdate(99));
+    expect(forwarded.length).toBe(before);
+  });
+
+  it('falls back to REST polling after the grace period when WS drops', () => {
+    const { coord, ws, poll, forwarded, flush } = setup();
+    coord.start();
+    ws.emit(liveUpdate(100));
+    // WS degrades (a non-live update).
+    ws.emit(restUpdate(100));
+    expect(poll.isStarted()).toBe(false); // still in grace
+    flush();
+    expect(poll.isStarted()).toBe(true);
+    poll.emit(restUpdate(98));
+    const last = forwarded[forwarded.length - 1];
+    expect(last.price).toBe(98);
+    expect(last.label.realtime).not.toBe(true); // cached/REST never labelled realtime
+  });
+
+  it('reconciles a snapshot then stops polling when WS returns live', async () => {
+    const { coord, ws, poll, flush } = setup();
+    coord.start();
+    ws.emit(liveUpdate(100));
+    ws.emit(restUpdate(100));
+    flush(); // engage REST fallback
+    expect(poll.isStarted()).toBe(true);
+    ws.emit(liveUpdate(101)); // WS recovers
+    expect(poll.calls).toContain('refresh'); // reconcile snapshot fires immediately
+    // stop() runs on the microtask after refresh() resolves (reconcile → then stop).
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(poll.calls).toContain('stop');
+    expect(poll.isStarted()).toBe(false);
+  });
+
+  it('falls back to REST if WS never reaches live (safety net)', () => {
+    const { coord, poll, flush } = setup();
+    coord.start();
+    expect(poll.isStarted()).toBe(false);
+    flush();
+    expect(poll.isStarted()).toBe(true);
+  });
+
+  it('tears down both sources on stop', () => {
+    const { coord, ws, poll } = setup();
+    coord.start();
+    coord.stop();
+    expect(ws.calls).toContain('stop');
+    expect(poll.calls).toContain('stop');
+  });
+});
+
+describe('createMarketSource', () => {
+  it('returns a REST-only source when no Gateway URL is configured', () => {
+    const source = createMarketSource({
+      symbol: 'AAPL', transport: {} as never, session: 'regular',
+      selection: { interval: '5m', session: 'regular', adjusted: false },
+      cadence: { regularMs: 12_000, closedMs: 60_000 }, wsUrl: null,
+    });
+    expect(source.transport).toBe('polling');
+  });
+
+  it('returns the coordinated WS+REST source when a Gateway URL is configured', () => {
+    const source = createMarketSource({
+      symbol: 'AAPL', transport: {} as never, session: 'regular',
+      selection: { interval: '5m', session: 'regular', adjusted: false },
+      cadence: { regularMs: 12_000, closedMs: 60_000 }, wsUrl: 'wss://gw/ws',
+    });
+    expect(source.transport).toBe('websocket');
+  });
+});

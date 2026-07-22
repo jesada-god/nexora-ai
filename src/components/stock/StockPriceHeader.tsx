@@ -53,6 +53,18 @@ interface StockPriceHeaderProps {
   fxQuote: FxQuote | null;
   evaluatedAt: string;
   extendedQuote?: ExtendedHoursQuote | null;
+  /** True only for a genuine live entitled stream; gates the Real-time badge. */
+  realtime?: boolean;
+  /** Upstream feed id, e.g. `iex`. The badge names the feed (IEX ≠ consolidated SIP). */
+  feed?: string | null;
+  /** Top-of-book from the live stream, shown separately from Last Price. */
+  bid?: number | null;
+  ask?: number | null;
+  bidSize?: number | null;
+  askSize?: number | null;
+  /** Per-symbol trading halt, independent of the market-wide session. */
+  symbolHalted?: boolean;
+  haltReason?: string | null;
 }
 
 const numberFormatter = new Intl.NumberFormat('en-US', {
@@ -117,6 +129,14 @@ export function StockPriceHeader({
   fxQuote,
   evaluatedAt,
   extendedQuote = null,
+  realtime = false,
+  feed = null,
+  bid = null,
+  ask = null,
+  bidSize = null,
+  askSize = null,
+  symbolHalted = false,
+  haltReason = null,
 }: StockPriceHeaderProps) {
   const [currency, setCurrency] = useState<PriceDisplayCurrency>('USD');
   const [detailsOpen, setDetailsOpen] = useState(false);
@@ -164,6 +184,13 @@ export function StockPriceHeader({
   const combinedStatus = market
     ? `${sessionView.label} · ${dataStatusView.label}`
     : 'ไม่สามารถตรวจสอบสถานะตลาดได้';
+  // Real-time badge is gated on the truthful `realtime` flag (a genuine live
+  // feed), never on the data-status heuristic alone.
+  const feedLabel = feed ? feed.toUpperCase() : null;
+  const showRealtime = realtime && regularPrice !== null && feedLabel !== null;
+  const displayBid = bid != null && verifiedUsdSource ? convertUsdForDisplay(bid, selectedCurrency, fxRate) : bid;
+  const displayAsk = ask != null && verifiedUsdSource ? convertUsdForDisplay(ask, selectedCurrency, fxRate) : ask;
+  const showBook = displayBid != null && Number.isFinite(displayBid) && displayAsk != null && Number.isFinite(displayAsk);
 
   return <>
     <section className="min-h-40 min-w-0 overflow-hidden rounded-2xl border border-border bg-bg-card p-4 shadow-xl sm:p-5">
@@ -192,7 +219,36 @@ export function StockPriceHeader({
               <StatusEmoji value={market ? sessionView.emoji : '⚠️'}/>
               <span>{combinedStatus}</span>
             </span>
+            {showRealtime && <>
+              <span aria-hidden="true">·</span>
+              <span
+                title={`ข้อมูลเรียลไทม์จากฟีด ${feedLabel} — IEX เป็นตลาดเดียว ไม่ใช่ราคารวมทุกตลาด (consolidated SIP)`}
+                className="inline-flex items-center gap-1 rounded-full bg-emerald-500/15 px-2 py-0.5 text-xs font-semibold text-emerald-300"
+              >
+                <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" aria-hidden="true"/>
+                Real-time · {feedLabel}
+              </span>
+            </>}
+            {symbolHalted && <>
+              <span aria-hidden="true">·</span>
+              <span className="inline-flex items-center gap-1 rounded-full bg-rose-500/15 px-2 py-0.5 text-xs font-semibold text-rose-300">
+                ⏸️ ระงับการซื้อขาย{haltReason ? ` · ${haltReason}` : ''}
+              </span>
+            </>}
           </div>
+
+          {showBook && <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 font-mono text-sm tabular-nums">
+            <span className="inline-flex items-baseline gap-1">
+              <span className="text-xs uppercase tracking-wide text-text-muted">Bid</span>
+              <span className="text-text-main">{formatNumber(displayBid)}</span>
+              {bidSize != null && <span className="text-xs text-text-muted">× {bidSize}</span>}
+            </span>
+            <span className="inline-flex items-baseline gap-1">
+              <span className="text-xs uppercase tracking-wide text-text-muted">Ask</span>
+              <span className="text-text-main">{formatNumber(displayAsk)}</span>
+              {askSize != null && <span className="text-xs text-text-muted">× {askSize}</span>}
+            </span>
+          </div>}
         </div>
 
         <div className="flex shrink-0 items-center gap-1 rounded-xl border border-border bg-bg-base p-1">

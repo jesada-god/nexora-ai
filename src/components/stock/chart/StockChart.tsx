@@ -46,6 +46,7 @@ import {
 } from './institutional-overlays';
 import type { ChartActions, ChartIndicatorLine, ChartTooltipContext } from './chart-types';
 import { LightweightChartHost, type VisibleLogicalRange } from './LightweightChartHost';
+import { useFinalizedTimeline } from './use-finalized-timeline';
 
 /** localStorage is unavailable in SSR and can throw in privacy modes; degrade to undefined. */
 function safeStorage(): Storage | undefined {
@@ -127,7 +128,13 @@ export function StockChart({
   const onActions = useCallback((next: ChartActions | null) => setActions(next), []);
   const normalized = useMemo(() => normalizeOhlcvTimeline(prices), [prices]);
   const bars = useMemo(() => adaptChartBars(prices, chartType), [chartType, prices]);
-  const srView = useMemo(() => buildSupportResistanceView(normalized, supportResistance), [normalized, supportResistance]);
+  // Finalized view of the timeline: identity changes only on finalize/append or an
+  // official-bar reconciliation, never on an intra-bar tick. Heavy chart analytics
+  // (S/R, institutional zones, VRVP, anchored VWAP) key off this so a live trade
+  // that only reshapes the current bar retains the last analysis. The drawn series
+  // (`bars`) and the live price line still use the live `normalized`/`prices`.
+  const analysisBars = useFinalizedTimeline(normalized, (bar) => bar.time);
+  const srView = useMemo(() => buildSupportResistanceView(analysisBars, supportResistance), [analysisBars, supportResistance]);
   const indicators = useMemo(() => indicatorSeries(technical, enabledIndicators), [enabledIndicators, technical]);
   const priceLines = useMemo(() => {
     const lines = [...currentQuotePriceLine(currentPrice ?? normalized.at(-1)?.close)];
@@ -188,8 +195,8 @@ export function StockChart({
   // still draws only when `toggles.zones` is on.
   const lastIsPartial = Boolean((prices.at(-1) as { partial?: boolean } | undefined)?.partial);
   const zoneCandles = useMemo(
-    () => (daily ? toZoneCandles(normalized, lastIsPartial) : []),
-    [daily, normalized, lastIsPartial],
+    () => (daily ? toZoneCandles(analysisBars, lastIsPartial) : []),
+    [daily, analysisBars, lastIsPartial],
   );
   const dailyReferencePrice = zoneCandles.at(-1)?.close ?? null;
   const builtZones = useMemo<InstitutionalZonesResult | null>(() => {
@@ -205,12 +212,12 @@ export function StockChart({
   // VRVP + AVWAP are computed from the visible slice of the loaded candles only,
   // always (the decision panel consumes them); the overlay still draws only when
   // the respective toggle is on. A viewport change re-slices — never a refetch.
-  const visibleVrvp = useMemo(() => sliceVisibleBars(toVrvpCandles(normalized), visibleRange), [normalized, visibleRange]);
+  const visibleVrvp = useMemo(() => sliceVisibleBars(toVrvpCandles(analysisBars), visibleRange), [analysisBars, visibleRange]);
   const visibleVolumeProfile = useMemo(
     () => calculateVisibleRangeVolumeProfile(visibleVrvp),
     [visibleVrvp],
   );
-  const visibleAvwap = useMemo(() => sliceVisibleBars(toAvwapCandles(normalized), visibleRange), [normalized, visibleRange]);
+  const visibleAvwap = useMemo(() => sliceVisibleBars(toAvwapCandles(analysisBars), visibleRange), [analysisBars, visibleRange]);
   const anchoredVwap = useMemo(() => {
     const resolved = resolveAvwapAnchor(visibleAvwap, anchor);
     return resolved ? calculateAnchoredVwap(visibleAvwap, resolved) : undefined;

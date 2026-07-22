@@ -1,18 +1,19 @@
 import { describe, expect, it } from 'vitest';
 import {
-  convertUsdForDisplay,
   fairValueUnavailableLabel,
   fairValueMissingFieldsSummary,
   fairValueUnavailableReason,
+  formatFairValueMoney,
   formatUpsidePercent,
   upsideTone,
 } from './presentation';
 
 describe('Fair Value card presentation', () => {
-  it('keeps USD authoritative and converts THB exactly once', () => {
-    expect(convertUsdForDisplay(100, 'USD', 35)).toBe(100);
-    expect(convertUsdForDisplay(100, 'THB', 35)).toBe(3500);
-    expect(convertUsdForDisplay(3500, 'THB', null)).toBeNull();
+  it('always formats the model estimate in USD with no THB conversion', () => {
+    expect(formatFairValueMoney(100)).toBe('$100.00');
+    expect(formatFairValueMoney(3.92)).toBe('$3.92');
+    expect(formatFairValueMoney(null)).toBe('Unavailable');
+    expect(formatFairValueMoney(Number.NaN)).toBe('Unavailable');
   });
 
   it('formats deterministic semantic upside states without NaN or Infinity', () => {

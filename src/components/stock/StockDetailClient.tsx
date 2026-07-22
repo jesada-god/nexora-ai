@@ -185,6 +185,12 @@ export function StockDetailClient({
     quoteRetryAt,
     liveCandle,
     dataLabel,
+    bid,
+    ask,
+    bidSize,
+    askSize,
+    halted,
+    haltReason,
     refresh: refreshQuote,
   } = useMarketSource({
     symbol,
@@ -351,6 +357,14 @@ export function StockDetailClient({
           onRetryQuote={refreshQuote}
           fxQuote={fxQuote}
           evaluatedAt={evaluatedAt}
+          realtime={dataLabel?.realtime ?? false}
+          feed={dataLabel?.feed ?? null}
+          bid={bid}
+          ask={ask}
+          bidSize={bidSize}
+          askSize={askSize}
+          symbolHalted={halted}
+          haltReason={haltReason}
         />
 
         <div className="sticky top-16 z-30 -mx-4 border-y border-slate-800 bg-[#0A0E17]/95 px-4 py-3 backdrop-blur md:static md:mx-0 md:border-0 md:bg-transparent md:px-0">

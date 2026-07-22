@@ -5,9 +5,9 @@ import {
   buildAcceptedResource,
   candidateFromUpdate,
   createBrowserMarketTransport,
+  createMarketSource,
   freshnessFromMode,
   labelFromAccepted,
-  PollingMarketSource,
   resolveAcceptedPrice,
   selectionKeyOf,
   type AcceptedPriceCandidate,
@@ -15,7 +15,9 @@ import {
   type MarketDataLabel,
   type MarketSelection,
   type MarketSessionKind,
+  type MarketSource,
 } from '@/src/lib/stock-detail/market-source';
+import { resolvePublicMarketWsUrl } from '@/src/lib/market-data/realtime';
 import type { MarketDataApiError } from '@/src/lib/market-data/types';
 import type { StockDetailQuoteResource } from '@/src/lib/stock-detail/types';
 
@@ -64,8 +66,45 @@ export interface UseMarketSourceResult {
    * `quoteResource.data?.price` for the accepted source.
    */
   acceptedPrice: number | null;
+  /**
+   * Top-of-book and halt state from the live stream (null/false on REST paths).
+   * Shown separately from Last Price in the header.
+   */
+  bid: number | null;
+  ask: number | null;
+  bidSize: number | null;
+  askSize: number | null;
+  quoteTimestamp: string | null;
+  halted: boolean;
+  haltReason: string | null;
+  /**
+   * True on the most recent emission that finalized a bar (a new bucket opened or
+   * an official/updated bar closed one). The chart gates heavy S/R + indicator
+   * recomputation on this so intra-bar ticks stay cheap.
+   */
+  barFinalized: boolean;
   refresh: () => void;
 }
+
+/** A market source that additionally follows the chart selection. */
+type SelectableSource = MarketSource & { setSelection: (selection: MarketSelection) => void };
+
+interface LiveMeta {
+  symbol: string;
+  bid: number | null;
+  ask: number | null;
+  bidSize: number | null;
+  askSize: number | null;
+  quoteTimestamp: string | null;
+  halted: boolean;
+  haltReason: string | null;
+  barFinalized: boolean;
+}
+
+const EMPTY_META: LiveMeta = {
+  symbol: '', bid: null, ask: null, bidSize: null, askSize: null,
+  quoteTimestamp: null, halted: false, haltReason: null, barFinalized: false,
+};
 
 /**
  * Drives the Stock Detail header/price from a transport-agnostic
@@ -100,25 +139,31 @@ export function useMarketSource(options: UseMarketSourceOptions): UseMarketSourc
   // The active candle, tagged with symbol + selection so a symbol/selection switch
   // never surfaces the previous instrument's or selection's bucket.
   const [candleState, setCandleState] = useState<{ symbol: string; selectionKey: string; candle: LiveCandle } | null>(null);
+  const [liveMeta, setLiveMeta] = useState<LiveMeta>(EMPTY_META);
 
-  const sourceRef = useRef<PollingMarketSource | null>(null);
+  const sourceRef = useRef<SelectableSource | null>(null);
   const transport = useMemo(() => createBrowserMarketTransport(), []);
+  // Public Gateway URL (empty → REST-only). NEXT_PUBLIC_* is inlined by Next at
+  // build time, so this is safe to read in the browser; it is never a secret.
+  const wsUrl = useMemo(() => resolvePublicMarketWsUrl(), []);
   // Kept current so the subscribe callback (registered once) tags every emission
   // with the source's live selection at emit time.
   const selectionKeyRef = useRef(selectionKey);
   useEffect(() => { selectionKeyRef.current = selectionKey; }, [selectionKey]);
+  // Skip a live-meta rerender when nothing the header/chart reads has changed:
+  // an intra-bar trade with an unchanged quote and no finalized bar is a no-op.
+  const metaKeyRef = useRef('');
 
   useEffect(() => {
     if (!enabled) return;
-    const source = new PollingMarketSource({
+    const source = createMarketSource({
       symbol,
       transport,
       session,
+      selection,
       cadence: CADENCE,
-      aggregateInterval: selection.interval,
-      aggregateSession: selection.session,
-      aggregateAdjusted: selection.adjusted,
-    });
+      wsUrl,
+    }) as SelectableSource;
     sourceRef.current = source;
     const unsubscribe = source.subscribe((update) => {
       const tag = selectionKeyRef.current;
@@ -142,6 +187,24 @@ export function useMarketSource(options: UseMarketSourceOptions): UseMarketSourc
       }
       // The candle and the header price come from the same accepted event.
       if (update.candle) setCandleState({ symbol, selectionKey: tag, candle: update.candle });
+      // Capture top-of-book / halt state; only rerender when something the header
+      // or chart actually reads has changed (or a bar just finalized).
+      const nextMeta: LiveMeta = {
+        symbol,
+        bid: update.bid ?? null,
+        ask: update.ask ?? null,
+        bidSize: update.bidSize ?? null,
+        askSize: update.askSize ?? null,
+        quoteTimestamp: update.quoteTimestamp ?? null,
+        halted: update.halted ?? false,
+        haltReason: update.haltReason ?? null,
+        barFinalized: update.barFinalized ?? false,
+      };
+      const metaKey = `${nextMeta.bid}|${nextMeta.ask}|${nextMeta.bidSize}|${nextMeta.askSize}|${nextMeta.halted}|${nextMeta.haltReason}`;
+      if (nextMeta.barFinalized || metaKey !== metaKeyRef.current) {
+        metaKeyRef.current = metaKey;
+        setLiveMeta(nextMeta);
+      }
       setQuoteLoading(false);
       const remaining = source.cooldownRemainingMs();
       setQuoteRetryAt(remaining > 0 ? Date.now() + remaining : 0);
@@ -157,7 +220,7 @@ export function useMarketSource(options: UseMarketSourceOptions): UseMarketSourc
     // selection changes never tear down and rebuild the source (which would drop
     // the active candle). `selection.*` is read once here for the initial config.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [symbol, transport, enabled]);
+  }, [symbol, transport, enabled, wsUrl]);
 
   useEffect(() => { sourceRef.current?.setSession(session); }, [session]);
   useEffect(() => { sourceRef.current?.setVisible(active && online); }, [active, online]);
@@ -210,6 +273,9 @@ export function useMarketSource(options: UseMarketSourceOptions): UseMarketSourc
     ? candleState.candle
     : null;
 
+  // Live meta is symbol-scoped; a stale instrument's book never leaks through.
+  const meta = liveMeta.symbol === symbol ? liveMeta : EMPTY_META;
+
   return {
     quoteResource,
     quoteLoading,
@@ -217,6 +283,14 @@ export function useMarketSource(options: UseMarketSourceOptions): UseMarketSourc
     dataLabel,
     liveCandle,
     acceptedPrice: accepted?.price ?? quoteResource.data?.price ?? null,
+    bid: meta.bid,
+    ask: meta.ask,
+    bidSize: meta.bidSize,
+    askSize: meta.askSize,
+    quoteTimestamp: meta.quoteTimestamp,
+    halted: meta.halted,
+    haltReason: meta.haltReason,
+    barFinalized: meta.barFinalized,
     refresh,
   };
 }

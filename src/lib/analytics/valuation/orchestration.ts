@@ -165,7 +165,12 @@ export async function loadFairValue(symbol: string): Promise<FairValueResult> {
       market.getQuote(symbol),
       market.getCompanyProfile(symbol),
       fundamentals.getFinancialPeriods(symbol),
-      getHistoricalMarketDataService().getHistoricalPrices(symbol, '1y'),
+      // Canonical long-term analytics dataset: up to 5 completed years of Daily OHLCV,
+      // independent of the visual chart's selected range. Long-term trend, S/R,
+      // volatility/ATR context and drawdown all read from this. Newly listed names
+      // return all available history (the provider slices to what exists), so the
+      // observation count stays truthful rather than pretending five full years exist.
+      getHistoricalMarketDataService().getHistoricalPrices(symbol, '5y'),
       getFxRate('USD', 'THB'),
     ] as const);
   const requiredFailures = [

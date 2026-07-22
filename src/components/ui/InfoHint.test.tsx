@@ -48,6 +48,22 @@ describe('InfoHint — accessible glossary popover', () => {
     expect(popover()).toBeNull();
   });
 
+  it('keeps the trigger a fixed, non-shrinking circle (no vertical-pill stretch in tight flex rows)', () => {
+    render(<InfoHint term="support" />);
+    const button = trigger();
+    // aspect-ratio 1 + explicit equal block/inline size + flex:0 0 auto is the layout
+    // contract that stops a parent grid/flex from squeezing it into a vertical bar.
+    expect(button.style.aspectRatio).toBe('1');
+    expect(button.style.inlineSize).toBe('24px');
+    expect(button.style.blockSize).toBe('24px');
+    const cls = button.className;
+    expect(cls).toContain('flex-none');
+    expect(cls).toContain('shrink-0');
+    expect(cls).toContain('rounded-full');
+    // The ≥44px touch target is a transparent ::after overlay that must not add layout size.
+    expect(cls).toContain("after:-inset-[11px]");
+  });
+
   it('opens on tap and shows the three beginner-Thai explanation sections, then closes on a second tap', () => {
     render(<InfoHint term="poc" />);
     click(trigger());

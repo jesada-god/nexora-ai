@@ -247,10 +247,10 @@ export function DecisionPanel({
   return (
     <section aria-label="แผงสรุปแนวรับ-แนวต้าน" className="mt-3 rounded-xl border border-slate-800 bg-[#151B28]/70 p-3">
       <div className="flex items-center justify-between gap-2">
+        {/* One hint per meaningful term: the support/resistance explanations live on
+            their own subsection headers below, so the section title is not repeated here. */}
         <h3 className="flex items-center gap-1 text-xs font-semibold text-slate-200">
           สรุปแนวรับ-แนวต้าน
-          <InfoHint term="support" />
-          <InfoHint term="resistance" />
         </h3>
         <span className="inline-flex items-center gap-1 text-[10px] text-slate-500">{dataModeLabel(anchor.dataMode)}<InfoHint term="dataLabels" align="end" /></span>
       </div>

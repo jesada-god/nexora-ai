@@ -15,7 +15,14 @@ export type {
   TransportOutcome,
   WebSocketMarketSource,
 } from './types';
-export { buildLabel, modeFromFreshness, unavailableLabel } from './labels';
+export { buildLabel, buildRealtimeLabel, modeFromFreshness, unavailableLabel } from './labels';
+export { WebSocketMarketSourceImpl, type WebSocketMarketSourceOptions } from './websocket-source';
+export { CoordinatedMarketSource, createMarketSource, type CoordinatedMarketSourceOptions } from './coordinator';
+export {
+  browserSocketFactory,
+  type RealtimeSocket,
+  type RealtimeSocketFactory,
+} from './realtime-socket';
 export { mergeCandle, newestBar } from './candle-merge';
 export {
   validateLiveCandle,

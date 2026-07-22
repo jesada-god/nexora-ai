@@ -14,6 +14,27 @@ function supabaseConnectSources(): string[] {
   }
 }
 
+/**
+ * The Nexora WebSocket Gateway origin the browser is allowed to connect to.
+ * Resolved from `NEXT_PUBLIC_MARKET_WS_URL` (e.g. `ws://localhost:8081/ws` in
+ * development, `wss://<gateway-host>/ws` in production) and reduced to its origin
+ * so the full path is not baked into the policy. No production host is hardcoded:
+ * the origin always comes from the environment. A missing or unparseable value
+ * yields no source (never throws) so the build/policy stays intact. Development
+ * falls back to the local Gateway so a forgotten env var does not break DX.
+ */
+function marketWsConnectSources(): string[] {
+  const raw = process.env.NEXT_PUBLIC_MARKET_WS_URL?.trim();
+  if (raw) {
+    try {
+      return [new URL(raw).origin];
+    } catch {
+      // fall through to the development fallback below
+    }
+  }
+  return process.env.NODE_ENV === 'development' ? ['ws://localhost:8081'] : [];
+}
+
 function withSecurityHeaders(response: NextResponse): NextResponse {
   const scriptSources = [`'self'`, `'unsafe-inline'`, ...(process.env.NODE_ENV === 'development' ? [`'unsafe-eval'`] : [])];
   const policy = [
@@ -26,7 +47,7 @@ function withSecurityHeaders(response: NextResponse): NextResponse {
     `style-src 'self' 'unsafe-inline'`,
     `img-src 'self' data: blob: https://picsum.photos`,
     `font-src 'self' data:`,
-    `connect-src ${[`'self'`, ...supabaseConnectSources()].join(' ')}`,
+    `connect-src ${[`'self'`, ...supabaseConnectSources(), ...marketWsConnectSources()].join(' ')}`,
     `worker-src 'self' blob:`,
     `manifest-src 'self'`,
   ].join('; ');

@@ -94,14 +94,44 @@ describe('PolygonMarketDataProvider', () => {
   });
 
   it.each([
-    // A bare 403 is a plan entitlement boundary (valid key, not permitted): non-retryable forbidden.
-    [403, {}, 'forbidden'],
-    [429, { 'retry-after': '17' }, 'rate-limited'],
-  ] as const)('maps entitlement/rate failures without retry loops (%s)', async (status, headers, code) => {
+    // A bare 403 is a plan entitlement boundary (valid key, not permitted): the snapshot
+    // forbidden triggers exactly one previous-close fallback attempt (also 403 here) before
+    // the truthful forbidden surfaces — two endpoints, each tried once, no internal retry loop.
+    [403, {}, 'forbidden', 2],
+    [429, { 'retry-after': '17' }, 'rate-limited', 1],
+  ] as const)('maps entitlement/rate failures without retry loops (%s)', async (status, headers, code, calls) => {
     const fetcher = vi.fn(async () => json({ message: 'provider rejected request' }, status, headers));
     const provider = new PolygonMarketDataProvider('secret', undefined, fetcher as typeof fetch);
     await expect(provider.getQuote(instrument)).rejects.toMatchObject({ code, ...(status === 429 ? { retryAfterSeconds: 17 } : {}) });
-    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(fetcher).toHaveBeenCalledTimes(calls);
+  });
+
+  it('falls back to the free previous-close aggregate when the snapshot quote is not entitled (403)', async () => {
+    // Root cause of the production /api/market/quote 403: the premium snapshot endpoint
+    // is not entitled. The free previous-close aggregate is, so the quote is served as a
+    // truthful end-of-day value for the resolved symbol — real-time is never fabricated.
+    const closeTs = Date.parse('2026-07-20T20:00:00.000Z');
+    const fetcher = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/snapshot/')) return json({ status: 'NOT_AUTHORIZED', message: 'not entitled' }, 403);
+      return json({ status: 'OK', ticker: 'AAPL', resultsCount: 1, results: [{ T: 'AAPL', o: 209, h: 214, l: 208, c: 212, v: 5000, t: closeTs }] });
+    });
+    const provider = new PolygonMarketDataProvider('secret', () => new Date('2026-07-21T14:00:00.000Z'), fetcher as typeof fetch);
+    await expect(provider.getQuote(instrument)).resolves.toMatchObject({
+      symbol: 'AAPL', price: 212, previousClose: null, change: null, changePercent: null,
+      status: 'end-of-day', provider: 'polygon', open: 209, high: 214, low: 208, volume: 5000,
+    });
+  });
+
+  it('never returns another symbol from the previous-close fallback', async () => {
+    const fetcher = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/snapshot/')) return json({ status: 'NOT_AUTHORIZED' }, 403);
+      // A mismatched ticker in the aggregate response must be rejected, not surfaced.
+      return json({ status: 'OK', ticker: 'MSFT', results: [{ T: 'MSFT', o: 1, h: 1, l: 1, c: 1, v: 1, t: Date.now() }] });
+    });
+    const provider = new PolygonMarketDataProvider('secret', undefined, fetcher as typeof fetch);
+    await expect(provider.getQuote(instrument)).rejects.toMatchObject({ code: 'forbidden' });
   });
 
   it('normalizes provider market status by the resolved exchange', async () => {

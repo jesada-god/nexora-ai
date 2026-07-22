@@ -16,11 +16,11 @@ export function FairValueDetailsDrawer({ id, open, onClose, data, unavailableRea
     ? fairValueMissingFieldDetails(data.missingFields)
     : [];
   return (
-    <Drawer id={id} isOpen={open} onClose={onClose} title="วิธีคำนวณ Fair Value">
+    <Drawer id={id} isOpen={open} onClose={onClose} title="วิธีคำนวณมูลค่าประเมินจากแบบจำลอง">
       <div className="space-y-6 break-words text-sm leading-6 text-slate-300">
         <section>
-          <h3 className="font-semibold text-white">Fair Value คืออะไร</h3>
-          <p className="mt-1">Fair Value คือราคาประเมินจากข้อมูลทางการเงินและแบบจำลอง ไม่ใช่ราคาตลาดหรือคำแนะนำให้ซื้อขาย</p>
+          <h3 className="font-semibold text-white">มูลค่าประเมินจากแบบจำลองคืออะไร</h3>
+          <p className="mt-1">คือราคาประเมินจากข้อมูลทางการเงินและแบบจำลอง ไม่ใช่ราคาตลาดหรือคำแนะนำให้ซื้อขาย</p>
         </section>
         {data?.status === 'unavailable' || !data ? (
           <section>
@@ -62,8 +62,10 @@ export function FairValueDetailsDrawer({ id, open, onClose, data, unavailableRea
               <p className="text-xs text-slate-400">{data.modelReliability.explanation}</p>
               <ul className="mt-2 list-disc pl-5 text-xs text-slate-400">{data.reliabilityReasons.map((reason) => <li key={reason}>{reason}</li>)}</ul>
               <p className="mt-2 text-xs text-slate-400">Provider: {data.sources.map((source) => source.name).join(', ')} · as of {formatMarketDataAsOf(data.latestDataAt)} · status {data.dataStatus}</p>
-              {data.displayFx && <p className="mt-1 text-xs text-slate-400">FX: 1 USD = {data.displayFx.rate.toFixed(4)} THB · {data.displayFx.provider} · {data.displayFx.status} · {formatBangkokDateTime(data.displayFx.asOf)}</p>}
-              {!data.displayFx && <p className="mt-1 text-xs text-amber-300">THB: Unavailable — ไม่มีอัตรา USD/THB จริงที่ตรวจสอบได้</p>}
+              {/* Fair Value is shown in the instrument's source currency (USD). No THB
+                  conversion or FX display here — the app-wide currency toggle governs
+                  prices/portfolio elsewhere, never the model estimate. */}
+              <p className="mt-1 text-xs text-slate-500">แสดงเป็นสกุลเงินต้นทางของหลักทรัพย์ (USD) — ไม่มีการแปลงเป็นบาท</p>
             </section>
           </>
         )}

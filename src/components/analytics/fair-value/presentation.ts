@@ -5,7 +5,6 @@ import type {
   ModelId,
 } from '@/src/lib/analytics/valuation/types';
 
-export type DisplayCurrency = 'USD' | 'THB';
 export type UpsideTone = 'success' | 'danger' | 'neutral';
 
 const MODEL_LABELS: Record<ModelId | 'blended', string> = {
@@ -26,17 +25,17 @@ export function modelLabel(model: ModelId | 'blended'): string {
   return MODEL_LABELS[model];
 }
 
-export function convertUsdForDisplay(valueUsd: number, currency: DisplayCurrency, usdThbRate: number | null): number | null {
-  if (!Number.isFinite(valueUsd)) return null;
-  if (currency === 'USD') return valueUsd;
-  return usdThbRate && Number.isFinite(usdThbRate) && usdThbRate > 0 ? valueUsd * usdThbRate : null;
-}
-
-export function formatFairValueMoney(value: number | null, currency: DisplayCurrency): string {
+/**
+ * Fair Value is always presented in the instrument's source currency (USD for US
+ * stocks). The former USD/THB toggle and conversion were removed from the Fair
+ * Value UI — the app-wide currency feature still governs prices and portfolio,
+ * but a model estimate is never converted. USD stays the calculation source of truth.
+ */
+export function formatFairValueMoney(value: number | null): string {
   if (value == null || !Number.isFinite(value)) return 'Unavailable';
   return new Intl.NumberFormat('en-US', {
     style: 'currency',
-    currency,
+    currency: 'USD',
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   }).format(value);

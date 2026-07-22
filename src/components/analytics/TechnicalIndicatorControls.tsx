@@ -15,6 +15,7 @@ import { calculateFibonacci } from '@/src/lib/analytics/fibonacci/calculations';
 import { DEFAULT_CHART_LAYERS, parseChartLayers, parseChartType, parseIndicatorIds, type ChartLayerPreferences } from '@/src/lib/analytics/chart-layers/preferences';
 import { formatBangkokDateTime } from '@/src/lib/presentation/datetime';
 import { normalizeOhlcvTimeline } from '@/src/lib/analytics/chart-data/timeline';
+import { useFinalizedTimeline } from '@/src/components/stock/chart/use-finalized-timeline';
 import type { MarketDataLabel } from '@/src/lib/stock-detail/market-source';
 import type { ChartTooltipContext } from '@/src/components/stock/chart/chart-types';
 
@@ -96,10 +97,16 @@ export function TechnicalIndicatorControls({ history, meta, technicalIndicatorsE
   const context = useMemo(() => ({ symbol: history.symbol, source: meta.provider, freshness: meta.freshness }), [history.symbol, meta.freshness, meta.provider]);
   const canonicalBars = useMemo(() => normalizeOhlcvTimeline(history.prices), [history.prices]);
   const analyticalPrices = useMemo(() => canonicalBars.map((bar) => ({ date: bar.time, open: bar.open, high: bar.high, low: bar.low, close: bar.close, volume: bar.volume })), [canonicalBars]);
-  const analysis = useMemo(() => calculateTechnicalAnalysis(analyticalPrices, context), [analyticalPrices, context]);
-  const supportResistance = useMemo(() => supportResistanceEnabled ? calculateSupportResistance(analyticalPrices, context) : undefined, [analyticalPrices, context, supportResistanceEnabled]);
-  const volumeProfile = useMemo(() => layers.vpvr ? calculateVolumeProfile(analyticalPrices) : undefined, [analyticalPrices, layers.vpvr]);
-  const fibonacci = useMemo(() => layers.fibonacci ? calculateFibonacci(analyticalPrices) : undefined, [analyticalPrices, layers.fibonacci]);
+  // Heavy indicator/S/R/VPVR/Fibonacci calculations run on the FINALIZED timeline
+  // only: a live trade that merely reshapes the current forming bar keeps the same
+  // reference here, so these memos skip work until a bar finalizes/appends or an
+  // official bar reconciles completed data. The drawn series below still receives
+  // the live `history.prices`, so the candle keeps moving via series.update().
+  const finalizedPrices = useFinalizedTimeline(analyticalPrices, (bar) => bar.date);
+  const analysis = useMemo(() => calculateTechnicalAnalysis(finalizedPrices, context), [finalizedPrices, context]);
+  const supportResistance = useMemo(() => supportResistanceEnabled ? calculateSupportResistance(finalizedPrices, context) : undefined, [finalizedPrices, context, supportResistanceEnabled]);
+  const volumeProfile = useMemo(() => layers.vpvr ? calculateVolumeProfile(finalizedPrices) : undefined, [finalizedPrices, layers.vpvr]);
+  const fibonacci = useMemo(() => layers.fibonacci ? calculateFibonacci(finalizedPrices) : undefined, [finalizedPrices, layers.fibonacci]);
 
   const saveEnabled = (next: TechnicalIndicatorId[]) => {
     setEnabled(next);

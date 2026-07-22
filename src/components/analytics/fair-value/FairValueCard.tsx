@@ -5,7 +5,14 @@ import type { FairValueResult } from '@/src/lib/analytics/valuation/types';
 import type { CompanyProfileLanguage } from '@/src/lib/stock-detail/profile-presentation';
 import { FairValueDetailsDrawer } from './FairValueDetailsDrawer';
 import { requestFairValue } from './fair-value-client';
-import { convertUsdForDisplay, displayStatus, fairValueUnavailableLabel, fairValueUnavailableReason, formatFairValueMoney, formatUpsidePercent, modelLabel, upsideTone, type DisplayCurrency } from './presentation';
+import { displayStatus, fairValueUnavailableLabel, fairValueUnavailableReason, formatFairValueMoney, formatUpsidePercent, modelLabel, upsideTone } from './presentation';
+
+const RELIABILITY_TH: Record<'High' | 'Moderate' | 'Low' | 'Unavailable', string> = {
+  High: 'ความเชื่อมั่นสูง',
+  Moderate: 'ความเชื่อมั่นปานกลาง',
+  Low: 'ความเชื่อมั่นต่ำ',
+  Unavailable: 'ไม่ระบุความเชื่อมั่น',
+};
 
 export function FairValueCard({
   symbol,
@@ -19,7 +26,6 @@ export function FairValueCard({
   const requestKey = `${symbol}:${enabled}`;
   const [result, setResult] = useState<{ key: string; data: FairValueResult | null; error: string | null } | null>(null);
   const [open, setOpen] = useState(false);
-  const [currency, setCurrency] = useState<DisplayCurrency>('USD');
   const drawerId = `fair-value-details-${useId().replaceAll(':', '')}`;
 
   useEffect(() => {
@@ -53,10 +59,11 @@ export function FairValueCard({
     ? currentResult?.error ?? null
     : language === 'th' ? 'ระบบ Fair Value ถูกปิดอยู่' : 'Fair Value feature is disabled';
   const available = data?.status === 'available' ? data : null;
-  const fxRate = available?.displayFx?.rate ?? null;
-  const thbAvailable = fxRate != null && Number.isFinite(fxRate) && fxRate > 0;
-  const displayCurrency = currency === 'THB' && !thbAvailable ? 'USD' : currency;
-  const base = available ? convertUsdForDisplay(available.fundamentalFairValue.centralEstimate, displayCurrency, fxRate) : null;
+  // Fair Value is always presented in the instrument's source currency (USD for US
+  // stocks). The former USD/THB toggle and conversion were removed here — the model
+  // estimate is never converted, and USD stays the calculation source of truth. The
+  // app-wide currency feature still governs prices and portfolio elsewhere.
+  const base = available ? available.fundamentalFairValue.centralEstimate : null;
   const tone = upsideTone(available?.upsidePercent ?? null);
   const toneClass = tone === 'success' ? 'text-emerald-400' : tone === 'danger' ? 'text-red-400' : 'text-slate-400';
   const unavailableReason = error ?? (data?.status === 'unavailable'
@@ -67,7 +74,7 @@ export function FairValueCard({
     <>
       <div className="min-h-20 rounded-xl border border-slate-800 bg-[#151B28] p-3" aria-live="polite">
         <div className="flex min-h-11 items-center justify-between gap-1">
-          <p className="text-[10px] uppercase text-slate-500">Fair Value</p>
+          <p className="text-[10px] text-slate-500" title="มูลค่าประเมินจากแบบจำลอง — ไม่ใช่ราคาตลาด">มูลค่าประเมิน (โมเดล)</p>
           <button type="button" aria-label="ดูวิธีคำนวณ Fair Value" aria-expanded={open} aria-controls={drawerId} aria-haspopup="dialog" onClick={() => setOpen(true)} className="inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-full text-slate-400 outline-none hover:bg-slate-800 hover:text-[#D4FF00] focus-visible:ring-2 focus-visible:ring-[#D4FF00]">
             <span aria-hidden="true" className="flex h-5 w-5 items-center justify-center rounded-full border border-current text-[11px] font-bold">?</span>
           </button>
@@ -75,14 +82,12 @@ export function FairValueCard({
         {loading ? <div data-testid="fair-value-skeleton" className="space-y-2"><p className="text-xs text-slate-400">{language === 'th' ? 'กำลังโหลด Fair Value…' : 'Loading Fair Value…'}</p><div className="h-3 w-28 animate-pulse rounded bg-slate-800" /></div> : available ? (
           <>
             <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
-              <p className="font-mono text-sm font-semibold tabular-nums text-white">{formatFairValueMoney(base, displayCurrency)}</p>
+              <p className="font-mono text-sm font-semibold tabular-nums text-white">{formatFairValueMoney(base)}</p>
               <p className={`font-mono text-xs tabular-nums ${toneClass}`}>{formatUpsidePercent(available.upsidePercent)}</p>
             </div>
-            <div className="mt-1 flex flex-wrap items-center gap-1 text-[10px] text-slate-400">
-              <span>{modelLabel(available.selectedModel)}</span><span aria-hidden="true">·</span><span>{displayStatus(available)}</span>
-              <span className="ml-auto inline-flex rounded-md border border-slate-700 p-0.5" aria-label="สกุลเงินที่แสดง">
-                {(['USD', 'THB'] as const).map((item) => <button key={item} type="button" aria-pressed={displayCurrency === item} disabled={item === 'THB' && !thbAvailable} onClick={() => setCurrency(item)} className={`min-h-7 rounded px-1.5 ${displayCurrency === item ? 'bg-slate-700 text-white' : 'text-slate-500'} disabled:cursor-not-allowed disabled:opacity-40`}>{item}</button>)}
-              </span>
+            <div className="mt-1 flex flex-wrap items-center gap-x-1 gap-y-0.5 text-[10px] text-slate-400">
+              <span>{modelLabel(available.selectedModel)}</span><span aria-hidden="true">·</span><span>{displayStatus(available)}</span><span aria-hidden="true">·</span>
+              <span title={available.modelReliability.explanation}>{RELIABILITY_TH[available.modelReliability.level]}</span>
             </div>
           </>
         ) : (

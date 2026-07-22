@@ -38,6 +38,18 @@ const snapshotSchema = z.object({
   error: z.string().optional(),
 }).passthrough();
 
+const previousCloseSchema = z.object({
+  status: z.string().optional(),
+  ticker: z.string().optional(),
+  resultsCount: z.number().int().nonnegative().optional(),
+  results: z.array(z.object({
+    T: z.string().optional(),
+    o: z.number().optional(), h: z.number().optional(), l: z.number().optional(), c: z.number().optional(),
+    v: z.number().optional(), t: z.number().optional(),
+  }).passthrough()).optional(),
+  error: z.string().optional(),
+}).passthrough();
+
 const marketStatusSchema = z.object({
   market: z.string().optional(),
   serverTime: z.string().optional(),
@@ -145,6 +157,30 @@ export class PolygonMarketDataProvider implements MarketDataProviderV2 {
 
   async getQuote(instrument: ResolvedInstrument) {
     try {
+      return await this.snapshotQuote(instrument);
+    } catch (cause) {
+      // The real-time/snapshot endpoint is a premium Polygon entitlement. When the
+      // configured plan is not authorized (403 → forbidden) or the symbol simply has
+      // no snapshot, fall back to the free previous-close aggregate — a truthful
+      // end-of-day quote — instead of surfacing a bare 403. Real-time is never
+      // fabricated; a genuine unavailability still throws the typed error below.
+      if (cause instanceof MarketDataError && (cause.code === 'forbidden' || cause.code === 'not-found')) {
+        try {
+          return await this.previousCloseQuote(instrument);
+        } catch (fallbackCause) {
+          // Neither endpoint is entitled/available: surface the primary snapshot
+          // error so the typed reason stays truthful about the root cause.
+          throw fallbackCause instanceof MarketDataError && fallbackCause.code === 'invalid-symbol'
+            ? fallbackCause
+            : cause;
+        }
+      }
+      throw cause;
+    }
+  }
+
+  private async snapshotQuote(instrument: ResolvedInstrument) {
+    try {
       const payload = snapshotSchema.parse(await this.request(
         `/v2/snapshot/locale/us/markets/stocks/tickers/${encodeURIComponent(instrument.providerSymbol)}`,
       ));
@@ -182,6 +218,53 @@ export class PolygonMarketDataProvider implements MarketDataProviderV2 {
     } catch (cause) {
       if (cause instanceof MarketDataError) throw cause;
       if (cause instanceof ZodError) throw new MarketDataError('invalid-provider-response', 'Polygon quote response did not match its validated schema');
+      throw cause;
+    }
+  }
+
+  /**
+   * Free-tier previous-close aggregate fallback for the premium snapshot quote.
+   * Returns a truthful end-of-day quote (the prior completed trading day's OHLCV).
+   * Change vs. the day before is not derivable from a single aggregate, so those
+   * fields stay null rather than being fabricated.
+   */
+  private async previousCloseQuote(instrument: ResolvedInstrument) {
+    try {
+      const payload = previousCloseSchema.parse(await this.request(
+        `/v2/aggs/ticker/${encodeURIComponent(instrument.providerSymbol)}/prev`,
+        { adjusted: 'true' },
+      ));
+      responseTicker(instrument.providerSymbol, payload.ticker);
+      const result = payload.results?.[0];
+      const close = result?.c;
+      const timestamp = epochSeconds(result?.t);
+      if (!result || !Number.isFinite(close) || !timestamp) {
+        throw new MarketDataError('not-found', `No Polygon previous-close aggregate was returned for ${instrument.canonicalSymbol}`);
+      }
+      if (result.T && result.T.toUpperCase() !== instrument.providerSymbol.toUpperCase()) {
+        throw new MarketDataError('invalid-provider-response', 'Polygon previous-close ticker did not match the resolved provider symbol');
+      }
+      const recency = dataRecency(timestamp, Math.floor(this.now().valueOf() / 1_000), true);
+      return normalizedQuoteSchema.parse({
+        symbol: instrument.canonicalSymbol,
+        price: close,
+        previousClose: null,
+        change: null,
+        changePercent: null,
+        timestamp,
+        provider: this.id,
+        exchange: instrument.exchange,
+        currency: instrument.currency,
+        status: recency.status,
+        delayedByMinutes: recency.delayedByMinutes,
+        open: result.o ?? null,
+        high: result.h ?? null,
+        low: result.l ?? null,
+        volume: result.v ?? null,
+      });
+    } catch (cause) {
+      if (cause instanceof MarketDataError) throw cause;
+      if (cause instanceof ZodError) throw new MarketDataError('invalid-provider-response', 'Polygon previous-close response did not match its validated schema');
       throw cause;
     }
   }

@@ -49,10 +49,16 @@ export function InfoHint({
   return (
     <span
       ref={wrapRef}
-      className={`relative inline-flex align-middle ${className ?? ''}`}
+      className={`relative inline-flex shrink-0 self-center align-middle ${className ?? ''}`}
       onMouseEnter={() => setOpen(true)}
       onMouseLeave={() => setOpen(false)}
     >
+      {/*
+        A fixed, non-shrinking circle: `flex-none` (flex: 0 0 auto), `aspect-square`
+        and an explicit 24px block/inline size stop a tight parent grid/flex from
+        squeezing it into a vertical pill. The ≥44px touch target is an absolutely
+        positioned transparent `::after` that never affects layout size.
+      */}
       <button
         type="button"
         aria-label={`คำอธิบาย: ${entry.label}`}
@@ -61,7 +67,8 @@ export function InfoHint({
         onClick={() => setOpen((value) => !value)}
         onFocus={() => setOpen(true)}
         onBlur={() => setOpen(false)}
-        className="relative inline-flex h-4 w-4 items-center justify-center rounded-full border border-slate-500 text-[9px] font-bold leading-none text-slate-400 outline-none after:absolute after:-inset-[14px] after:content-[''] hover:border-[#D4FF00] hover:text-[#D4FF00] focus-visible:ring-2 focus-visible:ring-[#D4FF00]"
+        style={{ inlineSize: 24, blockSize: 24, aspectRatio: '1' }}
+        className="relative box-border inline-flex flex-none shrink-0 grow-0 items-center justify-center self-center rounded-full border border-slate-500 text-[11px] font-bold leading-none text-slate-400 outline-none after:absolute after:-inset-[11px] after:content-[''] hover:border-[#D4FF00] hover:text-[#D4FF00] focus-visible:ring-2 focus-visible:ring-[#D4FF00]"
       >
         <span aria-hidden="true">?</span>
       </button>

@@ -164,7 +164,9 @@ export function calculateFairValue(input: ValuationInput, now = Date.now()): Fai
   });
   const inputDetails = [
     detail('Current Price', input.marketPrice, 'USD'),
-    ...(composite.models.some((model) => model.model === 'ev-sales' || model.model === 'fcff-dcf') ? [detail('Revenue', latest.revenue, 'USD')] : []),
+    // Revenue basis is truthfully the latest completed fiscal period (trailing annual),
+    // never a forward/NTM estimate — no analyst-estimate source is used here.
+    ...(composite.models.some((model) => model.model === 'ev-sales' || model.model === 'fcff-dcf') ? [detail('Revenue (trailing, latest FY)', latest.revenue, 'USD')] : []),
     ...(composite.models.some((model) => model.model === 'ev-ebitda') ? [detail('EBITDA', latest.ebitda ?? latest.operatingIncome + latest.depreciationAmortization, 'USD', latest.ebitda == null ? 'derived' : 'provider')] : []),
     ...(composite.models.some((model) => model.model === 'pe' || model.model === 'peg') && latest.dilutedEps != null ? [detail('Diluted EPS', latest.dilutedEps, 'USD')] : []),
     ...(composite.models.some((model) => model.model === 'pb') ? [detail('Total Equity', latest.totalEquity ?? latest.totalAssets - latest.totalLiabilities, 'USD', latest.totalEquity == null ? 'derived' : 'provider')] : []),

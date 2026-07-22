@@ -13,17 +13,19 @@ import type { MarketDataLabel, MarketDataMode, MarketUpdate } from './types';
 export const AGGREGATE_FALLBACK_LABEL = 'Intraday close fallback' as const;
 export const HISTORY_FALLBACK_LABEL = 'Previous trading day' as const;
 
-/** DataFreshness for a value whose truthful mode is already known (never REAL-TIME). */
+/** DataFreshness for a value whose truthful mode is already known. */
 export function freshnessFromMode(mode: MarketDataMode, asOf: string | null): DataFreshness {
-  const status = mode === 'END-OF-DAY'
-    ? 'end-of-day' as const
-    : mode === 'CACHED'
-      ? 'cached' as const
-      : mode === 'STALE'
-        ? 'stale' as const
-        : mode === 'UNAVAILABLE'
-          ? 'unavailable' as const
-          : 'delayed' as const;
+  const status = mode === 'REAL-TIME'
+    ? 'realtime' as const
+    : mode === 'END-OF-DAY'
+      ? 'end-of-day' as const
+      : mode === 'CACHED'
+        ? 'cached' as const
+        : mode === 'STALE'
+          ? 'stale' as const
+          : mode === 'UNAVAILABLE'
+            ? 'unavailable' as const
+            : 'delayed' as const;
   return {
     status,
     asOf,
@@ -40,6 +42,8 @@ export function candidateFromUpdate(update: MarketUpdate): AcceptedPriceCandidat
     exchangeTimestamp: update.label.exchangeTimestamp,
     mode: update.label.mode,
     provider: update.label.provider,
+    ...(update.label.realtime !== undefined ? { realtime: update.label.realtime } : {}),
+    ...(update.label.feed !== undefined ? { feed: update.label.feed } : {}),
   };
 }
 
@@ -78,6 +82,17 @@ export function buildAcceptedResource(input: {
       volume: null,
       latestTradingDay: accepted.exchangeTimestamp?.slice(0, 10) ?? null,
     };
+  // A genuine live stream is not a fallback: keep its provenance truthful.
+  if (accepted.realtime) {
+    return {
+      data,
+      freshness: freshnessFromMode(accepted.mode, accepted.exchangeTimestamp),
+      provider: accepted.provider,
+      reason: 'Live streaming price.',
+      error: null,
+      fallbackLabel: null,
+    };
+  }
   return {
     data,
     freshness: freshnessFromMode(accepted.mode, accepted.exchangeTimestamp),
@@ -107,6 +122,8 @@ export function labelFromAccepted(accepted: AcceptedPriceCandidate | null, recei
     exchangeTimestamp: accepted.exchangeTimestamp,
     receivedAt,
     delayAgeSeconds,
-    fallbackNote: accepted.source === 'snapshot' ? null : 'Fallback price — not a live snapshot.',
+    fallbackNote: accepted.source === 'snapshot' || accepted.realtime ? null : 'Fallback price — not a live snapshot.',
+    ...(accepted.realtime !== undefined ? { realtime: accepted.realtime } : {}),
+    ...(accepted.feed !== undefined ? { feed: accepted.feed } : {}),
   };
 }

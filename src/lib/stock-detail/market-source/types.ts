@@ -10,10 +10,16 @@ import type { MarketDataApiError, Quote } from '@/src/lib/market-data/types';
  */
 
 /**
- * Truthful data-mode vocabulary. REAL-TIME is intentionally absent: the account
- * is not entitled to a live stream, so no code path may claim it.
+ * Truthful data-mode vocabulary.
+ *
+ * `REAL-TIME` may be set ONLY by a genuine live entitled stream — the Phase 12
+ * {@link WebSocketMarketSource} connected to an Alpaca IEX feed (`realtime: true`,
+ * `feed: 'iex'`). The REST polling / Polygon path must NEVER claim it and keeps
+ * downgrading a provider's "realtime" tag to `DELAYED` (see `modeFromFreshness`).
+ * A cached, previous-close or stale value is likewise never `REAL-TIME`.
  */
 export type MarketDataMode =
+  | 'REAL-TIME'
   | 'DELAYED'
   | 'END-OF-DAY'
   | 'CACHED'
@@ -61,6 +67,14 @@ export interface MarketDataLabel {
   delayAgeSeconds: number | null;
   /** Human-facing note when a fallback path is in use. */
   fallbackNote: string | null;
+  /**
+   * True only when the value came from a genuine live entitled stream. The UI
+   * gates the "Real-time" badge on this, never on `mode` alone. Absent/false for
+   * every REST/polling/cached path. Optional for backward compatibility.
+   */
+  realtime?: boolean;
+  /** Upstream feed identifier for the badge, e.g. `iex`. Null when not streaming. */
+  feed?: string | null;
 }
 
 /** The normalized snapshot the source emits to subscribers. */
@@ -71,6 +85,28 @@ export interface MarketUpdate {
   candle: LiveCandle | null;
   label: MarketDataLabel;
   error: MarketDataApiError | null;
+  /**
+   * Top-of-book, shown separately from Last Price in the header. Present only on
+   * a real-time stream carrying quotes; null/undefined on REST paths. `undefined`
+   * (never a fabricated 0) means "unknown".
+   */
+  bid?: number | null;
+  ask?: number | null;
+  bidSize?: number | null;
+  askSize?: number | null;
+  /** Exchange timestamp (ISO-8601) of the top-of-book quote, when known. */
+  quoteTimestamp?: string | null;
+  /** Per-symbol halt state, tracked independently of the market-wide session. */
+  halted?: boolean;
+  haltReason?: string | null;
+  /** Regular/pre/post/closed session hint for the value, when the stream knows it. */
+  session?: string | null;
+  /**
+   * True when this update finalized the previously-active bucket (a new bucket
+   * opened, or an official/updated bar closed one). The chart uses this to gate
+   * heavy S/R + indicator recomputation to finalized/appended bars only.
+   */
+  barFinalized?: boolean;
 }
 
 export type MarketUpdateListener = (update: MarketUpdate) => void;
@@ -169,12 +205,13 @@ export interface MarketSource {
 }
 
 /**
- * Forward-looking contract for an entitled real-time stream. Declared for
- * future use only — there is deliberately NO production implementation, because
- * the configured provider key has no WebSocket entitlement. Do not instantiate.
+ * Contract for an entitled real-time stream. Implemented in Phase 12 by
+ * `WebSocketMarketSourceImpl`, which connects to the Gateway (never to Alpaca
+ * directly) via `NEXT_PUBLIC_MARKET_WS_URL`. When no Gateway URL is configured
+ * the app stays on the REST {@link PollingMarketSource}.
  */
 export interface WebSocketMarketSource extends MarketSource {
   readonly transport: 'websocket';
-  /** Underlying socket connection state, once a real stream exists. */
+  /** Underlying socket connection state. */
   readonly connectionState: 'idle' | 'connecting' | 'open' | 'closed';
 }

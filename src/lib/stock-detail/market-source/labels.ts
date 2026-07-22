@@ -63,6 +63,48 @@ export function buildLabel(input: LabelInput): MarketDataLabel {
   };
 }
 
+interface RealtimeLabelInput {
+  /** True only for a genuine live entitled feed; gates the REAL-TIME mode/badge. */
+  realtime: boolean;
+  feed: string | null;
+  hasPrice: boolean;
+  exchangeTimestamp: string | null;
+  receivedAt: string;
+  /** When the stream is degraded (stale/reconnecting) even though a feed exists. */
+  degraded?: boolean;
+}
+
+/**
+ * Build a label for the live {@link WebSocketMarketSource}. `REAL-TIME` is set
+ * ONLY when the feed is genuinely live (`realtime` true) and the value is fresh
+ * (not degraded) and priced. A degraded stream downgrades to `STALE`, and an
+ * unpriced value to `UNAVAILABLE`, so a stalled socket can never keep claiming
+ * real-time.
+ */
+export function buildRealtimeLabel(input: RealtimeLabelInput): MarketDataLabel {
+  const exchangeMs = input.exchangeTimestamp ? Date.parse(input.exchangeTimestamp) : Number.NaN;
+  const receivedMs = Date.parse(input.receivedAt);
+  const delayAgeSeconds = Number.isFinite(exchangeMs) && Number.isFinite(receivedMs)
+    ? Math.max(0, Math.round((receivedMs - exchangeMs) / 1_000))
+    : null;
+  const live = input.realtime && !input.degraded && input.hasPrice;
+  const mode: MarketDataMode = !input.hasPrice ? 'UNAVAILABLE' : input.degraded ? 'STALE' : live ? 'REAL-TIME' : 'DELAYED';
+  return {
+    mode,
+    provider: input.feed ? `alpaca:${input.feed}` : 'alpaca',
+    // The live price occupies the aggregate-fallback slot in the accepted-price
+    // pipeline (so it needs no synthesized snapshot quote) while carrying the
+    // truthful REAL-TIME mode + realtime flag that gate the header badge.
+    source: input.hasPrice ? 'aggregate-fallback' : null,
+    exchangeTimestamp: input.exchangeTimestamp,
+    receivedAt: input.receivedAt,
+    delayAgeSeconds,
+    fallbackNote: null,
+    realtime: live,
+    feed: input.feed,
+  };
+}
+
 /** The unavailable label used when no valid value could be produced. */
 export function unavailableLabel(receivedAt: string, provider: string | null = null): MarketDataLabel {
   return {

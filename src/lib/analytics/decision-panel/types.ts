@@ -26,8 +26,8 @@ export type DecisionSourceType =
 export type DecisionStrength = 'weak' | 'moderate' | 'strong';
 export type DecisionReliability = 'high' | 'moderate' | 'low';
 
-/** Truthful data-mode vocabulary shared with the market-source layer (never REAL-TIME). */
-export type DecisionDataMode = 'DELAYED' | 'END-OF-DAY' | 'CACHED' | 'STALE' | 'UNAVAILABLE';
+/** Truthful data-mode vocabulary shared with the market-source layer. */
+export type DecisionDataMode = 'REAL-TIME' | 'DELAYED' | 'END-OF-DAY' | 'CACHED' | 'STALE' | 'UNAVAILABLE';
 
 /**
  * A price-independent normalised reference — the geometry and provenance of one

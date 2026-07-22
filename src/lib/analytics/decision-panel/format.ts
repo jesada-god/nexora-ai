@@ -31,6 +31,7 @@ export function formatEtaRange(eta: EtaEstimate, marketHoursPerDay = 6.5): strin
 }
 
 const DATA_MODE_LABEL: Record<DecisionDataMode, string> = {
+  'REAL-TIME': 'Real-time',
   DELAYED: 'Delayed',
   'END-OF-DAY': 'End-of-day',
   CACHED: 'Cached',

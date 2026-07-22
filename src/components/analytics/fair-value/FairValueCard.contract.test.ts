@@ -27,8 +27,17 @@ describe('Stock Overview Fair Value contract', () => {
     expect(drawer).toContain('<Drawer id={id}');
   });
 
-  it('does not refetch when currency or details change and exposes provider disclosure', () => {
-    expect(card).toContain('onClick={() => setCurrency(item)}');
+  it('has no Fair Value currency toggle and never converts the model estimate to THB', () => {
+    // Section 5: the USD/THB toggle and conversion were removed from the Fair Value UI.
+    // The model estimate is always shown in the instrument's source currency (USD).
+    expect(card).not.toContain('setCurrency');
+    expect(card).not.toContain('convertUsdForDisplay');
+    expect(card).not.toContain("'THB'");
+    expect(drawer).not.toContain('displayFx');
+    expect(card).toContain('formatFairValueMoney(base)');
+  });
+
+  it('does not refetch when details change and exposes provider disclosure', () => {
     expect(card).toContain('onClick={() => setOpen(true)}');
     expect(card.match(/requestFairValue\(/g)).toHaveLength(1);
     expect(drawer).toContain('Provider:');

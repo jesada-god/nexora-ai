@@ -52,7 +52,7 @@ describe('Phase 11 market UI production contract', () => {
   });
 
   it('restricts browser connections and blocks framing through security headers', () => {
-    expect(middleware).toContain("`connect-src ${[`'self'`, ...supabaseConnectSources()].join(' ')}`");
+    expect(middleware).toContain("`connect-src ${[`'self'`, ...supabaseConnectSources(), ...marketWsConnectSources()].join(' ')}`");
     expect(middleware).toContain("`frame-ancestors 'none'`");
     expect(middleware).toContain("response.headers.set('X-Content-Type-Options', 'nosniff')");
   });
