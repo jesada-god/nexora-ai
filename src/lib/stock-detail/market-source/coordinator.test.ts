@@ -119,6 +119,57 @@ describe('CoordinatedMarketSource', () => {
     expect(ws.calls).toContain('stop');
     expect(poll.calls).toContain('stop');
   });
+
+  it('attaches the typed connection lifecycle to every forwarded update', () => {
+    const { coord, ws, poll, forwarded, flush } = setup();
+    coord.start();
+    const last = () => forwarded[forwarded.length - 1].connectionState;
+
+    // starting: a pre-live WS emission surfaces `connecting`.
+    ws.emit(restUpdate(100));
+    expect(last()).toBe('connecting');
+
+    // live: the WS stream is flowing → `connected`.
+    ws.emit(liveUpdate(100));
+    expect(last()).toBe('connected');
+
+    // drop before the grace timer fires → `reconnecting` (price stays forwarded).
+    ws.emit(restUpdate(100));
+    expect(last()).toBe('reconnecting');
+
+    // grace expires → REST fallback engages → `degraded`.
+    flush();
+    poll.emit(restUpdate(98));
+    expect(last()).toBe('degraded');
+
+    // recovery: WS returns live → `connected`, so the header clears the indicator.
+    ws.emit(liveUpdate(99));
+    expect(last()).toBe('connected');
+  });
+
+  it('reports `disconnected` while paused (hidden/offline)', () => {
+    const { coord, ws, forwarded } = setup();
+    coord.start();
+    ws.emit(liveUpdate(100));
+    expect(forwarded[forwarded.length - 1].connectionState).toBe('connected');
+    // Offline/hidden pauses the source; the next emission is `disconnected`
+    // regardless of the underlying transport state.
+    coord.setVisible(false);
+    ws.emit(liveUpdate(101));
+    expect(forwarded[forwarded.length - 1].connectionState).toBe('disconnected');
+  });
+
+  it('does not attach a connection lifecycle on the REST-only source', () => {
+    const source = createMarketSource({
+      symbol: 'AAPL', transport: {} as never, session: 'regular',
+      selection: { interval: '5m', session: 'regular', adjusted: false },
+      cadence: { regularMs: 12_000, closedMs: 60_000 }, wsUrl: null,
+    });
+    // The REST-only PollingMarketSource has no `connectionState` concept, so a
+    // REST-only deployment can never surface a "reconnecting" pill.
+    expect(source.transport).toBe('polling');
+    expect('connectionState' in source).toBe(false);
+  });
 });
 
 describe('createMarketSource', () => {

@@ -1,11 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import {
   calculatePriceChange,
+  connectionStatusPresentation,
   convertUsdForDisplay,
   dataStatusPresentation,
   deriveMarketSession,
   marketSessionPresentation,
   priceDirectionPresentation,
+  priceFlashDirection,
   resolvePriceCurrency,
   resolveDataStatus,
   resolveMarketSession,
@@ -130,6 +132,30 @@ describe('stock price header calculations', () => {
   });
 });
 
+describe('stock price header live flash direction', () => {
+  it('flashes up when the tick rises and down when it falls', () => {
+    expect(priceFlashDirection(247.23, 248.1)).toBe('up');
+    expect(priceFlashDirection(248.1, 247.23)).toBe('down');
+  });
+
+  it('does not flash when the price is unchanged or has no prior value', () => {
+    expect(priceFlashDirection(247.23, 247.23)).toBeNull();
+    expect(priceFlashDirection(null, 247.23)).toBeNull();
+    expect(priceFlashDirection(undefined, 247.23)).toBeNull();
+    expect(priceFlashDirection(247.23, null)).toBeNull();
+  });
+
+  it.each([
+    [Number.NaN, 248.1],
+    [247.23, Number.POSITIVE_INFINITY],
+    [0, 248.1],
+    [247.23, 0],
+    [-1, 248.1],
+  ])('never flashes on non-finite or non-positive values', (previous, next) => {
+    expect(priceFlashDirection(previous, next)).toBeNull();
+  });
+});
+
 describe('stock price header currency resolution', () => {
   it('uses profile, quote, instrument metadata, then trusted exchange mapping', () => {
     expect(resolvePriceCurrency({
@@ -165,5 +191,33 @@ describe('stock price header currency resolution', () => {
       instrumentCurrency: null,
       exchange: 'UNKNOWN',
     })).toEqual({ currency: null, source: null });
+  });
+});
+
+describe('connection status presentation mapping', () => {
+  it('maps every typed connection state to the right indicator', () => {
+    // connecting/connected stay neutral: connected relies on the existing
+    // Real-time badge, connecting shows only the untouched freshness status.
+    expect(connectionStatusPresentation('connecting')).toEqual({ kind: 'none' });
+    expect(connectionStatusPresentation('connected')).toEqual({ kind: 'none' });
+    // reconnecting → concise pill with the Thai "reconnecting" label.
+    expect(connectionStatusPresentation('reconnecting')).toEqual({
+      kind: 'reconnecting',
+      label: 'กำลังเชื่อมต่อใหม่…',
+    });
+    // degraded and disconnected both surface the same "connection problem" text.
+    expect(connectionStatusPresentation('degraded')).toEqual({
+      kind: 'error',
+      label: 'การเชื่อมต่อขัดข้อง',
+    });
+    expect(connectionStatusPresentation('disconnected')).toEqual({
+      kind: 'error',
+      label: 'การเชื่อมต่อขัดข้อง',
+    });
+  });
+
+  it('renders no indicator for a REST-only deployment (null/undefined)', () => {
+    expect(connectionStatusPresentation(null)).toEqual({ kind: 'none' });
+    expect(connectionStatusPresentation(undefined)).toEqual({ kind: 'none' });
   });
 });

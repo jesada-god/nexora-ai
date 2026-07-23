@@ -191,6 +191,7 @@ export function StockDetailClient({
     askSize,
     halted,
     haltReason,
+    connectionState,
     refresh: refreshQuote,
   } = useMarketSource({
     symbol,
@@ -365,6 +366,7 @@ export function StockDetailClient({
           askSize={askSize}
           symbolHalted={halted}
           haltReason={haltReason}
+          connectionState={connectionState}
         />
 
         <div className="sticky top-16 z-30 -mx-4 border-y border-slate-800 bg-[#0A0E17]/95 px-4 py-3 backdrop-blur md:static md:mx-0 md:border-0 md:bg-transparent md:px-0">

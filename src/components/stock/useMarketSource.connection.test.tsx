@@ -1,0 +1,176 @@
+// @vitest-environment jsdom
+
+/**
+ * Behavioural guard for the connection-state plumbing in {@link useMarketSource}.
+ *
+ * The hook surfaces the typed {@link ConnectionStatus} forwarded by the market
+ * coordinator to the header, WITHOUT ever letting it drive a fetch. These tests
+ * assert that: a connection-state change never triggers a refresh or a re-acquire
+ * (#3); a REST-only deployment with no Gateway URL never surfaces a state (#4); a
+ * `reconnecting → connected` recovery clears the exposed state (#5); and the
+ * subscription is released on unmount so no state update can fire afterwards (#6).
+ *
+ * A fresh module load per test controls whether a Gateway URL is inlined, so the
+ * REST-only vs. WS paths are exercised deterministically.
+ */
+
+import React, { act } from 'react';
+import { createRoot, type Root } from 'react-dom/client';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { MarketUpdate } from '@/src/lib/stock-detail/market-source';
+import type { StockDetailQuoteResource } from '@/src/lib/stock-detail/types';
+
+(globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+
+const WS_URL = 'wss://loving-growth-production-0965.up.railway.app/ws';
+
+const rec = {
+  listener: null as ((u: MarketUpdate) => void) | null,
+  acquired: 0,
+  released: 0,
+  subscribed: 0,
+  unsubscribed: 0,
+  refreshCalls: 0,
+};
+
+vi.mock('@/src/lib/stock-detail/market-source', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/src/lib/stock-detail/market-source')>();
+  return {
+    ...actual,
+    acquireMarketConnection: vi.fn(() => {
+      rec.acquired += 1;
+      const source = {
+        transport: 'websocket' as const,
+        start() {}, stop() {},
+        setVisible() {}, setSession() {}, setSelection() {}, setSymbol() {},
+        refresh() { rec.refreshCalls += 1; return Promise.resolve(); },
+        cooldownRemainingMs() { return 0; },
+        isSnapshotEntitled() { return true; },
+        subscribe(listener: (u: MarketUpdate) => void) {
+          rec.subscribed += 1;
+          rec.listener = listener;
+          return () => { rec.unsubscribed += 1; rec.listener = null; };
+        },
+      };
+      return { source, release: () => { rec.released += 1; } };
+    }),
+  };
+});
+
+type UseMarketSource = typeof import('./useMarketSource')['useMarketSource'];
+type Options = Parameters<UseMarketSource>[0];
+type Result = ReturnType<UseMarketSource>;
+
+const INITIAL_QUOTE = {
+  data: null, freshness: 'live', provider: null, reason: null, error: null, fallbackLabel: null,
+} as unknown as StockDetailQuoteResource;
+
+function baseOptions(overrides: Partial<Options> = {}): Options {
+  return {
+    symbol: 'AAPL',
+    initialQuote: INITIAL_QUOTE,
+    session: 'regular',
+    active: true,
+    online: true,
+    enabled: true,
+    ...overrides,
+  };
+}
+
+/** A minimal, non-priced update (candidateFromUpdate → null) carrying a state. */
+function update(connectionState?: MarketUpdate['connectionState']): MarketUpdate {
+  return {
+    symbol: 'AAPL',
+    price: null,
+    quote: null,
+    candle: null,
+    label: {
+      mode: 'DELAYED', provider: null, source: null,
+      exchangeTimestamp: null, receivedAt: '', delayAgeSeconds: null, fallbackNote: null,
+    },
+    error: null,
+    connectionState,
+  };
+}
+
+async function loadHook(wsUrl?: string): Promise<UseMarketSource> {
+  vi.resetModules();
+  if (wsUrl) process.env.NEXT_PUBLIC_MARKET_WS_URL = wsUrl;
+  else delete process.env.NEXT_PUBLIC_MARKET_WS_URL;
+  process.env.NEXT_PUBLIC_APP_ENV = 'production';
+  return (await import('./useMarketSource')).useMarketSource;
+}
+
+let latest: Result | null = null;
+
+function mount(useHook: UseMarketSource, options: Options) {
+  const container = document.createElement('div');
+  const root: Root = createRoot(container);
+  function Harness(props: Options) { latest = useHook(props); return null; }
+  act(() => { root.render(React.createElement(Harness, options)); });
+  return { unmount: () => act(() => { root.unmount(); }) };
+}
+
+function emit(connectionState?: MarketUpdate['connectionState']) {
+  act(() => { rec.listener?.(update(connectionState)); });
+}
+
+beforeEach(() => {
+  rec.listener = null;
+  rec.acquired = 0; rec.released = 0;
+  rec.subscribed = 0; rec.unsubscribed = 0;
+  rec.refreshCalls = 0;
+  latest = null;
+});
+
+afterEach(() => {
+  vi.clearAllMocks();
+  delete process.env.NEXT_PUBLIC_MARKET_WS_URL;
+  delete process.env.NEXT_PUBLIC_APP_ENV;
+});
+
+describe('useMarketSource connection state', () => {
+  it('surfaces the state but never refetches or re-acquires when it changes (#3)', async () => {
+    const useHook = await loadHook(WS_URL);
+    const view = mount(useHook, baseOptions());
+    emit('connected');
+    emit('reconnecting');
+    emit('degraded');
+    emit('connected');
+    // A connection-state change is status-only: no refresh(), no second acquire.
+    expect(rec.refreshCalls).toBe(0);
+    expect(rec.acquired).toBe(1);
+    expect(latest?.connectionState).toBe('connected');
+    view.unmount();
+  });
+
+  it('never surfaces a connection state on a REST-only deployment (no Gateway URL) (#4)', async () => {
+    const useHook = await loadHook(/* no WS URL */);
+    const view = mount(useHook, baseOptions());
+    // Even if a state is forwarded, no configured socket ⇒ no "reconnecting" pill.
+    emit('reconnecting');
+    expect(latest?.connectionState).toBeNull();
+    view.unmount();
+  });
+
+  it('clears the state on recovery: reconnecting → connected (#5)', async () => {
+    const useHook = await loadHook(WS_URL);
+    const view = mount(useHook, baseOptions());
+    emit('reconnecting');
+    expect(latest?.connectionState).toBe('reconnecting');
+    emit('connected');
+    expect(latest?.connectionState).toBe('connected');
+    view.unmount();
+  });
+
+  it('releases and unsubscribes on unmount, leaving no listener to update state (#6)', async () => {
+    const useHook = await loadHook(WS_URL);
+    const view = mount(useHook, baseOptions());
+    expect(rec.subscribed).toBe(1);
+    view.unmount();
+    expect(rec.unsubscribed).toBe(1);
+    expect(rec.released).toBe(1);
+    // No dangling listener → a late emission can never setState after unmount.
+    expect(rec.listener).toBeNull();
+  });
+});

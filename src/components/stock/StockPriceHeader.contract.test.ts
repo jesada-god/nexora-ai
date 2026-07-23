@@ -44,6 +44,20 @@ describe('StockPriceHeader integration contract', () => {
     expect(header).not.toContain("stockDetailErrorMessage(marketError");
   });
 
+  it('flashes the price on a live move without refetching, keyed on the source USD value', () => {
+    // Flash is driven from the source USD price (regularPrice / extendedQuote.price),
+    // so a USD/THB toggle never flashes — only a real tick does. No fetch is added.
+    expect(header).toContain('usePriceFlash(regularPrice)');
+    expect(header).toContain('usePriceFlash(extendedQuote?.price ?? null)');
+    expect(header).toContain('flashClass(priceFlash.direction)');
+    expect(header).toContain('key={priceFlash.nonce}');
+    expect(header).not.toContain('fetch(');
+  });
+
+  it('shows the intraday data timestamp with seconds precision', () => {
+    expect(header).toContain('withSeconds: true');
+  });
+
   it('keeps Previous Close out of the Overview cards', () => {
     const overviewCards = detail.slice(detail.indexOf('function Overview'));
     expect(overviewCards).not.toContain("['Previous Close'");

@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Info } from 'lucide-react';
 import { Modal } from '@/src/components/ui/Modal';
 import type {
@@ -13,15 +13,18 @@ import { formatMarketDataAsOf } from '@/src/lib/presentation/datetime';
 import { stockDetailErrorMessage } from '@/src/lib/stock-detail/error-presentation';
 import {
   calculatePriceChange,
+  connectionStatusPresentation,
   convertUsdForDisplay,
   dataStatusPresentation,
   deriveMarketSession,
   marketSessionPresentation,
   priceDirectionPresentation,
+  priceFlashDirection,
   resolveDataStatus,
   type PriceDirection,
   type PriceDisplayCurrency,
 } from './price-header';
+import type { ConnectionStatus } from '@/src/lib/stock-detail/market-source';
 
 interface MarketSummary {
   currentStatus: 'pre-market' | 'open' | 'after-hours' | 'closed' | 'holiday' | 'early-close' | 'unknown';
@@ -65,6 +68,12 @@ interface StockPriceHeaderProps {
   /** Per-symbol trading halt, independent of the market-wide session. */
   symbolHalted?: boolean;
   haltReason?: string | null;
+  /**
+   * Live-connection lifecycle from the WS coordinator. Status indicator only — it
+   * never affects the accepted price, timestamp, session or freshness. `null` on a
+   * REST-only deployment, which therefore never shows a "reconnecting" pill.
+   */
+  connectionState?: ConnectionStatus | null;
 }
 
 const numberFormatter = new Intl.NumberFormat('en-US', {
@@ -90,7 +99,9 @@ function formatPercent(value: number | null): string {
 
 function formatProviderTimestamp(value: string | null, dateOnly = false): string {
   if (!value) return 'ไม่ทราบเวลาข้อมูล';
-  const formatted = formatMarketDataAsOf(value, { dateOnly });
+  // Intraday values show HH:mm:ss so a live timestamp visibly advances per tick;
+  // `withSeconds` is ignored on the date-only path.
+  const formatted = formatMarketDataAsOf(value, { dateOnly, withSeconds: true });
   return formatted === '—' ? 'ไม่ทราบเวลาข้อมูล' : formatted;
 }
 
@@ -102,6 +113,32 @@ function directionClass(direction: PriceDirection | null): string {
 
 function directionMark(direction: PriceDirection | null): string | null {
   return direction ? priceDirectionPresentation(direction).arrow : null;
+}
+
+function flashClass(direction: PriceDirection | null): string {
+  return direction === 'up' ? 'price-flash-up' : direction === 'down' ? 'price-flash-down' : '';
+}
+
+/**
+ * Tracks the last accepted USD price and, whenever a new tick moves it, returns a
+ * flash direction plus a monotonically increasing `nonce`. The nonce is used as a
+ * React `key` on the flashing element so the CSS animation replays on every move.
+ * Keying on the currency-independent USD price means a USD/THB toggle never
+ * flashes — only a genuine market move does. Reduced motion is honored by the
+ * global CSS that caps animation-duration.
+ */
+function usePriceFlash(value: number | null): { direction: PriceDirection | null; nonce: number } {
+  const previousRef = useRef<number | null>(null);
+  const [flash, setFlash] = useState<{ direction: PriceDirection | null; nonce: number }>({
+    direction: null,
+    nonce: 0,
+  });
+  useEffect(() => {
+    const direction = priceFlashDirection(previousRef.current, value);
+    if (value !== null && Number.isFinite(value) && value > 0) previousRef.current = value;
+    if (direction) setFlash((current) => ({ direction, nonce: current.nonce + 1 }));
+  }, [value]);
+  return flash;
 }
 
 function StatusEmoji({ value }: { value: string }) {
@@ -137,6 +174,7 @@ export function StockPriceHeader({
   askSize = null,
   symbolHalted = false,
   haltReason = null,
+  connectionState = null,
 }: StockPriceHeaderProps) {
   const [currency, setCurrency] = useState<PriceDisplayCurrency>('USD');
   const [detailsOpen, setDetailsOpen] = useState(false);
@@ -177,6 +215,10 @@ export function StockPriceHeader({
     : null;
   const changeDirection = regularChange?.direction ?? null;
   const extendedDirection = extendedChange?.direction ?? null;
+  // Flash the price on a real move only (keyed on the source USD value, so a
+  // USD/THB toggle never flashes). Reduced motion is handled by global CSS.
+  const priceFlash = usePriceFlash(regularPrice);
+  const extendedFlash = usePriceFlash(extendedQuote?.price ?? null);
   const thbUnavailable = !verifiedUsdSource || fxRate === null || !Number.isFinite(fxRate) || fxRate <= 0;
   const quoteCoolingDown = quoteRetryAt > 0;
   const quoteDate = quote?.latestTradingDay ?? null;
@@ -188,6 +230,9 @@ export function StockPriceHeader({
   // feed), never on the data-status heuristic alone.
   const feedLabel = feed ? feed.toUpperCase() : null;
   const showRealtime = realtime && regularPrice !== null && feedLabel !== null;
+  // Status-only view of the live socket. Never derives price/freshness — it is
+  // rendered ALONGSIDE the existing status, never replacing it.
+  const connectionView = connectionStatusPresentation(connectionState);
   const displayBid = bid != null && verifiedUsdSource ? convertUsdForDisplay(bid, selectedCurrency, fxRate) : bid;
   const displayAsk = ask != null && verifiedUsdSource ? convertUsdForDisplay(ask, selectedCurrency, fxRate) : ask;
   const showBook = displayBid != null && Number.isFinite(displayBid) && displayAsk != null && Number.isFinite(displayAsk);
@@ -197,9 +242,11 @@ export function StockPriceHeader({
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 font-mono tabular-nums">
-            <p className={displayPrice === null
-              ? 'max-w-full break-words font-sans text-2xl font-bold leading-tight tracking-tight text-text-main [overflow-wrap:anywhere] sm:text-3xl'
-              : 'max-w-full break-words text-[clamp(2rem,11vw,3rem)] font-bold leading-none tracking-tight text-text-main [overflow-wrap:anywhere]'}>
+            <p
+              key={priceFlash.nonce}
+              className={displayPrice === null
+                ? 'max-w-full break-words font-sans text-2xl font-bold leading-tight tracking-tight text-text-main [overflow-wrap:anywhere] sm:text-3xl'
+                : `max-w-full break-words rounded-md px-1.5 -mx-1.5 text-[clamp(2rem,11vw,3rem)] font-bold leading-none tracking-tight text-text-main [overflow-wrap:anywhere] ${flashClass(priceFlash.direction)}`}>
               {displayPrice === null ? 'ไม่พบราคาล่าสุด' : formatNumber(displayPrice)}
             </p>
             {regularChange && <div className={`flex min-w-0 flex-wrap items-baseline gap-x-2 text-base font-semibold sm:text-lg ${directionClass(changeDirection)}`}>
@@ -233,6 +280,35 @@ export function StockPriceHeader({
               <span aria-hidden="true">·</span>
               <span className="inline-flex items-center gap-1 rounded-full bg-rose-500/15 px-2 py-0.5 text-xs font-semibold text-rose-300">
                 ⏸️ ระงับการซื้อขาย{haltReason ? ` · ${haltReason}` : ''}
+              </span>
+            </>}
+            {connectionView.kind === 'reconnecting' && <>
+              <span aria-hidden="true">·</span>
+              {/* Reassures the user while the socket recovers; the last accepted
+                  price above is untouched. Reduced motion caps the spin globally. */}
+              <span
+                role="status"
+                aria-live="polite"
+                className="inline-flex items-center gap-1.5 rounded-full bg-amber-500/15 px-2 py-0.5 text-xs font-semibold text-amber-300"
+              >
+                <span
+                  className="h-3 w-3 shrink-0 animate-spin rounded-full border-2 border-amber-300/40 border-t-amber-300"
+                  aria-hidden="true"
+                />
+                {connectionView.label}
+              </span>
+            </>}
+            {connectionView.kind === 'error' && <>
+              <span aria-hidden="true">·</span>
+              {/* Degraded/offline: shown next to the existing freshness badge, which
+                  continues to reflect the (delayed/cached) data honestly. */}
+              <span
+                role="status"
+                aria-live="polite"
+                className="inline-flex items-center gap-1 rounded-full bg-rose-500/15 px-2 py-0.5 text-xs font-semibold text-rose-300"
+              >
+                <StatusEmoji value="⚠️"/>
+                {connectionView.label}
               </span>
             </>}
           </div>
@@ -277,7 +353,7 @@ export function StockPriceHeader({
           <StatusEmoji value={marketSessionPresentation(extendedQuote.session).emoji}/>
           {marketSessionPresentation(extendedQuote.session).label}
         </span>
-        <span className="break-all text-text-main">{formatNumber(displayExtendedPrice)} {displayedCurrency}</span>
+        <span key={extendedFlash.nonce} className={`break-all rounded px-1 -mx-1 text-text-main ${flashClass(extendedFlash.direction)}`}>{formatNumber(displayExtendedPrice)} {displayedCurrency}</span>
         <span className={`break-all ${directionClass(extendedDirection)}`}>{formatSigned(displayExtendedChange)} {formatPercent(extendedChange.percent)} {directionMark(extendedDirection)}</span>
         <span className="text-text-muted">{formatProviderTimestamp(extendedQuote.asOf, extendedQuote.freshness.status === 'end-of-day')}</span>
         {extendedDataStatusView && <span className="inline-flex items-center gap-1.5 text-text-muted">{extendedDataStatusView.emoji && <StatusEmoji value={extendedDataStatusView.emoji}/>} {extendedDataStatusView.label}</span>}

@@ -3,6 +3,7 @@ import { WebSocketMarketSourceImpl } from './websocket-source';
 import type { RealtimeSocketFactory } from './realtime-socket';
 import type { MarketSelection } from './config';
 import type {
+  ConnectionStatus,
   MarketSessionKind,
   MarketSource,
   MarketSourceTransport,
@@ -219,8 +220,27 @@ export class CoordinatedMarketSource implements MarketSource {
     this.cancelGrace = null;
   }
 
+  /**
+   * Derives the typed connection lifecycle from the coordinator's own state
+   * machine. Purely a status signal for the header; it never influences which
+   * price/timestamp is forwarded. A paused (hidden/offline) or stopped source is
+   * `disconnected` regardless of the last transport state.
+   */
+  private connectionStatus(): ConnectionStatus {
+    if (!this.running || !this.visible) return 'disconnected';
+    switch (this.state) {
+      case 'starting': return 'connecting';
+      case 'live': return 'connected';
+      case 'grace': return 'reconnecting';
+      case 'rest': return 'degraded';
+    }
+  }
+
   private forward(update: MarketUpdate): void {
-    for (const listener of this.listeners) listener(update);
+    // Attach the connection lifecycle without mutating the source's update (the
+    // price/timestamp/freshness carried by `update` are forwarded untouched).
+    const withStatus: MarketUpdate = { ...update, connectionState: this.connectionStatus() };
+    for (const listener of this.listeners) listener(withStatus);
   }
 }
 

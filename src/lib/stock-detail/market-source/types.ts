@@ -38,6 +38,26 @@ export type MarketPriceSource = 'snapshot' | 'aggregate-fallback' | 'history-fal
 export type MarketSessionKind = 'regular' | 'closed';
 
 /**
+ * Live-connection lifecycle for the WS coordinator, surfaced to the header so it
+ * can honestly reflect the socket's health WITHOUT ever touching the accepted
+ * price, timestamp, session or freshness. Only the {@link CoordinatedMarketSource}
+ * produces it; the REST-only {@link PollingMarketSource} leaves it undefined so a
+ * REST-only deployment never shows a "reconnecting" indicator.
+ *
+ * - `connecting`    — establishing the initial socket, no live data yet.
+ * - `connected`     — live stream flowing (the Real-time badge is gated elsewhere).
+ * - `reconnecting`  — the socket dropped and is being restored (transient).
+ * - `degraded`      — gave up on the socket for now; REST fallback is serving data.
+ * - `disconnected`  — paused/offline: neither the socket nor REST is active.
+ */
+export type ConnectionStatus =
+  | 'connecting'
+  | 'connected'
+  | 'reconnecting'
+  | 'degraded'
+  | 'disconnected';
+
+/**
  * A single deterministic OHLCV bucket. `time` is the bucket start in unix
  * seconds and is the ordering key used to replace/append/ignore updates.
  */
@@ -107,6 +127,12 @@ export interface MarketUpdate {
    * heavy S/R + indicator recomputation to finalized/appended bars only.
    */
   barFinalized?: boolean;
+  /**
+   * Live-connection lifecycle from the WS coordinator, for a status indicator
+   * only. Never used to alter the accepted price/timestamp/session/freshness.
+   * Absent on the REST-only {@link PollingMarketSource}.
+   */
+  connectionState?: ConnectionStatus;
 }
 
 export type MarketUpdateListener = (update: MarketUpdate) => void;

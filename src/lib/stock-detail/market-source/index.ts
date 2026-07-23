@@ -1,5 +1,6 @@
 export type {
   AggregateValue,
+  ConnectionStatus,
   LiveCandle,
   MarketDataLabel,
   MarketDataMode,

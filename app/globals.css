@@ -62,6 +62,27 @@
   font-variant-numeric: tabular-nums;
 }
 
+/*
+ * Live price-flash micro-interaction: a brief background tint when an accepted
+ * tick moves the price — green up, red down. The reduced-motion rules below
+ * cap animation-duration to ~0, so the flash disappears for those users without
+ * a separate opt-out.
+ */
+@keyframes price-flash-up {
+  from { background-color: rgba(16, 185, 129, 0.28); }
+  to { background-color: transparent; }
+}
+@keyframes price-flash-down {
+  from { background-color: rgba(239, 68, 68, 0.28); }
+  to { background-color: transparent; }
+}
+.price-flash-up {
+  animation: price-flash-up 0.7s ease-out;
+}
+.price-flash-down {
+  animation: price-flash-down 0.7s ease-out;
+}
+
 /* Keep legacy compact labels readable without changing their hierarchy. */
 .text-\[10px\] {
   font-size: 0.75rem;

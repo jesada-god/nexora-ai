@@ -11,6 +11,7 @@ import {
   resolveAcceptedPrice,
   selectionKeyOf,
   type AcceptedPriceCandidate,
+  type ConnectionStatus,
   type LiveCandle,
   type ManagedMarketSource,
   type MarketDataLabel,
@@ -83,6 +84,12 @@ export interface UseMarketSourceResult {
    * recomputation on this so intra-bar ticks stay cheap.
    */
   barFinalized: boolean;
+  /**
+   * Live-connection lifecycle from the WS coordinator, for the header's status
+   * indicator only. `null` on a REST-only deployment (no Gateway URL) so it never
+   * shows a "reconnecting" pill. Changing it NEVER triggers a refetch.
+   */
+  connectionState: ConnectionStatus | null;
   refresh: () => void;
 }
 
@@ -154,6 +161,10 @@ export function useMarketSource(options: UseMarketSourceOptions): UseMarketSourc
   // never surfaces the previous instrument's or selection's bucket.
   const [candleState, setCandleState] = useState<{ symbol: string; selectionKey: string; candle: LiveCandle } | null>(null);
   const [liveMeta, setLiveMeta] = useState<LiveMeta>(EMPTY_META);
+  // Latest connection lifecycle forwarded by the WS coordinator (null until the
+  // first coordinator emission, and always null on the REST-only path). Setting
+  // it to an unchanged value is a React no-op, so quiet ticks stay quiet.
+  const [connectionState, setConnectionState] = useState<ConnectionStatus | null>(null);
 
   const sourceRef = useRef<ManagedMarketSource | null>(null);
   const symUpper = symbol.toUpperCase();
@@ -242,6 +253,9 @@ export function useMarketSource(options: UseMarketSourceOptions): UseMarketSourc
         metaKeyRef.current = metaKey;
         setLiveMeta(nextMeta);
       }
+      // Status-only signal: never feeds price/timestamp/freshness and never
+      // schedules a fetch. `undefined` (REST-only source) collapses to null.
+      setConnectionState(update.connectionState ?? null);
       setQuoteLoading(false);
       const remaining = source.cooldownRemainingMs();
       setQuoteRetryAt(remaining > 0 ? Date.now() + remaining : 0);
@@ -331,6 +345,9 @@ export function useMarketSource(options: UseMarketSourceOptions): UseMarketSourc
     halted: meta.halted,
     haltReason: meta.haltReason,
     barFinalized: meta.barFinalized,
+    // REST-only (no Gateway URL) never surfaces a connection lifecycle, so the
+    // header can never show a "reconnecting" pill without a real socket.
+    connectionState: wsUrl ? connectionState : null,
     refresh,
   };
 }

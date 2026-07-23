@@ -1,4 +1,5 @@
 import type { DataFreshness } from '@/src/lib/market-data/types';
+import type { ConnectionStatus } from '@/src/lib/stock-detail/market-source';
 
 export type MarketSession = 'halted' | 'holiday' | 'early-close' | 'premarket' | 'open' | 'after-hours' | 'closed' | 'unknown';
 export type PriceDirection = 'up' | 'down' | 'neutral';
@@ -132,6 +133,41 @@ export function priceDirectionPresentation(direction: PriceDirection) {
   return PRICE_DIRECTION_PRESENTATION[direction];
 }
 
+/**
+ * Presentation-only view of the live-connection lifecycle.
+ *
+ * - `none`         — nothing to show. `connected` relies on the existing
+ *   Real-time badge; `connecting` and a REST-only (`null`) deployment stay
+ *   neutral, showing only the untouched freshness status.
+ * - `reconnecting` — a concise pill ("กำลังเชื่อมต่อใหม่…") with a spinner while
+ *   the socket is being restored; the last accepted price keeps showing.
+ * - `error`        — "การเชื่อมต่อขัดข้อง" for a degraded/offline connection,
+ *   shown alongside (never instead of) the existing freshness badge.
+ *
+ * This maps status → label only. It never derives price, timestamp, session or
+ * freshness, so the connection indicator can never alter the displayed value.
+ */
+export type ConnectionStatusView =
+  | { kind: 'none' }
+  | { kind: 'reconnecting'; label: string }
+  | { kind: 'error'; label: string };
+
+export function connectionStatusPresentation(status: ConnectionStatus | null | undefined): ConnectionStatusView {
+  switch (status) {
+    case 'reconnecting':
+      return { kind: 'reconnecting', label: 'กำลังเชื่อมต่อใหม่…' };
+    case 'degraded':
+    case 'disconnected':
+      return { kind: 'error', label: 'การเชื่อมต่อขัดข้อง' };
+    case 'connecting':
+    case 'connected':
+    case null:
+    case undefined:
+    default:
+      return { kind: 'none' };
+  }
+}
+
 function normalizedCurrency(value: string | null | undefined): string | null {
   const currency = value?.trim().toUpperCase() ?? '';
   return /^[A-Z]{3}$/.test(currency) ? currency : null;
@@ -179,6 +215,33 @@ export function calculatePriceChange(price: number | null | undefined, compariso
     percent,
     direction: amount > 0 ? 'up' : amount < 0 ? 'down' : 'neutral',
   };
+}
+
+/**
+ * Direction of a live price move, used only to drive the flash micro-interaction
+ * (`up` → green, `down` → red). Returns `null` when there is no comparable prior
+ * price or the value did not move, and rejects non-finite or non-positive values
+ * so a bad tick never flashes. This is presentation-only: it never fabricates or
+ * alters the displayed price.
+ */
+export function priceFlashDirection(
+  previous: number | null | undefined,
+  next: number | null | undefined,
+): PriceDirection | null {
+  if (
+    previous === null
+    || previous === undefined
+    || next === null
+    || next === undefined
+    || !Number.isFinite(previous)
+    || !Number.isFinite(next)
+    || previous <= 0
+    || next <= 0
+    || previous === next
+  ) {
+    return null;
+  }
+  return next > previous ? 'up' : 'down';
 }
 
 export function convertUsdForDisplay(

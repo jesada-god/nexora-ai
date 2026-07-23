@@ -5,13 +5,18 @@ export function isDateOnlyValue(value: string | null | undefined): boolean {
   return Boolean(value && /^\d{4}-\d{2}-\d{2}$/.test(value));
 }
 
-export function formatBangkokDateTime(value: string | Date | null | undefined): string {
+export function formatBangkokDateTime(
+  value: string | Date | null | undefined,
+  options: { withSeconds?: boolean } = {},
+): string {
   if (!value) return '—';
   const date = value instanceof Date ? value : new Date(value);
   if (Number.isNaN(date.valueOf())) return '—';
   return new Intl.DateTimeFormat(THAI_LOCALE, {
     dateStyle: 'medium',
-    timeStyle: 'short',
+    // `medium` carries seconds (HH:mm:ss) so a live intraday timestamp visibly
+    // advances with each accepted tick; `short` (HH:mm) stays the default.
+    timeStyle: options.withSeconds ? 'medium' : 'short',
     timeZone: BANGKOK_TIME_ZONE,
   }).format(date);
 }
@@ -29,14 +34,14 @@ export function formatThaiDateOnly(value: string | null | undefined): string {
 
 export function formatMarketDataAsOf(
   value: string | null | undefined,
-  options: { dateOnly?: boolean } = {},
+  options: { dateOnly?: boolean; withSeconds?: boolean } = {},
 ): string {
   if (!value) return '—';
   if (options.dateOnly || isDateOnlyValue(value)) {
     const formatted = formatThaiDateOnly(value);
     return formatted === '—' ? formatted : `ข้อมูล ณ ${formatted}`;
   }
-  return formatBangkokDateTime(value);
+  return formatBangkokDateTime(value, { withSeconds: options.withSeconds });
 }
 
 export function isStaleAt(
