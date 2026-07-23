@@ -14,6 +14,7 @@ import { selectionKeyOf, type AcceptedPriceCandidate, type MarketSelection, type
 import { KeyStatisticsSection } from '@/src/components/analytics/key-statistics/KeyStatisticsSection';
 import { FairValueSection } from '@/src/components/analytics/fair-value/FairValueSection';
 import { FairValueCard } from '@/src/components/analytics/fair-value/FairValueCard';
+import { AnalystTargetSection } from '@/src/components/analytics/analyst-target/AnalystTargetSection';
 import type { FxQuote } from '@/src/lib/market-data/fx/types';
 import { formatMarketCapitalization } from '@/src/lib/stock-detail/profile-presentation';
 import type { CompanyProfileLanguage } from '@/src/lib/stock-detail/profile-presentation';
@@ -418,9 +419,11 @@ export function StockDetailClient({
           )}
           {tab === 'News' && <NewsFeed symbol={symbol} />}
           {tab === 'Financials' && (
-            fairValueEnabled
-              ? <FairValueSection symbol={symbol} />
-              : <ComingSoon title="Financials" />
+            <div className="space-y-4">
+              {fairValueEnabled ? <FairValueSection symbol={symbol} /> : <ComingSoon title="Financials" />}
+              {/* External analyst consensus — a distinct card, never merged with the model FV. */}
+              <AnalystTargetSection symbol={symbol} />
+            </div>
           )}
           {tab === 'Analysis' && (
             <div className="space-y-4">
