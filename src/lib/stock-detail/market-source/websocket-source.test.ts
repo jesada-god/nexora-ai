@@ -7,13 +7,14 @@ import type { MarketUpdate } from './types';
 class FakeSocket implements RealtimeSocket {
   readonly sent: string[] = [];
   closed = false;
+  closeReasons: (string | undefined)[] = [];
   private openCb?: () => void;
   private msgCb?: (data: string) => void;
   private closeCb?: () => void;
   private errCb?: (error: unknown) => void;
 
   send(data: string): void { this.sent.push(data); }
-  close(): void { this.closed = true; }
+  close(reason?: string): void { this.closed = true; this.closeReasons.push(reason); }
   onOpen(cb: () => void): void { this.openCb = cb; }
   onMessage(cb: (data: string) => void): void { this.msgCb = cb; }
   onClose(cb: () => void): void { this.closeCb = cb; }
@@ -195,6 +196,41 @@ describe('WebSocketMarketSource lifecycle', () => {
     const last = updates[updates.length - 1];
     expect(last.symbol).toBe('MSFT');
     expect(last.price).toBe(300);
+  });
+
+  it('stays open across a redundant re-assert (a rerender with the tab still visible)', () => {
+    const { source, sockets, connect } = setup();
+    source.start();
+    connect(sockets[0]);
+    const unsubscribesBefore = sockets[0].frames().filter((f) => f.type === 'unsubscribe').length;
+    // A rerender that recomputes the same visibility + selection must be a no-op:
+    // the live socket keeps its subscription (never regresses the Gateway to zero
+    // desired symbols / `upstream_subscribed (none)`), and never reconnects.
+    source.setVisible(true);
+    source.setSelection({ interval: '1m', session: 'regular', adjusted: false });
+    expect(sockets[0].closed).toBe(false);
+    expect(source.connectionState).toBe('open');
+    expect(sockets).toHaveLength(1);
+    expect(sockets[0].frames().filter((f) => f.type === 'unsubscribe').length).toBe(unsubscribesBefore);
+  });
+
+  it('closes with an explicit reason (not a bare 1005) when the tab is hidden', () => {
+    const { source, sockets, connect } = setup();
+    source.start();
+    connect(sockets[0]);
+    source.setVisible(false);
+    expect(sockets[0].closed).toBe(true);
+    // An intentional client teardown carries a reason so the wire close is a
+    // legible 1000+reason instead of the ambiguous 1005 ("no status received").
+    expect(sockets[0].closeReasons).toContain('tab-hidden');
+  });
+
+  it('closes with a source-stopped reason on stop()', () => {
+    const { source, sockets, connect } = setup();
+    source.start();
+    connect(sockets[0]);
+    source.stop();
+    expect(sockets[0].closeReasons).toContain('source-stopped');
   });
 });
 

@@ -8,7 +8,7 @@ import { addWatchlistItemAction, removeWatchlistItemAction } from '@/app/watchli
 import { Tabs } from '@/src/components/ui/Tabs';
 import { useToast } from '@/src/components/ui/Toast';
 import { useOnlineStatus } from '@/src/hooks/useOnlineStatus';
-import { useAppActive } from '@/src/hooks/useAppActive';
+import { useAppVisible } from '@/src/hooks/useAppVisible';
 import { useMarketSource } from './useMarketSource';
 import { selectionKeyOf, type AcceptedPriceCandidate, type MarketSelection, type MarketSessionKind } from '@/src/lib/stock-detail/market-source';
 import { KeyStatisticsSection } from '@/src/components/analytics/key-statistics/KeyStatisticsSection';
@@ -136,7 +136,11 @@ export function StockDetailClient({
     initialProfileResource.data?.description ? 'th' : 'en',
   );
   const isOnline = useOnlineStatus();
-  const appActive = useAppActive();
+  // The live market socket follows tab VISIBILITY, not window focus: focusing the
+  // DevTools/console, a split-screen app, a second monitor or the OS taskbar must
+  // never tear the connection down (that produced the spurious 1005 close). A
+  // genuinely backgrounded/minimised tab still releases the socket via visibility.
+  const tabVisible = useAppVisible();
   // The chart reports its live-relevant selection (interval/session/adjusted) so
   // the single shared market source follows it: the header price and the chart's
   // active candle then derive from one accepted event. Default is the header's
@@ -199,7 +203,7 @@ export function StockDetailClient({
     session: marketSession,
     selection: chartSelection,
     historyFallback: chartHistoryFallback,
-    active: appActive,
+    active: tabVisible,
     online: isOnline,
     enabled: providerConfigured,
   });

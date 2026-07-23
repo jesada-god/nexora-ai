@@ -8,7 +8,12 @@
  */
 export interface RealtimeSocket {
   send(data: string): void;
-  close(): void;
+  /**
+   * Close the socket. `reason` (≤123 UTF-8 bytes) makes an INTENTIONAL client
+   * close explicit on the wire — a normal-closure code `1000` with a human reason
+   * instead of the ambiguous bare-`close()` code `1005` ("no status received").
+   */
+  close(reason?: string): void;
   onOpen(listener: () => void): void;
   onMessage(listener: (data: string) => void): void;
   onClose(listener: () => void): void;
@@ -30,10 +35,20 @@ export const browserSocketFactory: RealtimeSocketFactory = (url) => {
   // transient React unmount / visibility blur tore the socket down mid-handshake.
   // Deferring lets the handshake finish (101) and only then closes cleanly.
   let closeRequested = false;
+  let closeReason = '';
   let openListener: (() => void) | undefined;
+  // A normal-closure code with a short, secret-free reason. Bare `close()` sends
+  // code 1005 ("no status received"), which is indistinguishable from an abnormal
+  // drop; an explicit 1000 + reason makes an intentional client teardown legible
+  // in the browser Network panel and in the Gateway's close logs.
+  const NORMAL_CLOSURE = 1000;
+  const closeNow = (reason: string): void => {
+    if (reason) socket.close(NORMAL_CLOSURE, reason.slice(0, 120));
+    else socket.close();
+  };
   socket.addEventListener('open', () => {
     if (closeRequested) {
-      socket.close();
+      closeNow(closeReason);
       return;
     }
     console.info('[market-ws] open');
@@ -41,12 +56,15 @@ export const browserSocketFactory: RealtimeSocketFactory = (url) => {
   });
   return {
     send: (data) => socket.send(data),
-    close: () => {
+    close: (reason = '') => {
       if (socket.readyState === WebSocket.CONNECTING) {
+        // Defer until the handshake finishes; closing a CONNECTING socket trips the
+        // browser's "closed before the connection is established" warning (1006).
         closeRequested = true;
+        closeReason = reason;
         return;
       }
-      socket.close();
+      closeNow(reason);
     },
     onOpen: (listener) => { openListener = listener; },
     onMessage: (listener) => socket.addEventListener('message', (event) => {
@@ -54,7 +72,8 @@ export const browserSocketFactory: RealtimeSocketFactory = (url) => {
       listener(typeof data === 'string' ? data : String(data));
     }),
     onClose: (listener) => socket.addEventListener('close', (event) => {
-      console.info('[market-ws] closed', (event as CloseEvent).code);
+      const closeEvent = event as CloseEvent;
+      console.info('[market-ws] closed', closeEvent.code, closeEvent.reason || '(no-reason)');
       listener();
     }),
     onError: (listener) => socket.addEventListener('error', (event) => {

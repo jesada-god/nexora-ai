@@ -148,7 +148,7 @@ export class WebSocketMarketSourceImpl implements WebSocketMarketSource {
 
   stop(): void {
     this.running = false;
-    this.teardownSocket();
+    this.teardownSocket('source-stopped');
     this.clearReconnect();
     this.clearHeartbeat();
     this.state = 'closed';
@@ -166,7 +166,7 @@ export class WebSocketMarketSourceImpl implements WebSocketMarketSource {
         return;
       }
       // Hidden: release the socket to save resources; the coordinator may poll.
-      this.teardownSocket();
+      this.teardownSocket('tab-hidden');
       this.clearReconnect();
       this.clearHeartbeat();
       this.state = 'idle';
@@ -270,7 +270,7 @@ export class WebSocketMarketSourceImpl implements WebSocketMarketSource {
         // release it without tripping the "closed before established" warning.
         if (this.pendingHide && !this.visible) {
           this.pendingHide = false;
-          this.teardownSocket();
+          this.teardownSocket('tab-hidden');
           this.clearReconnect();
           this.clearHeartbeat();
           this.state = 'idle';
@@ -346,6 +346,7 @@ export class WebSocketMarketSourceImpl implements WebSocketMarketSource {
   }
 
   private handleDrop(): void {
+    // The socket already closed/errored; null it out without a second wire close.
     this.teardownSocket();
     this.clearHeartbeat();
     if (!this.running || !this.visible) {
@@ -379,7 +380,7 @@ export class WebSocketMarketSourceImpl implements WebSocketMarketSource {
       if (this.now() - this.lastMessageAt >= this.staleMs) {
         // Silent socket: treat as stale and recycle through the reconnect path.
         this.degraded = true;
-        this.socket?.close();
+        this.socket?.close('stale-watchdog');
         this.handleDrop();
         return;
       }
@@ -389,9 +390,9 @@ export class WebSocketMarketSourceImpl implements WebSocketMarketSource {
     this.cancelHeartbeat = this.scheduler(tick, this.heartbeatMs);
   }
 
-  private teardownSocket(): void {
+  private teardownSocket(reason?: string): void {
     if (this.socket) {
-      this.socket.close();
+      this.socket.close(reason);
       this.socket = null;
     }
   }

@@ -11,6 +11,7 @@ class FakeWebSocket {
 
   readyState = FakeWebSocket.CONNECTING;
   closeCount = 0;
+  readonly closeArgs: Array<{ code?: number; reason?: string }> = [];
   private readonly listeners = new Map<string, Array<(event: unknown) => void>>();
 
   constructor(readonly url: string) { FakeWebSocket.instances.push(this); }
@@ -22,7 +23,11 @@ class FakeWebSocket {
   }
 
   send(): void {}
-  close(): void { this.closeCount += 1; this.readyState = FakeWebSocket.CLOSED; }
+  close(code?: number, reason?: string): void {
+    this.closeCount += 1;
+    this.closeArgs.push({ code, reason });
+    this.readyState = FakeWebSocket.CLOSED;
+  }
 
   fireOpen(): void {
     this.readyState = FakeWebSocket.OPEN;
@@ -71,5 +76,36 @@ describe('browserSocketFactory close-while-connecting guard', () => {
 
     socket.close(); // OPEN → close immediately
     expect(ws.closeCount).toBe(1);
+  });
+
+  it('sends an explicit 1000 + reason for an intentional close (not a bare 1005)', () => {
+    const socket = browserSocketFactory('wss://gw.example/ws');
+    const ws = FakeWebSocket.instances[0];
+    ws.fireOpen();
+
+    socket.close('tab-hidden');
+    // A bare close() yields code 1005 ("no status received"); an intentional client
+    // teardown must be a legible normal-closure code with a reason instead.
+    expect(ws.closeArgs.at(-1)).toEqual({ code: 1000, reason: 'tab-hidden' });
+  });
+
+  it('defers the reason too and applies 1000 + reason once the handshake completes', () => {
+    const socket = browserSocketFactory('wss://gw.example/ws');
+    const ws = FakeWebSocket.instances[0];
+
+    socket.close('tab-hidden'); // requested while CONNECTING → deferred
+    expect(ws.closeCount).toBe(0);
+
+    ws.fireOpen();
+    expect(ws.closeArgs.at(-1)).toEqual({ code: 1000, reason: 'tab-hidden' });
+  });
+
+  it('still sends a bare close when no reason is given', () => {
+    const socket = browserSocketFactory('wss://gw.example/ws');
+    const ws = FakeWebSocket.instances[0];
+    ws.fireOpen();
+
+    socket.close();
+    expect(ws.closeArgs.at(-1)).toEqual({ code: undefined, reason: undefined });
   });
 });
