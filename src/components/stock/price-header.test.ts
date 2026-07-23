@@ -8,6 +8,7 @@ import {
   marketSessionPresentation,
   priceDirectionPresentation,
   priceFlashDirection,
+  resolvePriceChange,
   resolvePriceCurrency,
   resolveDataStatus,
   resolveMarketSession,
@@ -129,6 +130,70 @@ describe('stock price header calculations', () => {
     expect(convertUsdForDisplay(247.23, 'THB', null)).toBeNull();
     expect(convertUsdForDisplay(247.23, 'THB', 0)).toBeNull();
     expect(convertUsdForDisplay(247.23, 'THB', Number.NaN)).toBeNull();
+  });
+});
+
+describe('stock price header regular change resolution', () => {
+  it('trusts the provider change/percent when both are finite', () => {
+    expect(resolvePriceChange({
+      price: 69.75,
+      previousClose: 72.45,
+      providerChange: -2.7,
+      providerChangePercent: -3.73,
+    })).toEqual({ amount: -2.7, percent: -3.73, direction: 'down' });
+  });
+
+  it('shows the provider change even when the provider omitted the previous close', () => {
+    // The exact production defect: Polygon returned todaysChange/todaysChangePerc
+    // but no prevDay close, so previousClose is null. The change must still show.
+    expect(resolvePriceChange({
+      price: 69.75,
+      previousClose: null,
+      providerChange: -2.7,
+      providerChangePercent: -3.73,
+    })).toEqual({ amount: -2.7, percent: -3.73, direction: 'down' });
+  });
+
+  it('derives the change from a real previous close when the provider sent none', () => {
+    expect(resolvePriceChange({
+      price: 248.1,
+      previousClose: 247.23,
+      providerChange: null,
+      providerChangePercent: null,
+    })).toEqual({
+      amount: expect.closeTo(0.87),
+      percent: expect.closeTo(0.351898232415157),
+      direction: 'up',
+    });
+  });
+
+  it('keeps a zero change neutral from either source', () => {
+    expect(resolvePriceChange({
+      price: 100,
+      previousClose: 100,
+      providerChange: 0,
+      providerChangePercent: 0,
+    })).toEqual({ amount: 0, percent: 0, direction: 'neutral' });
+    expect(resolvePriceChange({
+      price: 100,
+      previousClose: 100,
+      providerChange: null,
+      providerChangePercent: null,
+    })).toEqual({ amount: 0, percent: 0, direction: 'neutral' });
+  });
+
+  it('never fabricates a change when neither a provider change nor a real base exists', () => {
+    // previousClose null/0 and no provider change → hide (return null).
+    expect(resolvePriceChange({ price: 69.75, previousClose: null, providerChange: null, providerChangePercent: null })).toBeNull();
+    expect(resolvePriceChange({ price: 69.75, previousClose: 0, providerChange: null, providerChangePercent: null })).toBeNull();
+    // A lone finite change with a non-finite percent is not enough to show truthfully.
+    expect(resolvePriceChange({ price: 69.75, previousClose: null, providerChange: -2.7, providerChangePercent: null })).toBeNull();
+  });
+
+  it('returns null when the price itself is missing or non-tradeable', () => {
+    expect(resolvePriceChange({ price: null, previousClose: 72.45, providerChange: -2.7, providerChangePercent: -3.73 })).toBeNull();
+    expect(resolvePriceChange({ price: 0, previousClose: 72.45, providerChange: -2.7, providerChangePercent: -3.73 })).toBeNull();
+    expect(resolvePriceChange({ price: Number.NaN, previousClose: 72.45, providerChange: -2.7, providerChangePercent: -3.73 })).toBeNull();
   });
 });
 

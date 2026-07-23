@@ -218,6 +218,47 @@ export function calculatePriceChange(price: number | null | undefined, compariso
 }
 
 /**
+ * Resolve the regular-session daily change with a truthful, provider-first policy:
+ *
+ *   1. Trust the provider's own `change` + `changePercent` when BOTH are finite —
+ *      they are the authoritative daily change for this price (Polygon's
+ *      `todaysChange`/`todaysChangePerc`) and remain valid even when the provider
+ *      did not also return a previous close.
+ *   2. Otherwise derive it from a real `previousClose` via
+ *      {@link calculatePriceChange}, which rejects a non-finite / non-positive base
+ *      and computes `price - previousClose` (never from open/high/low, never from a
+ *      cached price).
+ *   3. Otherwise return null so the header hides the change — but ONLY when neither
+ *      a provider change nor a real previous close exists.
+ *
+ * The percentage is carried straight through from whichever source supplied it and
+ * is never currency-converted by the caller. Nothing here is fabricated.
+ */
+export function resolvePriceChange(input: {
+  price: number | null | undefined;
+  previousClose: number | null | undefined;
+  providerChange: number | null | undefined;
+  providerChangePercent: number | null | undefined;
+}): PriceChange | null {
+  const { price, previousClose, providerChange, providerChangePercent } = input;
+  // The displayed price itself must be a real, tradeable value.
+  if (price === null || price === undefined || !Number.isFinite(price) || price <= 0) {
+    return null;
+  }
+  if (
+    providerChange !== null && providerChange !== undefined && Number.isFinite(providerChange)
+    && providerChangePercent !== null && providerChangePercent !== undefined && Number.isFinite(providerChangePercent)
+  ) {
+    return {
+      amount: providerChange,
+      percent: providerChangePercent,
+      direction: providerChange > 0 ? 'up' : providerChange < 0 ? 'down' : 'neutral',
+    };
+  }
+  return calculatePriceChange(price, previousClose);
+}
+
+/**
  * Direction of a live price move, used only to drive the flash micro-interaction
  * (`up` → green, `down` → red). Returns `null` when there is no comparable prior
  * price or the value did not move, and rejects non-finite or non-positive values

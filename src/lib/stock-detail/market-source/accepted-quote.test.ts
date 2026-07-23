@@ -39,6 +39,25 @@ describe('buildAcceptedResource — the header and chart price line share one va
     expect(label.mode).not.toBe('REAL-TIME');
   });
 
+  it('does not lose previousClose/change when a WebSocket tick carries only a price', () => {
+    // A live WS tick emits a realtime aggregate-fallback candidate with a fresh
+    // price and no quote of its own; the base quote (SSR/last snapshot) supplies
+    // the previous close. The merge must keep the base's previousClose and
+    // recompute the daily change against it — never blank the fields.
+    const accepted: AcceptedPriceCandidate = {
+      price: 102, source: 'aggregate-fallback', exchangeTimestamp: '2026-07-21T15:00:00.000Z',
+      mode: 'REAL-TIME', provider: 'alpaca:iex', realtime: true, feed: 'iex',
+    };
+    const resource = buildAcceptedResource({ accepted, snapshotResource: null, baseQuote, symbol: 'AAPL' });
+    expect(resource.data?.price).toBe(102);
+    expect(resource.data?.previousClose).toBe(95);
+    // Change reflects the NEW live price against the known previous close.
+    expect(resource.data?.change).toBeCloseTo(102 - 95);
+    expect(resource.data?.changePercent).toBeCloseTo(((102 - 95) / 95) * 100);
+    // A genuine live stream stays truthful (not tagged as a fallback).
+    expect(resource.fallbackLabel).toBeNull();
+  });
+
   it('keeps the full verified snapshot quote when the snapshot is the accepted source', () => {
     const snapshotResource = {
       data: baseQuote, freshness: { status: 'delayed' as const, asOf: '2026-07-21T14:00:00.000Z', maxAgeSeconds: 60 },

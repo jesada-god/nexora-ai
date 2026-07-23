@@ -21,6 +21,7 @@ import {
   priceDirectionPresentation,
   priceFlashDirection,
   resolveDataStatus,
+  resolvePriceChange,
   type PriceDirection,
   type PriceDisplayCurrency,
 } from './price-header';
@@ -184,7 +185,15 @@ export function StockPriceHeader({
   const selectedCurrency = verifiedUsdSource ? currency : 'USD';
   const displayedCurrency = verifiedUsdSource ? selectedCurrency : normalizedSourceCurrency ?? 'ไม่ทราบสกุลเงิน';
   const regularPrice = quote && Number.isFinite(quote.price) && quote.price > 0 ? quote.price : null;
-  const regularChange = calculatePriceChange(regularPrice, quote?.previousClose);
+  // Provider-first: trust `quote.change`/`quote.changePercent` when finite (a valid
+  // daily change even when the provider omitted `previousClose`); otherwise derive
+  // from a real previous close. Hidden only when neither source exists.
+  const regularChange = resolvePriceChange({
+    price: regularPrice,
+    previousClose: quote?.previousClose,
+    providerChange: quote?.change,
+    providerChangePercent: quote?.changePercent,
+  });
   const displayPrice = regularPrice !== null
     ? verifiedUsdSource
       ? convertUsdForDisplay(regularPrice, selectedCurrency, fxRate)
