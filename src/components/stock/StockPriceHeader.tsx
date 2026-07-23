@@ -296,6 +296,20 @@ export function StockPriceHeader({
                 ⏸️ ระงับการซื้อขาย{haltReason ? ` · ${haltReason}` : ''}
               </span>
             </>}
+            {connectionView.kind === 'awaiting' && !showRealtime && <>
+              <span aria-hidden="true">·</span>
+              {/* Socket is open and subscribed but no tick has arrived yet — a calm,
+                  non-error status. The fallback price above keeps showing until the
+                  first live tick swaps in the Real-time badge. */}
+              <span
+                role="status"
+                aria-live="polite"
+                className="inline-flex items-center gap-1.5 rounded-full bg-sky-500/15 px-2 py-0.5 text-xs font-semibold text-sky-300"
+              >
+                <span className="h-1.5 w-1.5 rounded-full bg-sky-400" aria-hidden="true"/>
+                {connectionView.label}
+              </span>
+            </>}
             {connectionView.kind === 'reconnecting' && <>
               <span aria-hidden="true">·</span>
               {/* Reassures the user while the socket recovers; the last accepted

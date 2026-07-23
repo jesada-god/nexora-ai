@@ -70,6 +70,16 @@ export class CoordinatedMarketSource implements MarketSource {
   private running = false;
   private visible = true;
   private pollingActive = false;
+  /**
+   * Whether the live socket is currently OPEN (handshake completed, subscribed),
+   * per the WS source's own `streamStatus`. Distinct from `state === 'live'`,
+   * which additionally requires a priced real-time tick. An open-but-quiet socket
+   * is healthy (`awaiting-data`), never a "connection error". Stays false when the
+   * emitter does not report a `streamStatus` (e.g. injected test sources).
+   */
+  private wsStreamOpen = false;
+  /** True once a genuine live tick (`label.realtime`) has been forwarded. */
+  private sawLiveTick = false;
   private cancelGrace: (() => void) | null = null;
   private unsubWs: (() => void) | null = null;
   private unsubPoll: (() => void) | null = null;
@@ -125,6 +135,8 @@ export class CoordinatedMarketSource implements MarketSource {
     this.poll.stop();
     this.pollingActive = false;
     this.state = 'starting';
+    this.wsStreamOpen = false;
+    this.sawLiveTick = false;
   }
 
   setVisible(visible: boolean): void {
@@ -170,13 +182,30 @@ export class CoordinatedMarketSource implements MarketSource {
   /* ------------------------------ state machine ----------------------------- */
 
   private onWsUpdate(update: MarketUpdate): void {
+    // Track the socket lifecycle independently of tick delivery. Only update the
+    // flag when the emitter actually reports one, so injected/legacy sources that
+    // omit `streamStatus` keep the previous (state-machine-driven) behaviour.
+    if (update.streamStatus !== undefined) this.wsStreamOpen = update.streamStatus === 'open';
     const live = update.label.realtime === true;
     if (live) {
+      this.sawLiveTick = true;
       if (this.state !== 'live') this.enterLive();
       this.forward(update);
       return;
     }
-    // WS is degraded/connecting. Leave "live" for the grace path.
+    // The socket is genuinely OPEN and subscribed but no priced tick has arrived
+    // yet (a quiet / low-volume market). This is a healthy connection, so treat it
+    // exactly like the live path for transport arbitration — stop any REST
+    // fallback and cancel the grace safety net — WITHOUT claiming a real-time tick.
+    // The connection status reports `awaiting-data` (see connectionStatus) until
+    // the first tick, and the last accepted (fallback) price keeps showing.
+    if (this.wsStreamOpen) {
+      if (this.state !== 'live') this.enterLive();
+      this.forward(update);
+      return;
+    }
+    // The socket is NOT open (connecting/dropped/idle). Leave "live" for the grace
+    // path so a real drop falls back to REST after the grace period.
     if (this.state === 'live' || this.state === 'starting') {
       if (this.state === 'live') this.state = 'grace';
       this.startGrace();
@@ -228,9 +257,14 @@ export class CoordinatedMarketSource implements MarketSource {
    */
   private connectionStatus(): ConnectionStatus {
     if (!this.running || !this.visible) return 'disconnected';
+    // `live` means the WS is our authoritative source. It is reached either by a
+    // genuine priced tick (`sawLiveTick` → `connected`) or by a healthy open
+    // socket still awaiting its first tick (`awaiting-data`). A REST 403 never
+    // reaches here: REST failures flow through onPollUpdate and can only move us
+    // to `grace`/`rest`, and only while the socket is NOT open.
+    if (this.state === 'live') return this.sawLiveTick ? 'connected' : 'awaiting-data';
     switch (this.state) {
       case 'starting': return 'connecting';
-      case 'live': return 'connected';
       case 'grace': return 'reconnecting';
       case 'rest': return 'degraded';
     }

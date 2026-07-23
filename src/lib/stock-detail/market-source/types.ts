@@ -45,6 +45,10 @@ export type MarketSessionKind = 'regular' | 'closed';
  * REST-only deployment never shows a "reconnecting" indicator.
  *
  * - `connecting`    — establishing the initial socket, no live data yet.
+ * - `awaiting-data` — the socket is genuinely OPEN and subscribed, but no priced
+ *   tick has arrived yet (a quiet market / low-volume IEX symbol). This is a
+ *   healthy connection, NOT a fault: the header shows "connected, awaiting live
+ *   data" and keeps the fallback price. It flips to `connected` on the first tick.
  * - `connected`     — live stream flowing (the Real-time badge is gated elsewhere).
  * - `reconnecting`  — the socket dropped and is being restored (transient).
  * - `degraded`      — gave up on the socket for now; REST fallback is serving data.
@@ -52,6 +56,7 @@ export type MarketSessionKind = 'regular' | 'closed';
  */
 export type ConnectionStatus =
   | 'connecting'
+  | 'awaiting-data'
   | 'connected'
   | 'reconnecting'
   | 'degraded'
@@ -133,6 +138,14 @@ export interface MarketUpdate {
    * Absent on the REST-only {@link PollingMarketSource}.
    */
   connectionState?: ConnectionStatus;
+  /**
+   * The underlying socket lifecycle as seen by the {@link WebSocketMarketSource}
+   * at emit time (`idle`/`connecting`/`open`/`closed`). The coordinator reads this
+   * to tell a genuinely OPEN socket that is merely awaiting its first priced tick
+   * apart from one that is truly down — so a quiet market never falsely degrades
+   * to a "connection error". Absent on the REST-only path and on non-WS emitters.
+   */
+  streamStatus?: 'idle' | 'connecting' | 'open' | 'closed';
 }
 
 export type MarketUpdateListener = (update: MarketUpdate) => void;

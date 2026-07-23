@@ -34,6 +34,24 @@ function restUpdate(price: number): MarketUpdate {
   };
 }
 
+/** WS socket OPEN and subscribed, but no priced tick yet (a quiet market). */
+function openAwaitingUpdate(): MarketUpdate {
+  return {
+    symbol: 'AAPL', price: null, quote: null, candle: null, error: null,
+    label: { mode: 'UNAVAILABLE', provider: 'alpaca:iex', source: null, exchangeTimestamp: null, receivedAt: '', delayAgeSeconds: null, fallbackNote: null, realtime: false, feed: 'iex' },
+    streamStatus: 'open',
+  };
+}
+
+/** A REST poll failure (e.g. an unentitled provider 403) carries no price. */
+function restErrorUpdate(): MarketUpdate {
+  return {
+    symbol: 'AAPL', price: null, quote: null, candle: null,
+    error: { code: 'forbidden', message: 'not entitled', retryable: false },
+    label: { mode: 'UNAVAILABLE', provider: 'polygon', source: null, exchangeTimestamp: null, receivedAt: '', delayAgeSeconds: null, fallbackNote: null, realtime: false },
+  };
+}
+
 function setup(graceMs = 4_000) {
   const ws = fakeSource();
   const poll = fakeSource();
@@ -145,6 +163,42 @@ describe('CoordinatedMarketSource', () => {
     // recovery: WS returns live → `connected`, so the header clears the indicator.
     ws.emit(liveUpdate(99));
     expect(last()).toBe('connected');
+  });
+
+  it('reports `awaiting-data` (not degraded) when the socket is open but no tick has arrived', () => {
+    const { coord, ws, poll, forwarded, flush } = setup();
+    coord.start();
+    // Socket completed its handshake (open + subscribed) but the market is quiet.
+    ws.emit(openAwaitingUpdate());
+    const last = () => forwarded[forwarded.length - 1].connectionState;
+    expect(last()).toBe('awaiting-data');
+    // The grace safety-net must be cancelled: an open socket never falls to REST.
+    flush();
+    expect(poll.isStarted()).toBe(false);
+  });
+
+  it('keeps `awaiting-data` when a REST 403 arrives while the socket is open (403 never degrades WS state)', () => {
+    const { coord, ws, poll, forwarded } = setup();
+    coord.start();
+    ws.emit(openAwaitingUpdate());
+    expect(forwarded[forwarded.length - 1].connectionState).toBe('awaiting-data');
+    // A REST poll failure is dropped while the WS owns the stream (state 'live'):
+    // it must NOT flip the connection to degraded/disconnected, and must not even
+    // be forwarded (no overlap while the socket owns the stream).
+    const before = forwarded.length;
+    poll.emit(restErrorUpdate());
+    expect(forwarded.length).toBe(before);
+    expect(forwarded[forwarded.length - 1].connectionState).toBe('awaiting-data');
+  });
+
+  it('flips `awaiting-data` → `connected` on the first live tick', () => {
+    const { coord, ws, forwarded } = setup();
+    coord.start();
+    ws.emit(openAwaitingUpdate());
+    expect(forwarded[forwarded.length - 1].connectionState).toBe('awaiting-data');
+    ws.emit(liveUpdate(100));
+    expect(forwarded[forwarded.length - 1].connectionState).toBe('connected');
+    expect(forwarded[forwarded.length - 1].label.realtime).toBe(true);
   });
 
   it('reports `disconnected` while paused (hidden/offline)', () => {

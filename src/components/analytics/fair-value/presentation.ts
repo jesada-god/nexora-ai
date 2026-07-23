@@ -115,6 +115,8 @@ function missingFieldLabel(field: string, language: 'th' | 'en'): string {
         profile: 'ข้อมูลบริษัท',
         currency: 'สกุลเงินที่ตรวจสอบได้',
         aligned: 'งบการเงินที่ตรงกันตามงวด',
+        peers: 'peer set ที่ตรวจสอบได้อย่างน้อย 5 บริษัท',
+        forwardRevenue: 'forward/NTM revenue ที่ระบุงวด',
       }
     : {
         fcf: 'FCF',
@@ -132,8 +134,12 @@ function missingFieldLabel(field: string, language: 'th' | 'en'): string {
         profile: 'company profile',
         currency: 'verified currency',
         aligned: 'period-aligned financial statements',
+        peers: 'a verifiable peer set of at least 5 companies',
+        forwardRevenue: 'forward/NTM revenue with an explicit period',
       };
 
+  if (normalized.includes('verifiablepeerset')) return labels.peers;
+  if (normalized.includes('forwardrevenue')) return labels.forwardRevenue;
   if (normalized.includes('historicalfinancials')) return labels.history;
   if (normalized.includes('historicalohlcv')) return labels.ohlcv;
   if (normalized.includes('freecashflow')) return labels.fcf;

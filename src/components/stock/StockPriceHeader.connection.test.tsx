@@ -107,6 +107,18 @@ describe('StockPriceHeader connection indicator', () => {
     expect(container.textContent).not.toContain('กำลังเชื่อมต่อใหม่…');
   });
 
+  it('shows a calm "connected · awaiting live data" pill (never a connection error) when the socket is open but no tick has arrived', () => {
+    render('awaiting-data');
+    // The healthy waiting state, NOT the error text — this is the regression the
+    // production incident was about (WS open + REST 403 → falsely "ขัดข้อง").
+    expect(container.textContent).toContain('เชื่อมต่อแล้ว · รอข้อมูลสด');
+    expect(container.textContent).not.toContain('การเชื่อมต่อขัดข้อง');
+    // The fallback price above is untouched.
+    expect(container.textContent).toContain('187.42');
+    // Calm status, no spinner (a spinner would imply an unhealthy reconnect).
+    expect(container.querySelector('.animate-spin')).toBeNull();
+  });
+
   it('shows a connection-problem badge for degraded/disconnected without dropping the price', () => {
     render('degraded');
     expect(container.textContent).toContain('การเชื่อมต่อขัดข้อง');

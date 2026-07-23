@@ -265,6 +265,13 @@ describe('connection status presentation mapping', () => {
     // Real-time badge, connecting shows only the untouched freshness status.
     expect(connectionStatusPresentation('connecting')).toEqual({ kind: 'none' });
     expect(connectionStatusPresentation('connected')).toEqual({ kind: 'none' });
+    // awaiting-data → a calm "connected, waiting for live data" pill (NOT an error):
+    // the socket is open, just no tick yet. This is the state that used to be
+    // mislabelled "การเชื่อมต่อขัดข้อง" while the WS was actually connected.
+    expect(connectionStatusPresentation('awaiting-data')).toEqual({
+      kind: 'awaiting',
+      label: 'เชื่อมต่อแล้ว · รอข้อมูลสด',
+    });
     // reconnecting → concise pill with the Thai "reconnecting" label.
     expect(connectionStatusPresentation('reconnecting')).toEqual({
       kind: 'reconnecting',

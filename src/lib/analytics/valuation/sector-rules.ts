@@ -10,6 +10,14 @@ export interface SectorValuationRule {
   ruleId: string;
   sectors: string[];
   industryKeywords?: string[];
+  /**
+   * When true, this is a growth-stage relative-multiple rule (the high-growth
+   * industry override). It is applied ONLY when the company's own fundamentals
+   * support a growth / pre-profit stage — never from the industry keyword alone.
+   * A mature, cash-generative prime in the same industry falls through to its
+   * sector rule instead, so it is not valued on a growth multiple by label.
+   */
+  requiresGrowthStage?: boolean;
   preferredModels: ModelId[];
   modelWeights: Partial<Record<ModelId, number>>;
   assumptions: {
@@ -23,6 +31,12 @@ export interface SectorValuationRule {
 export const SECTOR_VALUATION_RULE_VERSION = SECTOR_RULE_VERSION;
 
 const highGrowthIndustries = [
+  // `normalizeClassification` expands "&" to " and ", so a provider industry of
+  // "Aerospace & Defense" normalizes to "aerospace and defense". The bare
+  // "aerospace defense" keyword never matched it (the incident that routed RKLB
+  // into the mature `industrials-v1` rule and its 1.4× EV/Sales multiple). Both
+  // forms are listed so either normalization matches.
+  'aerospace and defense',
   'aerospace defense',
   'space',
   'semiconductor',
@@ -65,6 +79,7 @@ export const SECTOR_VALUATION_RULES: readonly SectorValuationRule[] = [
     ruleId: 'high-growth-industry-v1',
     sectors: [],
     industryKeywords: highGrowthIndustries,
+    requiresGrowthStage: true,
     preferredModels: ['ev-sales', 'ev-ebitda', 'pe', 'peg', 'fcff-dcf'],
     modelWeights: { 'ev-sales': 0.5, 'ev-ebitda': 0.2, pe: 0.1, peg: 0.1, 'fcff-dcf': 0.1 },
     assumptions: {
@@ -201,13 +216,25 @@ export function normalizeClassification(value: string): string {
     .trim();
 }
 
-export function selectSectorValuationRule(sector: string, industry: string): SectorValuationRule {
+export function selectSectorValuationRule(
+  sector: string,
+  industry: string,
+  stageSupportsGrowthMultiple: boolean,
+): SectorValuationRule {
   const normalizedSector = normalizeClassification(sector);
   const normalizedIndustry = normalizeClassification(industry);
+  const sectorRule = SECTOR_VALUATION_RULES.find((rule) => rule.sectors.includes(normalizedSector))
+    ?? SECTOR_VALUATION_RULES.at(-1)!;
   const industryOverride = SECTOR_VALUATION_RULES.find((rule) =>
     rule.industryKeywords?.some((keyword) => normalizedIndustry.includes(normalizeClassification(keyword))),
   );
-  if (industryOverride) return industryOverride;
-  return SECTOR_VALUATION_RULES.find((rule) => rule.sectors.includes(normalizedSector))
-    ?? SECTOR_VALUATION_RULES.at(-1)!;
+  // The industry keyword is only a weak hint. A growth-stage override (e.g.
+  // high-growth-industry-v1) is applied ONLY when the company's fundamentals
+  // actually support a growth / pre-profit stage; otherwise the sector rule wins
+  // so a mature prime is never valued on a growth multiple from its label alone.
+  // Non-growth-gated overrides (e.g. the structural REIT rule) still apply as before.
+  if (industryOverride && (!industryOverride.requiresGrowthStage || stageSupportsGrowthMultiple)) {
+    return industryOverride;
+  }
+  return sectorRule;
 }

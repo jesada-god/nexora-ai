@@ -139,6 +139,10 @@ export function priceDirectionPresentation(direction: PriceDirection) {
  * - `none`         — nothing to show. `connected` relies on the existing
  *   Real-time badge; `connecting` and a REST-only (`null`) deployment stay
  *   neutral, showing only the untouched freshness status.
+ * - `awaiting`     — a calm "เชื่อมต่อแล้ว · รอข้อมูลสด" pill for a genuinely open
+ *   socket that has not yet received its first tick (a quiet/low-volume market).
+ *   It is NOT an error tone: the socket is healthy and the fallback price keeps
+ *   showing until the first live tick flips the header to Real-time.
  * - `reconnecting` — a concise pill ("กำลังเชื่อมต่อใหม่…") with a spinner while
  *   the socket is being restored; the last accepted price keeps showing.
  * - `error`        — "การเชื่อมต่อขัดข้อง" for a degraded/offline connection,
@@ -146,14 +150,20 @@ export function priceDirectionPresentation(direction: PriceDirection) {
  *
  * This maps status → label only. It never derives price, timestamp, session or
  * freshness, so the connection indicator can never alter the displayed value.
+ * Critically, a REST quote failure (e.g. an unentitled provider 403) never
+ * produces `error` here — only a genuinely down socket (`degraded`/`disconnected`)
+ * does, so a working WebSocket is never mislabelled as a broken connection.
  */
 export type ConnectionStatusView =
   | { kind: 'none' }
+  | { kind: 'awaiting'; label: string }
   | { kind: 'reconnecting'; label: string }
   | { kind: 'error'; label: string };
 
 export function connectionStatusPresentation(status: ConnectionStatus | null | undefined): ConnectionStatusView {
   switch (status) {
+    case 'awaiting-data':
+      return { kind: 'awaiting', label: 'เชื่อมต่อแล้ว · รอข้อมูลสด' };
     case 'reconnecting':
       return { kind: 'reconnecting', label: 'กำลังเชื่อมต่อใหม่…' };
     case 'degraded':

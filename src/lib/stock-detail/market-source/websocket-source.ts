@@ -444,6 +444,10 @@ export class WebSocketMarketSourceImpl implements WebSocketMarketSource {
       haltReason: this.haltReason,
       session: this.selection.session,
       barFinalized,
+      // The socket lifecycle at emit time. The coordinator uses this to keep a
+      // genuinely OPEN-but-quiet socket in a healthy "awaiting data" state instead
+      // of degrading to a REST/"connection error" fallback before the first tick.
+      streamStatus: this.state,
     };
     for (const listener of this.listeners) listener(update);
   }

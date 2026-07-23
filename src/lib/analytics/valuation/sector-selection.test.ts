@@ -17,8 +17,14 @@ function input(overrides: Partial<ValuationInput> = {}): ValuationInput {
 }
 
 describe('sector-aware valuation selection', () => {
-  it('normalizes industry and applies the high-growth override without rewriting the sector', () => {
-    expect(selectSectorValuationRule('Industrials', 'Aerospace & Defense').ruleId).toBe('high-growth-industry-v1');
+  it('applies the high-growth industry override only when fundamentals support a growth stage', () => {
+    // Normalizes "Aerospace & Defense" and applies the growth override when the
+    // company's fundamentals support a growth/pre-profit stage (e.g. RKLB).
+    expect(selectSectorValuationRule('Industrials', 'Aerospace & Defense', true).ruleId).toBe('high-growth-industry-v1');
+    // A mature prime in the SAME industry (fundamentals do not support growth) falls
+    // through to the sector rule instead of the growth multiple — one keyword no
+    // longer forces every Aerospace & Defense name into the high-growth rule.
+    expect(selectSectorValuationRule('Industrials', 'Aerospace & Defense', false).ruleId).toBe('industrials-v1');
   });
 
   it('does not use P/E, PEG, EV/EBITDA, or DCF for a loss-making RKLB-style fixture', () => {

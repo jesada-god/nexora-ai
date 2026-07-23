@@ -1,3 +1,4 @@
+import { classifyCompanyStage, type CompanyStageAssessment } from './company-stage';
 import { dividendDiscount, enterpriseMultipleValuation, fcffDcf, pegValuation, priceMultipleValuation } from './formulas';
 import { selectSectorValuationRule, type SectorValuationRule } from './sector-rules';
 import {
@@ -15,6 +16,8 @@ export interface SectorModelSelection {
   models: ModelResult[];
   excludedModels: ExcludedModel[];
   assumptions: ValuationAssumptionDisclosure[];
+  /** Fundamentals-derived lifecycle stage that gated the rule selection. */
+  stage: CompanyStageAssessment;
 }
 
 function finite(value: number | null | undefined): value is number {
@@ -98,16 +101,21 @@ function invalid(model: ModelId, reason: string): ExcludedModel {
 }
 
 export function selectSectorModels(input: ValuationInput): SectorModelSelection {
-  const rule = selectSectorValuationRule(input.sector, input.industry);
+  // Company stage is decided from real fundamentals; the industry keyword is only a
+  // weak hint. This gates the high-growth industry override so a mature prime is
+  // never routed into a growth multiple purely because of its industry label.
+  const stage = classifyCompanyStage(input.sector, input.industry, input.periods);
+  const rule = selectSectorValuationRule(input.sector, input.industry, stage.supportsGrowthMultiple);
   const latest = input.periods.at(-1);
   const models: ModelResult[] = [];
   const excludedModels: ExcludedModel[] = [];
   const assumptions: ValuationAssumptionDisclosure[] = [
     { field: 'sectorRuleId', value: rule.ruleId, source: 'model-assumption', ruleVersion: SECTOR_RULE_VERSION },
+    { field: 'Company Stage', value: stage.stage, source: 'historical-derived', ruleVersion: SECTOR_RULE_VERSION },
     { field: 'WACC', value: rule.assumptions.wacc, source: 'model-assumption', ruleVersion: SECTOR_RULE_VERSION },
     { field: 'Terminal Growth', value: rule.assumptions.terminalGrowth, source: 'model-assumption', ruleVersion: SECTOR_RULE_VERSION },
   ];
-  if (!latest) return { rule, models, excludedModels: [invalid('fcff-dcf', 'No normalized financial period is available')], assumptions };
+  if (!latest) return { rule, models, excludedModels: [invalid('fcff-dcf', 'No normalized financial period is available')], assumptions, stage };
 
   const financialInstitution = /financial|bank|insurance/.test(`${input.sector} ${input.industry}`.toLowerCase());
   const preRevenueBiotech = /biotech/.test(input.industry.toLowerCase()) && latest.revenue <= 0;
@@ -177,5 +185,5 @@ export function selectSectorModels(input: ValuationInput): SectorModelSelection 
       { field: 'Tax Rate', value: dcfAssumptions.taxRate, source: 'model-assumption', ruleVersion: SECTOR_RULE_VERSION },
     );
   }
-  return { rule, models, excludedModels, assumptions };
+  return { rule, models, excludedModels, assumptions, stage };
 }

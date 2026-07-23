@@ -10,6 +10,7 @@ import {
   SECTOR_RULE_VERSION,
   type FairValueResult,
   type FinancialPeriod,
+  type ModelResult,
   type ValuationInput,
   type ValuationInputDisclosure,
 } from './types';
@@ -50,6 +51,51 @@ export function dataSufficiency(input: Partial<ValuationInput>, now = Date.now()
   return { ok: missingInputs.length === 0, missingInputs: [...new Set(missingInputs)], staleInputs };
 }
 
+/** Relative multiples that rest on a versioned assumption, not intrinsic cash flows. */
+const RELATIVE_ASSUMPTION_MODELS = new Set<ModelResult['model']>(['ev-sales', 'ev-ebitda', 'pe', 'peg', 'pb']);
+
+/** Count of finite, positive, verifiable peer multiples actually supplied (never fabricated). */
+export function verifiablePeerCount(input: Partial<ValuationInput>): number {
+  return (input.peerMultiples ?? []).filter((peer) => Number.isFinite(peer.multiple) && peer.multiple > 0).length;
+}
+
+/**
+ * Refuses to publish a valuation that would rest ONLY on a versioned assumption
+ * multiple (EV/Sales) for a growth / pre-profit company, when no verifiable peer
+ * set (>= 5) and no forward/NTM revenue exist to justify a growth multiple.
+ *
+ * This is the direct fix for the RKLB `$3.92 / -94%` incident: negative
+ * EPS/EBITDA/FCF correctly exclude P/E, PEG, EV/EBITDA and DCF, leaving EV/Sales
+ * as the SOLE survivor — i.e. a model selected only because it is the one left.
+ * Applying a mature-sector multiple to trailing revenue then produces a
+ * misleadingly precise point estimate. Rather than fabricate peers or a forward
+ * revenue, we surface an honest "cannot value reliably yet" with the exact
+ * missing inputs. A future real peer-data source (>= 5 peers) or a provider
+ * forward revenue lifts the gate automatically.
+ */
+export function meaningfulModelGate(
+  input: Pick<ValuationInput, 'periods' | 'peerMultiples' | 'forwardRevenue'>,
+  models: readonly ModelResult[],
+): { ok: true } | { ok: false; reason: string; missingFields: string[] } {
+  const soleAssumptionRelative = models.length === 1 && RELATIVE_ASSUMPTION_MODELS.has(models[0].model);
+  if (!soleAssumptionRelative) return { ok: true };
+  const latest = input.periods.at(-1);
+  const preProfit = !!latest && (
+    latest.netIncome <= 0
+    || latest.freeCashFlow <= 0
+    || (finite(latest.dilutedEps) && latest.dilutedEps <= 0)
+  );
+  if (!preProfit) return { ok: true };
+  const hasPeers = verifiablePeerCount(input) >= 5;
+  const hasForwardRevenue = !!input.forwardRevenue && Number.isFinite(input.forwardRevenue.value) && input.forwardRevenue.value > 0;
+  if (hasPeers || hasForwardRevenue) return { ok: true };
+  return {
+    ok: false,
+    reason: 'ประเมินจาก EV/Sales เพียงตัวเดียวโดยใช้ multiple สมมติ และบริษัทยังขาดทุน จึงไม่มี peer set (>=5) หรือ forward revenue ที่ระบุงวดมายืนยัน multiple การเติบโต — ไม่เผยแพร่ค่าประเมินที่ดูแม่นยำเกินจริง',
+    missingFields: ['verifiablePeerSet>=5', 'forwardRevenueWithPeriod'],
+  };
+}
+
 export function calculateFairValue(input: ValuationInput, now = Date.now()): FairValueResult {
   const calculatedAt = input.calculatedAt ?? new Date(now).toISOString();
   const gate = dataSufficiency(input, now);
@@ -69,6 +115,24 @@ export function calculateFairValue(input: ValuationInput, now = Date.now()): Fai
   }
 
   const selection = selectSectorModels(input);
+  const meaningful = meaningfulModelGate(input, selection.models);
+  if (!meaningful.ok) {
+    return createFairValueUnavailable({
+      failureKind: 'missing-field',
+      symbol: input.symbol,
+      currency: input.currency,
+      provider: input.source,
+      reason: meaningful.reason,
+      missingFields: meaningful.missingFields,
+      staleInputs: gate.staleInputs,
+      asOf: input.priceAsOf,
+      calculatedAt,
+      limitations: [
+        'A model is never forced onto an unsuitable company.',
+        'ค่าประเมินจะไม่ถูกเผยแพร่หากอ้างอิงเพียง multiple สมมติโดยไม่มี peer set ที่ตรวจสอบได้',
+      ],
+    });
+  }
   if (!selection.models.length) {
     return createFairValueUnavailable({
       failureKind: 'missing-field',
@@ -91,7 +155,8 @@ export function calculateFairValue(input: ValuationInput, now = Date.now()): Fai
     excludedModels: selection.excludedModels,
     evidence: [
       ...baseClassification.evidence,
-      `Sector rule ${selection.rule.ruleId} selected from normalized sector and industry`,
+      `Company stage (${selection.stage.stage}): ${selection.stage.reason}`,
+      `Sector rule ${selection.rule.ruleId} selected from fundamentals-gated sector/industry`,
       ...selection.models.map((model) => `${model.model}: ${model.reason ?? 'model-specific validation passed'}`),
     ],
   };
@@ -103,17 +168,34 @@ export function calculateFairValue(input: ValuationInput, now = Date.now()): Fai
   const completeness = Math.max(0, 100 - selection.excludedModels.length * 8);
   const freshness = gate.staleInputs.length ? 35 : input.providerStatus === 'cached' ? 75 : 100;
   const currencyConsistency = 100;
-  const reliability = modelReliability({
+  const peerSampleSize = verifiablePeerCount(input);
+  const reliabilityRaw = modelReliability({
     completeness,
     freshness,
     periodConsistency,
     modelCount: composite.models.length,
     dispersion: composite.dispersion,
     cashFlowStability: Math.min(100, quality.score),
-    peerSampleSize: 0,
+    peerSampleSize,
     currencyConsistency,
     sensitivity: uncertainty,
   });
+  // A single relative multiple resting on a versioned ASSUMPTION with no
+  // verifiable peer set is not a Moderate/High-confidence estimate no matter how
+  // complete the statements are — the multiple itself is unvalidated. Cap it to
+  // Low so the header never overstates confidence ("ห้าม hardcode ปานกลาง"). This
+  // only bites the assumption-only single-model case; blended/peer-backed and
+  // cash-flow-anchored (DCF/DDM) valuations keep their computed level.
+  const singleAssumptionMultiple = composite.models.length === 1
+    && RELATIVE_ASSUMPTION_MODELS.has(composite.models[0].model)
+    && peerSampleSize < 5;
+  const reliability = singleAssumptionMultiple && (reliabilityRaw.level === 'High' || reliabilityRaw.level === 'Moderate')
+    ? {
+        ...reliabilityRaw,
+        level: 'Low' as const,
+        explanation: `${reliabilityRaw.explanation} ระดับถูกจำกัดที่ Low เพราะใช้ multiple สมมติเพียงตัวเดียวและไม่มี peer set ที่ตรวจสอบได้ (>=5).`,
+      }
+    : reliabilityRaw;
 
   const scenarioFor = (index: number) => composite.models[index].scenarios ?? {
     conservative: composite.models[index].fairValue,

@@ -63,6 +63,20 @@ export interface ValuationInput {
     asOf: string;
     period: string;
   } | null;
+  /**
+   * Verifiable peer multiples for a relative valuation, when a real peer-data
+   * source is wired. Absent/empty means "no verifiable peer set" — the meaningful
+   * -model gate then refuses to publish a growth/pre-profit EV/Sales point
+   * estimate that rests solely on a versioned assumption multiple (the RKLB
+   * $3.92 incident). Never fabricated: only a real provider fills this.
+   */
+  peerMultiples?: Array<{ symbol: string; multiple: number }> | null;
+  /**
+   * Forward / NTM revenue with an explicit period, when a provider supplies it.
+   * A growth-name EV/Sales is only defensible on forward revenue or a verifiable
+   * peer set; absent means neither is available.
+   */
+  forwardRevenue?: { value: number; period: string; provider: string; asOf: string } | null;
   providerStatus?: Exclude<FairValueDataStatus, 'unavailable'>;
   displayFx?: {
     rate: number;

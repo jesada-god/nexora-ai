@@ -51,38 +51,56 @@ function rklbInput(overrides: Partial<ValuationInput> = {}): ValuationInput {
 
 const NOW = Date.parse('2025-01-03T00:00:00.000Z');
 
-describe('RKLB-style pre-profit Fair Value regression (methodology unchanged)', () => {
-  it('excludes P/E, PEG and DCF and selects EV/Sales when only revenue is defensible', () => {
-    const result = calculateFairValue(rklbInput(), NOW);
+// Five illustrative peer EV/Sales multiples used only to prove the gate is
+// peer-aware. They are test inputs, never fabricated inside the engine.
+const FIVE_PEERS = [
+  { symbol: 'ASTS', multiple: 18 },
+  { symbol: 'LUNR', multiple: 12 },
+  { symbol: 'RDW', multiple: 9 },
+  { symbol: 'PL', multiple: 7 },
+  { symbol: 'BKSY', multiple: 6 },
+];
+
+describe('RKLB-style pre-profit Fair Value gate (assumption-only EV/Sales is not published)', () => {
+  it('maps "Aerospace & Defense" to the high-growth rule (classification miss fixed)', () => {
+    // Provide peers so the gate lifts and the selected rule is observable. The
+    // normalized industry "aerospace and defense" now matches the high-growth rule.
+    const result = calculateFairValue(rklbInput({ peerMultiples: FIVE_PEERS }), NOW);
     expect(result.status).toBe('available');
     if (result.status !== 'available') return;
-    const selected = result.modelResults.map((model) => model.model);
-    // Negative EPS blocks P/E and PEG (and there is no Graham model for such names);
-    // negative FCF/EBITDA blocks a forced DCF and EV/EBITDA. Only EV/Sales survives.
-    expect(selected).toEqual(['ev-sales']);
-    expect(result.selectedModel).toBe('ev-sales');
-    const excluded = result.excludedModels.map((model) => model.model);
-    expect(excluded).toEqual(expect.arrayContaining(['pe', 'peg', 'ev-ebitda', 'fcff-dcf']));
+    expect(result.sectorRuleId).toBe('high-growth-industry-v1');
   });
 
-  it('bridges enterprise value to equity with EV + cash - debt over validated shares', () => {
+  it('gates to UNAVAILABLE when EV/Sales is the sole survivor for a pre-profit name with no peers/forward revenue', () => {
     const result = calculateFairValue(rklbInput(), NOW);
+    // The exact RKLB $3.92 incident: negative EPS/EBITDA/FCF exclude every other
+    // model, leaving an assumption-multiple EV/Sales as the only survivor. Without
+    // a verifiable peer set or forward revenue, no defensible value is published.
+    expect(result.status).toBe('unavailable');
+    if (result.status !== 'unavailable') return;
+    expect(result.missingFields).toEqual(expect.arrayContaining(['verifiablePeerSet>=5', 'forwardRevenueWithPeriod']));
+    expect(result.reason).toMatch(/peer set|forward revenue/i);
+  });
+
+  it('lifts the gate when a verifiable peer set (>=5) is supplied', () => {
+    const result = calculateFairValue(rklbInput({ peerMultiples: FIVE_PEERS }), NOW);
     expect(result.status).toBe('available');
     if (result.status !== 'available') return;
+    expect(result.modelResults.map((model) => model.model)).toEqual(['ev-sales']);
+    // Bridges enterprise value to equity: (revenue × multiple + cash − debt) / shares.
     const model = result.modelResults.find((item) => item.model === 'ev-sales')!;
-    const revenue = Number(model.inputs.metric);
-    const cash = Number(model.inputs.cash);
-    const debt = Number(model.inputs.totalDebt);
-    const shares = Number(model.inputs.dilutedShares);
-    const baseMultiple = Number(model.assumptions.baseMultiple);
-    // equity per share = (revenue × multiple + cash − debt) / shares
-    const expectedBase = (revenue * baseMultiple + cash - debt) / shares;
+    const expectedBase = (Number(model.inputs.metric) * Number(model.assumptions.baseMultiple) + Number(model.inputs.cash) - Number(model.inputs.totalDebt)) / Number(model.inputs.dilutedShares);
     expect(model.scenarios!.base).toBeCloseTo(expectedBase, 6);
     expect(model.methodology).toContain('enterprise value + cash - debt');
   });
 
-  it('keeps Conservative <= Base <= Optimistic and never emits NaN/Infinity or a silent zero', () => {
-    const result = calculateFairValue(rklbInput(), NOW);
+  it('lifts the gate when a provider forward revenue with an explicit period is supplied', () => {
+    const result = calculateFairValue(rklbInput({ forwardRevenue: { value: 700, period: 'NTM', provider: 'fmp', asOf: '2025-01-02T00:00:00.000Z' } }), NOW);
+    expect(result.status).toBe('available');
+  });
+
+  it('keeps Conservative <= Base <= Optimistic and never emits NaN/Infinity or a silent zero (peer-backed)', () => {
+    const result = calculateFairValue(rklbInput({ peerMultiples: FIVE_PEERS }), NOW);
     expect(result.status).toBe('available');
     if (result.status !== 'available') return;
     const { conservative, base, optimistic, centralEstimate } = result.fundamentalFairValue;
@@ -94,8 +112,8 @@ describe('RKLB-style pre-profit Fair Value regression (methodology unchanged)', 
     expect(centralEstimate).toBeGreaterThan(0);
   });
 
-  it('exposes assumptions and provider provenance, in USD, with no THB conversion', () => {
-    const result = calculateFairValue(rklbInput(), NOW);
+  it('exposes assumptions and provider provenance, in USD, with no THB conversion (peer-backed)', () => {
+    const result = calculateFairValue(rklbInput({ peerMultiples: FIVE_PEERS }), NOW);
     expect(result.status).toBe('available');
     if (result.status !== 'available') return;
     expect(result.currency).toBe('USD');
@@ -103,18 +121,16 @@ describe('RKLB-style pre-profit Fair Value regression (methodology unchanged)', 
     expect(result.assumptionDetails.length).toBeGreaterThan(0);
     expect(result.sources.some((source) => source.name === 'alpha-vantage')).toBe(true);
     expect(result.methodologyVersion).toBe('nexora-fv-v1');
-    // Every disclosed input is quoted in USD (or a null-currency share count), never THB.
     expect(result.inputDetails.every((item) => item.currency === null || item.currency === 'USD')).toBe(true);
   });
 
   it('validates share scale: non-positive diluted shares yield unavailable, not a divide-by-zero', () => {
-    const result = calculateFairValue(rklbInput({ periods: preProfitPeriods({ dilutedShares: 0 }) }), NOW);
+    const result = calculateFairValue(rklbInput({ periods: preProfitPeriods({ dilutedShares: 0 }), peerMultiples: FIVE_PEERS }), NOW);
     expect(result.status).toBe('unavailable');
   });
 
   it('validates revenue units: non-positive revenue removes EV/Sales instead of fabricating a value', () => {
-    const result = calculateFairValue(rklbInput({ periods: preProfitPeriods({ revenue: 0 }) }), NOW);
-    // With revenue gone and every other model already ineligible, no model is defensible.
+    const result = calculateFairValue(rklbInput({ periods: preProfitPeriods({ revenue: 0 }), peerMultiples: FIVE_PEERS }), NOW);
     if (result.status === 'available') {
       expect(result.modelResults.every((model) => model.model !== 'ev-sales')).toBe(true);
     } else {

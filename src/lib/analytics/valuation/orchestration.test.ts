@@ -23,17 +23,22 @@ vi.mock('../fundamentals/provider', () => ({
 
 import { calculateFairValueSafely, loadFairValue } from './orchestration';
 
+// A PROFITABLE multi-model fixture: these orchestration tests exercise provider
+// provenance and FX independence, not the meaningful-model gate. A profitable
+// company keeps several models eligible (EV/Sales, EV/EBITDA, P/E, DCF), so the
+// result is a genuine blended `available` valuation — never the assumption-only
+// single-EV/Sales case that the pre-profit gate now (correctly) marks unavailable.
 const periods = [2023, 2024, 2025].map((year, index) => ({
   periodEnd: `${year}-12-31`,
   currency: 'USD',
   revenue: 800 + index * 100,
-  operatingIncome: -20,
-  netIncome: -30,
+  operatingIncome: 120,
+  netIncome: 90,
   depreciationAmortization: 10,
   capitalExpenditure: -40,
   changeInWorkingCapital: 5,
-  operatingCashFlow: -5,
-  freeCashFlow: -45,
+  operatingCashFlow: 130,
+  freeCashFlow: 90,
   dividendsPaid: null,
   interestExpense: 10,
   totalDebt: 200,
@@ -41,8 +46,8 @@ const periods = [2023, 2024, 2025].map((year, index) => ({
   totalAssets: 1200,
   totalLiabilities: 700,
   dilutedShares: 100,
-  ebitda: -10,
-  dilutedEps: -0.3,
+  ebitda: 150,
+  dilutedEps: 0.8,
   totalEquity: 500,
 }));
 const history = Array.from({ length: 60 }, (_, index) => ({
@@ -205,7 +210,10 @@ describe('Fair Value orchestration failures', () => {
 
     expect(result.status).toBe('available');
     if (result.status === 'available') {
-      expect(result.modelResults.map((model) => model.model)).toEqual(['ev-sales']);
+      // A profitable name keeps EV/Sales among several eligible models (blended),
+      // so it is never the gated assumption-only single-EV/Sales case.
+      expect(result.modelResults.some((model) => model.model === 'ev-sales')).toBe(true);
+      expect(result.modelResults.length).toBeGreaterThan(1);
       expect(result.displayFx).toBeNull();
     }
   });
