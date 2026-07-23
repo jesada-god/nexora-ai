@@ -247,26 +247,31 @@ export function StockPriceHeader({
   const showBook = displayBid != null && Number.isFinite(displayBid) && displayAsk != null && Number.isFinite(displayAsk);
 
   return <>
-    <section className="min-h-40 min-w-0 overflow-hidden rounded-2xl border border-border bg-bg-card p-4 shadow-xl sm:p-5">
+    <section className="min-h-32 min-w-0 overflow-hidden rounded-2xl border border-border bg-bg-card p-4 shadow-xl sm:p-5">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0 flex-1">
-          <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 font-mono tabular-nums">
-            <p
-              key={priceFlash.nonce}
-              className={displayPrice === null
-                ? 'max-w-full break-words font-sans text-2xl font-bold leading-tight tracking-tight text-text-main [overflow-wrap:anywhere] sm:text-3xl'
-                : `max-w-full break-words rounded-md px-1.5 -mx-1.5 text-[clamp(2rem,11vw,3rem)] font-bold leading-none tracking-tight text-text-main [overflow-wrap:anywhere] ${flashClass(priceFlash.direction)}`}>
-              {displayPrice === null ? 'ไม่พบราคาล่าสุด' : formatNumber(displayPrice)}
-            </p>
+          <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 font-mono tabular-nums">
+            {/* Price + currency are one flow unit: a narrow-width wrap can drop the
+                change onto a second line, but the USD/THB label can never be
+                orphaned onto its own line — it always stays beside the price. */}
+            <span className="flex min-w-0 max-w-full items-baseline gap-x-2">
+              <span
+                key={priceFlash.nonce}
+                className={displayPrice === null
+                  ? 'min-w-0 break-words font-sans text-2xl font-bold leading-tight tracking-tight text-text-main [overflow-wrap:anywhere] sm:text-3xl'
+                  : `min-w-0 break-words rounded-md px-1.5 -mx-1.5 text-[clamp(2rem,11vw,3rem)] font-bold leading-none tracking-tight text-text-main [overflow-wrap:anywhere] ${flashClass(priceFlash.direction)}`}>
+                {displayPrice === null ? 'ไม่พบราคาล่าสุด' : formatNumber(displayPrice)}
+              </span>
+              <span className="shrink-0 whitespace-nowrap text-sm font-semibold text-text-muted">{displayedCurrency}</span>
+            </span>
             {regularChange && <div className={`flex min-w-0 flex-wrap items-baseline gap-x-2 text-base font-semibold sm:text-lg ${directionClass(changeDirection)}`}>
               <span className="break-words [overflow-wrap:anywhere]">{formatSigned(displayChange)}</span>
               <span className="break-words [overflow-wrap:anywhere]">{formatPercent(regularChange.percent)}</span>
               {directionMark(changeDirection) && <span aria-label={changeDirection === 'up' ? 'ราคาเพิ่มขึ้น' : 'ราคาลดลง'}>{directionMark(changeDirection)}</span>}
             </div>}
-            <span className="text-sm font-semibold text-text-muted">{displayedCurrency}</span>
           </div>
 
-          <div className="mt-3 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-sm text-text-muted">
+          <div className="mt-2 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-sm text-text-muted">
             {fallbackLabel && <span className="text-amber-300">{fallbackLabel === 'Intraday close fallback' ? 'ราคาปิด intraday ล่าสุด (fallback)' : 'ข้อมูลจากวันซื้อขายก่อนหน้า'}</span>}
             {fallbackLabel && <span aria-hidden="true">·</span>}
             <span>{formatProviderTimestamp(displayedQuoteAsOf, Boolean(quoteDate))}</span>
