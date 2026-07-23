@@ -1,5 +1,11 @@
 import { z } from 'zod';
-import { MARKET_CHANNELS, normalizedMarketEventSchema } from './events';
+import {
+  MARKET_CHANNELS,
+  normalizedBarSchema,
+  normalizedMarketEventSchema,
+  normalizedQuoteSchema,
+  normalizedTradeSchema,
+} from './events';
 
 /**
  * The control protocol spoken between the **browser** and the **Gateway**.
@@ -67,6 +73,37 @@ export const eventFrameSchema = z.object({
   event: normalizedMarketEventSchema,
 });
 
+/**
+ * The current market state for one symbol, delivered immediately after a
+ * subscribe so the browser can show live prices WITHOUT waiting for the next
+ * trade tick — the fix for a thinly-traded symbol whose header would otherwise
+ * sit on a REST/previous-close fallback while its live 1m candle stayed empty.
+ *
+ * `trade` is the latest eligible trade (the last price and the current-minute
+ * close), `quote` the latest top-of-book, and `bars` a short run of the most
+ * recent finalized 1-minute bars (ascending, `updated: false`) so the chart has
+ * canonical minutes to seed and aggregate from. Every field is REAL provider
+ * data or absent — nothing here is interpolated. `origin` is the honest
+ * provenance: `cache` (warmed from the live upstream stream) or `rest` (a
+ * server-side Alpaca REST bootstrap when the cache had nothing yet).
+ */
+export const marketSnapshotSchema = z.object({
+  symbol: z.string().min(1),
+  trade: normalizedTradeSchema.nullable(),
+  quote: normalizedQuoteSchema.nullable(),
+  bars: z.array(normalizedBarSchema),
+  origin: z.enum(['cache', 'rest']),
+  /** When the Gateway assembled the snapshot (unix ms). */
+  asOfMs: z.number().int().nonnegative(),
+});
+export type MarketSnapshot = z.infer<typeof marketSnapshotSchema>;
+
+/** A per-symbol initial snapshot pushed to a client right after it subscribes. */
+export const snapshotFrameSchema = z.object({
+  type: z.literal('snapshot'),
+  snapshot: marketSnapshotSchema,
+});
+
 export const errorFrameSchema = z.object({
   type: z.literal('error'),
   code: z.string(),
@@ -91,6 +128,7 @@ export const limitExceededFrameSchema = z.object({
 export const serverFrameSchema = z.discriminatedUnion('type', [
   connectedFrameSchema,
   subscribedFrameSchema,
+  snapshotFrameSchema,
   eventFrameSchema,
   errorFrameSchema,
   pongFrameSchema,

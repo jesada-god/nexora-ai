@@ -37,7 +37,7 @@ export interface ExtendedHoursQuote {
   price: number;
   asOf: string;
   freshness: DataFreshness;
-  provider: string;
+  provider: string | null;
 }
 
 interface StockPriceHeaderProps {
@@ -215,7 +215,7 @@ export function StockPriceHeader({
       ? convertUsdForDisplay(extendedChange.amount, selectedCurrency, fxRate)
       : extendedChange.amount
     : null;
-  const session = deriveMarketSession(market, extendedChange ? extendedQuote?.session : null);
+  const session = deriveMarketSession(market);
   const sessionView = marketSessionPresentation(session);
   const dataStatus = regularPrice === null ? 'unavailable' : resolveDataStatus(freshness, Date.parse(evaluatedAt));
   const dataStatusView = dataStatusPresentation(dataStatus);
@@ -230,15 +230,13 @@ export function StockPriceHeader({
   const extendedFlash = usePriceFlash(extendedQuote?.price ?? null);
   const thbUnavailable = !verifiedUsdSource || fxRate === null || !Number.isFinite(fxRate) || fxRate <= 0;
   const quoteCoolingDown = quoteRetryAt > 0;
-  const quoteDate = quote?.latestTradingDay ?? null;
-  const displayedQuoteAsOf = quoteDate ?? freshness.asOf;
-  const combinedStatus = market
-    ? `${sessionView.label} · ${dataStatusView.label}`
-    : 'ไม่สามารถตรวจสอบสถานะตลาดได้';
+  const quoteDate = freshness.asOf ? null : quote?.latestTradingDay ?? null;
+  const displayedQuoteAsOf = freshness.asOf ?? quoteDate;
+  const combinedStatus = market ? sessionView.label : 'ไม่สามารถตรวจสอบสถานะตลาดได้';
   // Real-time badge is gated on the truthful `realtime` flag (a genuine live
   // feed), never on the data-status heuristic alone.
   const feedLabel = feed ? feed.toUpperCase() : null;
-  const showRealtime = realtime && regularPrice !== null && feedLabel !== null;
+  const showRealtime = realtime && extendedQuote === null && regularPrice !== null && feedLabel !== null;
   // Status-only view of the live socket. Never derives price/freshness — it is
   // rendered ALONGSIDE the existing status, never replacing it.
   const connectionView = connectionStatusPresentation(connectionState);
@@ -250,36 +248,37 @@ export function StockPriceHeader({
     <section className="min-h-32 min-w-0 overflow-hidden rounded-2xl border border-border bg-bg-card p-4 shadow-xl sm:p-5">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0 flex-1">
-          <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 font-mono tabular-nums">
-            {/* Price + currency are one flow unit: a narrow-width wrap can drop the
-                change onto a second line, but the USD/THB label can never be
-                orphaned onto its own line — it always stays beside the price. */}
-            <span className="flex min-w-0 max-w-full items-baseline gap-x-2">
+          <div className="flex min-w-0 flex-wrap items-baseline gap-x-2.5 gap-y-1 font-mono tabular-nums">
+            {/* Price + currency are one atomic flow unit. The change may wrap below
+                it on mobile, but no numeric token may ever split mid-number. */}
+            <span className="inline-flex max-w-full shrink-0 items-baseline gap-x-2 whitespace-nowrap">
               <span
                 key={priceFlash.nonce}
                 className={displayPrice === null
-                  ? 'min-w-0 break-words font-sans text-2xl font-bold leading-tight tracking-tight text-text-main [overflow-wrap:anywhere] sm:text-3xl'
-                  : `min-w-0 break-words rounded-md px-1.5 -mx-1.5 text-[clamp(2rem,11vw,3rem)] font-bold leading-none tracking-tight text-text-main [overflow-wrap:anywhere] ${flashClass(priceFlash.direction)}`}>
+                  ? 'font-sans text-2xl font-bold leading-tight tracking-tight text-text-main sm:text-3xl'
+                  : `whitespace-nowrap rounded-md px-1.5 -mx-1.5 text-[clamp(1.75rem,9vw,3rem)] font-bold leading-none tracking-tight text-text-main ${flashClass(priceFlash.direction)}`}>
                 {displayPrice === null ? 'ไม่พบราคาล่าสุด' : formatNumber(displayPrice)}
               </span>
               <span className="shrink-0 whitespace-nowrap text-sm font-semibold text-text-muted">{displayedCurrency}</span>
             </span>
-            {regularChange && <div className={`flex min-w-0 flex-wrap items-baseline gap-x-2 text-base font-semibold sm:text-lg ${directionClass(changeDirection)}`}>
-              <span className="break-words [overflow-wrap:anywhere]">{formatSigned(displayChange)}</span>
-              <span className="break-words [overflow-wrap:anywhere]">{formatPercent(regularChange.percent)}</span>
+            {regularChange && <div className={`inline-flex shrink-0 items-baseline gap-x-2 whitespace-nowrap text-base font-semibold sm:text-lg ${directionClass(changeDirection)}`}>
+              <span className="whitespace-nowrap">{formatSigned(displayChange)}</span>
+              <span className="whitespace-nowrap">{formatPercent(regularChange.percent)}</span>
               {directionMark(changeDirection) && <span aria-label={changeDirection === 'up' ? 'ราคาเพิ่มขึ้น' : 'ราคาลดลง'}>{directionMark(changeDirection)}</span>}
             </div>}
           </div>
 
           <div className="mt-2 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-sm text-text-muted">
-            {fallbackLabel && <span className="text-amber-300">{fallbackLabel === 'Intraday close fallback' ? 'ราคาปิด intraday ล่าสุด (fallback)' : 'ข้อมูลจากวันซื้อขายก่อนหน้า'}</span>}
-            {fallbackLabel && <span aria-hidden="true">·</span>}
-            <span>{formatProviderTimestamp(displayedQuoteAsOf, Boolean(quoteDate))}</span>
-            <span aria-hidden="true">·</span>
             <span className="inline-flex min-w-0 items-center gap-1.5">
               <StatusEmoji value={market ? sessionView.emoji : '⚠️'}/>
               <span>{combinedStatus}</span>
             </span>
+            <span aria-hidden="true">·</span>
+            <span className="whitespace-nowrap tabular-nums">{formatProviderTimestamp(displayedQuoteAsOf, Boolean(quoteDate))}</span>
+            <span aria-hidden="true">·</span>
+            <span>{dataStatusView.label}</span>
+            {fallbackLabel && <span aria-hidden="true">·</span>}
+            {fallbackLabel && <span className="text-amber-300">{fallbackLabel === 'Intraday close fallback' ? 'ราคาปิด intraday ล่าสุด (fallback)' : 'ข้อมูลจากวันซื้อขายก่อนหน้า'}</span>}
             {showRealtime && <>
               <span aria-hidden="true">·</span>
               <span
@@ -376,14 +375,14 @@ export function StockPriceHeader({
 
       {currency === 'THB' && thbUnavailable && <p className="mt-3 rounded-lg border border-amber-400/20 bg-amber-400/5 p-3 text-sm text-amber-300">ไม่มีอัตรา USD/THB จริงที่ตรวจสอบได้</p>}
 
-      {extendedQuote && extendedChange && displayExtendedPrice !== null && displayExtendedChange !== null && <div className="mt-4 flex flex-wrap items-baseline gap-x-3 gap-y-1 border-t border-border pt-3 font-mono text-sm tabular-nums">
-        <span className="inline-flex items-center gap-1.5 font-sans font-semibold text-text-main">
+      {extendedQuote && extendedChange && displayExtendedPrice !== null && displayExtendedChange !== null && <div data-testid="extended-hours-row" className="mt-4 flex min-w-0 flex-wrap items-baseline gap-x-3 gap-y-1.5 border-t border-border pt-3 font-mono text-sm tabular-nums">
+        <span className="inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap font-sans font-semibold text-text-main">
           <StatusEmoji value={marketSessionPresentation(extendedQuote.session).emoji}/>
           {marketSessionPresentation(extendedQuote.session).label}
         </span>
-        <span key={extendedFlash.nonce} className={`break-all rounded px-1 -mx-1 text-text-main ${flashClass(extendedFlash.direction)}`}>{formatNumber(displayExtendedPrice)} {displayedCurrency}</span>
-        <span className={`break-all ${directionClass(extendedDirection)}`}>{formatSigned(displayExtendedChange)} {formatPercent(extendedChange.percent)} {directionMark(extendedDirection)}</span>
-        <span className="text-text-muted">{formatProviderTimestamp(extendedQuote.asOf, extendedQuote.freshness.status === 'end-of-day')}</span>
+        <span key={extendedFlash.nonce} className={`shrink-0 whitespace-nowrap rounded px-1 -mx-1 text-text-main ${flashClass(extendedFlash.direction)}`}>{formatNumber(displayExtendedPrice)}</span>
+        <span className={`shrink-0 whitespace-nowrap ${directionClass(extendedDirection)}`}>{formatSigned(displayExtendedChange)} {formatPercent(extendedChange.percent)} {directionMark(extendedDirection)}</span>
+        <span className="shrink-0 whitespace-nowrap text-text-muted">{formatProviderTimestamp(extendedQuote.asOf)}</span>
         {extendedDataStatusView && <span className="inline-flex items-center gap-1.5 text-text-muted">{extendedDataStatusView.emoji && <StatusEmoji value={extendedDataStatusView.emoji}/>} {extendedDataStatusView.label}</span>}
       </div>}
 
@@ -398,7 +397,7 @@ export function StockPriceHeader({
         <Detail label="Session" value={combinedStatus}/>
         <Detail label="Regular Price" value={`${formatNumber(regularPrice)} ${normalizedSourceCurrency ?? 'ไม่ทราบสกุลเงิน'}`}/>
         {!fallbackLabel && <Detail label="Previous Close" value={`${formatNumber(quote?.previousClose ?? null)} ${normalizedSourceCurrency ?? 'ไม่ทราบสกุลเงิน'}`}/>}
-        {extendedQuote && extendedChange && <Detail label="Extended Price" value={`${formatNumber(extendedQuote.price)} ${normalizedSourceCurrency ?? 'ไม่ทราบสกุลเงิน'} · ${extendedQuote.provider}`}/>}
+        {extendedQuote && extendedChange && <Detail label="Extended Price" value={`${formatNumber(extendedQuote.price)} ${normalizedSourceCurrency ?? 'ไม่ทราบสกุลเงิน'} · ${extendedQuote.provider ?? 'ไม่พบข้อมูล'}`}/>}
         {!fallbackLabel && <Detail label="Comparison Base" value={extendedQuote && extendedChange ? 'Official Regular Close' : 'Previous Close'}/>}
         <Detail label="Display Currency" value={displayedCurrency}/>
         <Detail

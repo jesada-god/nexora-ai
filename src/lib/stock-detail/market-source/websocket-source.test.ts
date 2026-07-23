@@ -71,6 +71,52 @@ describe('WebSocketMarketSource lifecycle', () => {
     expect(last.candle?.close).toBe(190.5);
   });
 
+  it('seeds header price + current 1m candle from the initial snapshot without waiting for a trade', () => {
+    const { source, sockets, updates, connect } = setup();
+    source.start();
+    connect(sockets[0]);
+    const before = updates.length;
+    sockets[0].emit({
+      type: 'snapshot',
+      snapshot: {
+        symbol: 'AAPL',
+        trade: { kind: 'trade', symbol: 'AAPL', price: 69.71, size: 12, timestampMs: Date.parse('2024-01-02T15:04:30Z') },
+        quote: { kind: 'quote', symbol: 'AAPL', bidPrice: 69.70, bidSize: 3, askPrice: 69.72, askSize: 4, timestampMs: Date.parse('2024-01-02T15:04:31Z') },
+        bars: [
+          { kind: 'bar', symbol: 'AAPL', open: 69.5, high: 69.8, low: 69.4, close: 69.6, volume: 800, timestampMs: Date.parse('2024-01-02T15:03:00Z'), updated: false },
+        ],
+        origin: 'rest',
+        asOfMs: Date.parse('2024-01-02T15:04:31Z'),
+      },
+    });
+    expect(updates.length).toBeGreaterThan(before); // emitted immediately, no trade needed
+    const last = updates[updates.length - 1];
+    // Header price and the current 1m candle close are the SAME snapshot trade.
+    expect(last.price).toBe(69.71);
+    expect(last.candle?.close).toBe(69.71);
+    expect(last.label.mode).toBe('REAL-TIME');
+    expect(last).toMatchObject({ bid: 69.70, ask: 69.72 });
+  });
+
+  it('a snapshot never regresses an already-newer live last price', () => {
+    const { source, sockets, updates, connect, tradeAt } = setup();
+    source.start();
+    connect(sockets[0]);
+    sockets[0].emit(tradeAt('2024-01-02T15:05:00Z', 71.0)); // newer live trade first
+    sockets[0].emit({
+      type: 'snapshot',
+      snapshot: {
+        symbol: 'AAPL',
+        trade: { kind: 'trade', symbol: 'AAPL', price: 69.71, size: 1, timestampMs: Date.parse('2024-01-02T15:04:30Z') },
+        quote: null,
+        bars: [],
+        origin: 'cache',
+        asOfMs: Date.parse('2024-01-02T15:05:01Z'),
+      },
+    });
+    expect(updates[updates.length - 1].price).toBe(71.0); // older snapshot ignored
+  });
+
   it('never claims real-time for the test/FAKEPACA feed', () => {
     const { source, sockets, updates, connect, tradeAt } = setup();
     source.start();

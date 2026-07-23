@@ -6,6 +6,7 @@ import {
   MARKET_CHANNELS,
   MarketTracer,
   computeBackoffDelayMs,
+  type MarketSnapshot,
   type NormalizedMarketEvent,
   type RealtimeInterval,
 } from '@/src/lib/market-data/realtime';
@@ -280,6 +281,9 @@ export class WebSocketMarketSourceImpl implements WebSocketMarketSource {
           this.pendingHide = false;
         }
         break;
+      case 'snapshot':
+        this.applySnapshot(frame.snapshot);
+        break;
       case 'event':
         this.applyEvent(frame.event);
         break;
@@ -298,6 +302,39 @@ export class WebSocketMarketSourceImpl implements WebSocketMarketSource {
 
   private sendUnsubscribe(symbol: string): void {
     this.socket?.send(JSON.stringify({ type: 'unsubscribe', symbols: [symbol], channels: [...MARKET_CHANNELS] }));
+  }
+
+  /**
+   * Seed the store from the Gateway's initial snapshot so the header shows a live
+   * price and the chart shows a current 1m candle WITHOUT waiting for the next
+   * trade tick. Finalized minutes are applied first so the snapshot's latest
+   * trade extends the newest (current) bucket; the trade also sets the Last Price
+   * and the quote sets bid/ask. Every value is real provider data. Ordering guards
+   * mean a snapshot that races behind already-newer live ticks can never regress
+   * the last price/quote.
+   */
+  private applySnapshot(snapshot: MarketSnapshot): void {
+    if (snapshot.symbol !== this.symbol) return;
+    this.tracer.trace({ stage: 'browser_market_event_received', type: 'snapshot', symbol: snapshot.symbol });
+    for (const bar of snapshot.bars) this.store.applyBar(bar);
+    if (snapshot.trade && snapshot.trade.timestampMs >= this.lastPriceMs) {
+      this.store.applyTrade(snapshot.trade);
+      this.lastPrice = snapshot.trade.price;
+      this.lastPriceMs = snapshot.trade.timestampMs;
+      this.lastTradeIso = new Date(snapshot.trade.timestampMs).toISOString();
+      this.tracer.trace({ stage: 'price_header_updated', symbol: snapshot.symbol, price: snapshot.trade.price });
+    }
+    if (snapshot.quote && snapshot.quote.timestampMs >= this.lastQuoteMs) {
+      this.lastQuoteMs = snapshot.quote.timestampMs;
+      this.bid = snapshot.quote.bidPrice;
+      this.ask = snapshot.quote.askPrice;
+      this.bidSize = snapshot.quote.bidSize;
+      this.askSize = snapshot.quote.askSize;
+      this.quoteIso = new Date(snapshot.quote.timestampMs).toISOString();
+    }
+    // A seeded run of canonical minutes is a good moment for the chart to compute
+    // indicators/S-R once; intra-bar ticks after this stay cheap.
+    this.emit(snapshot.bars.length > 0);
   }
 
   private applyEvent(event: NormalizedMarketEvent): void {

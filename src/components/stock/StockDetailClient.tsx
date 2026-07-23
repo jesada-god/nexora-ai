@@ -30,7 +30,7 @@ import type {
   MarketOverview,
 } from '@/src/lib/market-data/types';
 import { CompanyProfileCard } from './CompanyProfileCard';
-import { resolvePriceCurrency } from './price-header';
+import { resolvePriceCurrency, resolvePriceHeaderData } from './price-header';
 import { requestCompanyProfile } from './profile-retry';
 import { StockPriceHeader } from './StockPriceHeader';
 
@@ -228,6 +228,12 @@ export function StockDetailClient({
     instrumentCurrency,
     exchange,
   }).currency;
+  const priceHeaderData = resolvePriceHeaderData({
+    current: quoteResource,
+    initial: initialQuoteResource,
+    marketStatus: market?.currentStatus ?? null,
+    evaluatedAt,
+  });
 
   const toggleWatch = () => {
     if (!isOnline) {
@@ -351,18 +357,19 @@ export function StockDetailClient({
           symbol={symbol}
           exchange={exchange}
           sourceCurrency={sourceCurrency}
-          quote={quote}
-          freshness={quoteResource.freshness}
+          quote={priceHeaderData.quote}
+          freshness={priceHeaderData.freshness}
           market={market}
-          provider={quoteResource.provider}
+          provider={priceHeaderData.provider}
           providerConfigured={providerConfigured}
           quoteError={quoteResource.error}
-          fallbackLabel={quoteResource.fallbackLabel}
+          fallbackLabel={priceHeaderData.fallbackLabel}
           quoteLoading={quoteLoading}
           quoteRetryAt={quoteRetryAt}
           onRetryQuote={refreshQuote}
           fxQuote={fxQuote}
           evaluatedAt={evaluatedAt}
+          extendedQuote={priceHeaderData.extendedQuote}
           realtime={dataLabel?.realtime ?? false}
           feed={dataLabel?.feed ?? null}
           bid={bid}

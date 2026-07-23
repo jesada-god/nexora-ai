@@ -1,5 +1,7 @@
-import type { DataFreshness } from '@/src/lib/market-data/types';
+import { classifyUsEquitySession } from '@/src/lib/market-data/session';
+import type { DataFreshness, Quote } from '@/src/lib/market-data/types';
 import type { ConnectionStatus } from '@/src/lib/stock-detail/market-source';
+import type { StockDetailQuoteResource } from '@/src/lib/stock-detail/types';
 
 export type MarketSession = 'halted' | 'holiday' | 'early-close' | 'premarket' | 'open' | 'after-hours' | 'closed' | 'unknown';
 export type PriceDirection = 'up' | 'down' | 'neutral';
@@ -32,6 +34,22 @@ export interface PriceCurrencyInput {
 export interface ResolvedPriceCurrency {
   currency: string | null;
   source: 'profile' | 'quote' | 'instrument' | 'exchange' | null;
+}
+
+export interface PriceHeaderExtendedQuote {
+  session: 'premarket' | 'after-hours';
+  price: number;
+  asOf: string;
+  freshness: DataFreshness;
+  provider: string | null;
+}
+
+export interface PriceHeaderData {
+  quote: Quote | null;
+  freshness: DataFreshness;
+  provider: string | null;
+  fallbackLabel: StockDetailQuoteResource['fallbackLabel'];
+  extendedQuote: PriceHeaderExtendedQuote | null;
 }
 
 const TRUSTED_EXCHANGE_CURRENCIES: Record<string, string> = {
@@ -123,6 +141,105 @@ export function resolveDataStatus(freshness: DataFreshness, evaluatedAtMs: numbe
   if (freshness.status === 'delayed' || freshness.status === 'end-of-day') return 'delayed';
   if (freshness.status === 'cached') return 'cached';
   return 'unknown';
+}
+
+function tradeablePrice(value: number | null | undefined): value is number {
+  return value !== null && value !== undefined && Number.isFinite(value) && value > 0;
+}
+
+/**
+ * Partitions the ONE already-accepted quote into the Investing-style header rows.
+ * It never fetches or derives another market value:
+ *
+ * - regular session: the accepted quote remains the primary row;
+ * - pre/post session: the accepted quote becomes the extended row, while a
+ *   previously accepted regular quote (or the quote's real `previousClose`) stays
+ *   in the primary row;
+ * - a stale, date-only or session-mismatched accepted value is never promoted to
+ *   an extended-hours quote.
+ */
+export function resolvePriceHeaderData(input: {
+  current: StockDetailQuoteResource;
+  initial: StockDetailQuoteResource;
+  marketStatus: 'pre-market' | 'open' | 'after-hours' | 'closed' | 'holiday' | 'early-close' | 'unknown' | null;
+  evaluatedAt: string;
+}): PriceHeaderData {
+  const { current, initial, marketStatus, evaluatedAt } = input;
+  const currentQuote = current.data;
+  const acceptedAsOf = current.freshness.asOf;
+  const acceptedSession = acceptedAsOf ? classifyUsEquitySession(acceptedAsOf) : null;
+  const expectedExtendedSession = marketStatus === 'pre-market'
+    ? 'premarket' as const
+    : marketStatus === 'after-hours' || marketStatus === 'closed'
+      ? 'afterhours' as const
+      : null;
+  const evaluatedAtMs = Date.parse(evaluatedAt);
+  const acceptedStatus = resolveDataStatus(current.freshness, evaluatedAtMs);
+  const acceptedExtended = currentQuote
+    && tradeablePrice(currentQuote.price)
+    && acceptedAsOf
+    && acceptedSession === expectedExtendedSession;
+
+  if (!acceptedExtended || !expectedExtendedSession || !currentQuote || !acceptedAsOf) {
+    return {
+      quote: currentQuote,
+      freshness: current.freshness,
+      provider: current.provider,
+      fallbackLabel: current.fallbackLabel,
+      extendedQuote: null,
+    };
+  }
+
+  const initialAsOf = initial.freshness.asOf;
+  const acceptedRegularQuote = initial.data
+    && tradeablePrice(initial.data.price)
+    && initialAsOf
+    && classifyUsEquitySession(initialAsOf) === 'regular'
+    ? initial.data
+    : null;
+  const regularQuote = acceptedRegularQuote ?? (
+    tradeablePrice(currentQuote.previousClose)
+      ? {
+          ...currentQuote,
+          price: currentQuote.previousClose,
+          previousClose: null,
+          change: null,
+          changePercent: null,
+        }
+      : null
+  );
+
+  // Without a real regular close there is no truthful primary row or comparison
+  // base. Do not promote an extended/stale value to the primary "current" price.
+  if (!regularQuote || !tradeablePrice(regularQuote.price)) {
+    return {
+      quote: null,
+      freshness: { ...current.freshness, asOf: null },
+      provider: current.provider,
+      fallbackLabel: null,
+      extendedQuote: null,
+    };
+  }
+
+  const eligibleExtended = acceptedStatus !== 'stale' && acceptedStatus !== 'unavailable';
+
+  return {
+    quote: regularQuote,
+    freshness: acceptedRegularQuote
+      ? initial.freshness
+      : { ...current.freshness, asOf: null },
+    provider: acceptedRegularQuote ? initial.provider : current.provider,
+    fallbackLabel: acceptedRegularQuote ? initial.fallbackLabel : null,
+    extendedQuote: eligibleExtended
+      ? {
+          session: expectedExtendedSession === 'premarket' ? 'premarket' : 'after-hours',
+          price: currentQuote.price,
+          asOf: acceptedAsOf,
+          freshness: current.freshness,
+          provider: current.provider,
+        }
+      : null,
+  };
 }
 
 export function dataStatusPresentation(status: PriceDataStatus) {

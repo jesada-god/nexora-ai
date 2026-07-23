@@ -11,8 +11,8 @@
  *  - the change block is a SEPARATE sibling of that wrapper, so it wraps below the
  *    price when there is no room and sits beside it when there is;
  *  - order is price → currency → change (amount, percent, arrow);
- *  - the price can break/shrink (min-w-0 + overflow-wrap) while the currency never
- *    wraps (whitespace-nowrap + shrink-0), preventing overflow at 320px;
+ *  - price, currency and each change token are nowrap/tabular, while the change
+ *    group can move below the price group as one unit on narrow screens;
  *  - colour + arrow follow the sign (unchanged from before).
  */
 
@@ -120,15 +120,17 @@ describe('StockPriceHeader price-line layout', () => {
         expect(positive!.textContent).toContain('▲');
       });
 
-      it('lets the price break but never the currency, so a huge value cannot overflow', () => {
+      it('never splits the numeric price or currency at a mobile line boundary', () => {
         renderAt(width, baseProps({ ...BASE_QUOTE, price: 1_234_567.891, change: 12.5, changePercent: 1.02 }));
-        // The price shrinks/breaks within the row…
-        expect(priceEl().className).toContain('min-w-0');
-        expect(priceEl().className).toContain('[overflow-wrap:anywhere]');
-        // …while the currency label is pinned intact beside it.
+        expect(priceRow().className).toContain('tabular-nums');
+        expect(priceEl().className).toContain('whitespace-nowrap');
+        expect(priceEl().className).not.toContain('break-words');
+        expect(priceEl().className).not.toContain('break-all');
+        expect(priceEl().className).not.toContain('[overflow-wrap:anywhere]');
         expect(currencyEl().className).toContain('whitespace-nowrap');
         expect(currencyEl().className).toContain('shrink-0');
         expect(currencyEl().textContent).toBe('USD');
+        expect(changeRow()?.className).toContain('whitespace-nowrap');
       });
     });
   }

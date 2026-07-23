@@ -162,4 +162,49 @@ describe('StockPriceHeader daily change display', () => {
     // Extended change = 70.75 − 69.75 (regular close) = +1.00, not vs 72.45.
     expect(container.textContent).toContain('+1.00');
   });
+
+  it('renders a pre-market accepted quote in the labelled secondary row', () => {
+    render(baseProps(BASE_QUOTE, {
+      market: { currentStatus: 'pre-market' as const, notes: null },
+      extendedQuote: {
+        session: 'premarket' as const,
+        price: 70.25,
+        asOf: '2026-07-23T12:25:45.000Z',
+        freshness: FRESHNESS,
+        provider: 'polygon',
+      },
+    }));
+    const row = container.querySelector('[data-testid="extended-hours-row"]');
+    expect(row?.textContent).toContain('ก่อนตลาดเปิด');
+    expect(row?.textContent).toContain('70.25');
+  });
+
+  it('keeps the main status closed while showing the latest after-hours row', () => {
+    render(baseProps(BASE_QUOTE, {
+      market: { currentStatus: 'closed' as const, notes: null },
+      extendedQuote: {
+        session: 'after-hours' as const,
+        price: 70.75,
+        asOf: '2026-07-23T20:05:45.000Z',
+        freshness: FRESHNESS,
+        provider: 'polygon',
+      },
+      realtime: true,
+      feed: 'iex',
+    }));
+    const row = container.querySelector('[data-testid="extended-hours-row"]');
+    expect(container.textContent).toContain('ปิดตลาด');
+    expect(row?.textContent).toContain('หลังเวลาทำการ');
+    expect(row?.textContent).toContain('+1.00');
+    expect(container.textContent).not.toContain('Real-time · IEX');
+  });
+
+  it('cleanly hides the secondary row when closed without an extended quote', () => {
+    render(baseProps(BASE_QUOTE, {
+      market: { currentStatus: 'closed' as const, notes: null },
+      extendedQuote: null,
+    }));
+    expect(container.textContent).toContain('ปิดตลาด');
+    expect(container.querySelector('[data-testid="extended-hours-row"]')).toBeNull();
+  });
 });

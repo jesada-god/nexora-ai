@@ -6,6 +6,9 @@ import { GatewayHub } from './hub';
 import { UpstreamConnection } from './upstream';
 import { fromWs } from './socket';
 import { GatewayLifecycle } from './lifecycle';
+import { MarketCache } from './cache';
+import { fetchRestSnapshot } from './rest-snapshot';
+import type { MarketSnapshot } from '@/src/lib/market-data/realtime';
 import {
   buildHealthReport,
   ConnectionRateGuard,
@@ -71,6 +74,35 @@ function main(): void {
   // the Railway logs without the feed flooding the process output.
   const tracer = new MarketTracer({ enabled: isTracingEnabled(process.env.MARKET_TRACE) });
 
+  // --- Per-symbol latest-state cache, warmed from the live stream + a REST
+  // bootstrap for cold symbols, so a new subscriber gets a price immediately. ---
+  const cache = new MarketCache();
+  // Dedupe concurrent REST bootstraps for the same cold symbol: many browsers
+  // subscribing at once must not each hit Alpaca REST. Credentials stay in this
+  // closure (Gateway host) and never reach the hub or a client frame.
+  const inflightBootstraps = new Map<string, Promise<MarketSnapshot | null>>();
+  const bootstrapSnapshot = (symbol: string): Promise<MarketSnapshot | null> => {
+    const key = symbol.toUpperCase();
+    const existing = inflightBootstraps.get(key);
+    if (existing) return existing;
+    const promise = fetchRestSnapshot(key, {
+      keyId: config.keyId,
+      secretKey: config.secretKey,
+      feed: config.feed,
+    })
+      .then((snapshot) => {
+        if (snapshot) cache.seed(snapshot);
+        return snapshot;
+      })
+      .catch((error) => {
+        log('error', 'rest snapshot bootstrap failed', error);
+        return null;
+      })
+      .finally(() => inflightBootstraps.delete(key));
+    inflightBootstraps.set(key, promise);
+    return promise;
+  };
+
   // --- Upstream + fan-out hub (one upstream connection per instance) ---
   const hub = new GatewayHub({
     feed: config.feed,
@@ -78,13 +110,17 @@ function main(): void {
     applySubscribe: (refs) => upstream.subscribe(refs),
     applyUnsubscribe: (refs) => upstream.unsubscribe(refs),
     createRateLimiter: () => new SlidingWindowRateLimiter(SUBSCRIBE_RATE_LIMIT, SUBSCRIBE_RATE_WINDOW_MS),
+    getSnapshot: (symbol) => cache.snapshotFor(symbol),
+    bootstrapSnapshot,
     tracer,
   });
 
   const upstream = new UpstreamConnection({
     config: { url: config.url, keyId: config.keyId, secretKey: config.secretKey },
     createSocket: (url) => fromWs(new WebSocket(url)),
-    onEvent: (event) => hub.handleUpstreamEvent(event),
+    // Warm the cache from every normalized event BEFORE fan-out so the next
+    // subscriber's snapshot reflects the latest tick.
+    onEvent: (event) => { cache.record(event); hub.handleUpstreamEvent(event); },
     getSubscriptions: () => hub.subscriptionSnapshot(),
     onStateChange: (state) => log('info', `upstream ${state}`),
     // Liveness is a real protocol ping/pong, NOT market ticks: probe after 15s of

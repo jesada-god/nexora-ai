@@ -1,4 +1,6 @@
 import { describe, expect, it } from 'vitest';
+import type { Quote } from '@/src/lib/market-data/types';
+import type { StockDetailQuoteResource } from '@/src/lib/stock-detail/types';
 import {
   calculatePriceChange,
   connectionStatusPresentation,
@@ -12,6 +14,7 @@ import {
   resolvePriceCurrency,
   resolveDataStatus,
   resolveMarketSession,
+  resolvePriceHeaderData,
 } from './price-header';
 
 describe('stock price header market session mapping', () => {
@@ -75,6 +78,110 @@ describe('stock price header data status mapping', () => {
     const freshness = { status: 'realtime' as const, asOf: '2026-07-20T12:00:00.000Z', maxAgeSeconds: 300 };
     expect(resolveDataStatus(freshness, Date.parse('2026-07-20T12:04:59.000Z'))).toBe('live');
     expect(resolveDataStatus(freshness, Date.parse('2026-07-20T12:05:01.000Z'))).toBe('stale');
+  });
+});
+
+const HEADER_QUOTE: Quote = {
+  symbol: 'RKLB',
+  currency: 'USD',
+  price: 100,
+  open: 99,
+  high: 102,
+  low: 98,
+  previousClose: 98,
+  change: 2,
+  changePercent: (2 / 98) * 100,
+  volume: 1_000,
+  latestTradingDay: null,
+};
+
+function quoteResource(
+  quote: Quote,
+  asOf: string,
+  maxAgeSeconds = 900,
+): StockDetailQuoteResource {
+  return {
+    data: quote,
+    freshness: { status: 'realtime', asOf, maxAgeSeconds },
+    provider: 'polygon',
+    reason: null,
+    error: null,
+    fallbackLabel: null,
+  };
+}
+
+describe('stock price header accepted quote partition', () => {
+  it('keeps a regular-market accepted price in the main row', () => {
+    const current = quoteResource(HEADER_QUOTE, '2026-07-20T14:00:00.000Z');
+    const result = resolvePriceHeaderData({
+      current,
+      initial: current,
+      marketStatus: 'open',
+      evaluatedAt: '2026-07-20T14:00:10.000Z',
+    });
+    expect(result.quote).toBe(HEADER_QUOTE);
+    expect(result.extendedQuote).toBeNull();
+  });
+
+  it('uses the accepted pre-market price only in the secondary row and compares from the real regular close', () => {
+    const current = quoteResource(
+      { ...HEADER_QUOTE, price: 101, previousClose: 100, change: 1, changePercent: 1 },
+      '2026-07-20T12:30:00.000Z',
+    );
+    const result = resolvePriceHeaderData({
+      current,
+      initial: current,
+      marketStatus: 'pre-market',
+      evaluatedAt: '2026-07-20T12:30:10.000Z',
+    });
+    expect(result.quote?.price).toBe(100);
+    expect(result.quote?.change).toBeNull();
+    expect(result.extendedQuote).toMatchObject({ session: 'premarket', price: 101 });
+  });
+
+  it('keeps the last accepted regular quote primary during after-hours', () => {
+    const initial = quoteResource(HEADER_QUOTE, '2026-07-20T19:59:00.000Z');
+    const current = quoteResource(
+      { ...HEADER_QUOTE, price: 101, previousClose: 100, change: 1, changePercent: 1 },
+      '2026-07-20T21:00:00.000Z',
+    );
+    const result = resolvePriceHeaderData({
+      current,
+      initial,
+      marketStatus: 'after-hours',
+      evaluatedAt: '2026-07-20T21:00:10.000Z',
+    });
+    expect(result.quote).toBe(HEADER_QUOTE);
+    expect(result.extendedQuote).toMatchObject({ session: 'after-hours', price: 101 });
+  });
+
+  it('shows a closed regular quote without an extended row when no extended quote was accepted', () => {
+    const current = quoteResource(HEADER_QUOTE, '2026-07-20T19:59:00.000Z');
+    const result = resolvePriceHeaderData({
+      current,
+      initial: current,
+      marketStatus: 'closed',
+      evaluatedAt: '2026-07-20T20:00:10.000Z',
+    });
+    expect(result.quote).toBe(HEADER_QUOTE);
+    expect(result.extendedQuote).toBeNull();
+  });
+
+  it('never presents a stale extended quote as current or as a secondary quote', () => {
+    const initial = quoteResource(HEADER_QUOTE, '2026-07-20T19:59:00.000Z');
+    const current = quoteResource(
+      { ...HEADER_QUOTE, price: 101, previousClose: 100, change: 1, changePercent: 1 },
+      '2026-07-20T21:00:00.000Z',
+      60,
+    );
+    const result = resolvePriceHeaderData({
+      current,
+      initial,
+      marketStatus: 'closed',
+      evaluatedAt: '2026-07-20T21:02:00.000Z',
+    });
+    expect(result.quote).toBe(HEADER_QUOTE);
+    expect(result.extendedQuote).toBeNull();
   });
 });
 

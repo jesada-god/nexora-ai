@@ -33,8 +33,8 @@ describe('StockPriceHeader integration contract', () => {
 
   it('uses a mobile-safe Thai empty-price heading instead of a large Unavailable word', () => {
     expect(header).toContain("'ไม่พบราคาล่าสุด'");
-    expect(header).toContain('[overflow-wrap:anywhere]');
-    expect(header).toContain('text-[clamp(2rem,11vw,3rem)]');
+    expect(header).toContain('text-[clamp(1.75rem,9vw,3rem)]');
+    expect(header).toContain('whitespace-nowrap');
     expect(header).not.toContain("displayPrice === null ? 'Unavailable'");
   });
 

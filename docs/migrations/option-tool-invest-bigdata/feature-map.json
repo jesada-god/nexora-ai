@@ -1,0 +1,125 @@
+{
+  "sourceProject": "option-tool-invest-bigdata-main",
+  "targetProject": "Nexora AI",
+  "analyzedAt": "2026-07-24",
+  "sourceRuntime": {
+    "backend": "Python 3.11 / FastAPI",
+    "frontend": "Single index.html with vanilla JavaScript",
+    "marketProvider": "yfinance",
+    "persistence": "none; process memory only"
+  },
+  "targetRuntime": {
+    "application": "Next.js 15 / React 19 / TypeScript",
+    "persistence": "Supabase",
+    "marketData": "provider abstractions plus market gateway"
+  },
+  "features": [
+    {
+      "id": "instrument-search",
+      "source": ["main.py:search_tickers", "index.html:fetchTickerMatches"],
+      "target": ["src/lib/instruments", "app/api/market/search/route.ts"],
+      "decision": "use-target",
+      "reason": "Target supports a real instrument universe instead of six static symbols."
+    },
+    {
+      "id": "market-data-and-session",
+      "source": ["main.py:get_market_session", "main.py:get_price_bundle", "main.py:get_chart_data", "main.py:websocket_endpoint"],
+      "target": ["src/lib/market-data", "services/market-gateway"],
+      "decision": "use-target",
+      "reason": "Target already has provider contracts, realtime protocol, caching and tests."
+    },
+    {
+      "id": "watchlist",
+      "source": ["main.py:get_watchlist", "main.py:add_to_watchlist", "main.py:remove_from_watchlist"],
+      "target": ["src/lib/watchlist", "app/watchlist/actions.ts"],
+      "decision": "use-target",
+      "reason": "Target persistence and RLS replace process-global lists."
+    },
+    {
+      "id": "fair-value",
+      "source": ["main.py:calculate_fair_value"],
+      "target": ["src/lib/analytics/valuation", "app/api/analytics/fair-value/[symbol]/route.ts"],
+      "decision": "use-target",
+      "reason": "Target has a validated and provider-aware valuation engine."
+    },
+    {
+      "id": "technical-statistics",
+      "source": ["stats_engine.py", "main.py:calculate_option_scores"],
+      "target": ["src/lib/analytics/technical", "src/lib/analytics/fundamentals"],
+      "decision": "use-target-and-add-parity-fixtures",
+      "reason": "Target implementation is broader and reports provenance and unavailable states."
+    },
+    {
+      "id": "support-resistance",
+      "source": ["main.py:calculate_pivot_levels", "main.py:get_atr_for_timeframe", "main.py:get_indicators"],
+      "target": ["src/lib/analytics/support-resistance", "src/lib/analytics/decision-panel"],
+      "decision": "use-target-and-add-parity-fixtures",
+      "reason": "Target already owns chart decision levels."
+    },
+    {
+      "id": "option-pricing",
+      "source": ["pricing_engine.py", "main.py:black_scholes"],
+      "target": ["src/lib/options-simulator/pricing.ts"],
+      "decision": "use-target-and-add-parity-fixtures",
+      "reason": "Target supports European and American exercise and complete Greeks."
+    },
+    {
+      "id": "portfolio-greeks",
+      "source": ["portfolio_engine.py"],
+      "target": ["src/lib/options-simulator/portfolio.ts"],
+      "decision": "use-target",
+      "reason": "Target aggregates signed multi-leg Greeks."
+    },
+    {
+      "id": "what-if-and-monte-carlo",
+      "source": ["simulator_engine.py", "main.py:simulate_option", "main.py:simulate_advanced"],
+      "target": ["src/lib/options-simulator", "src/workers/optionsMonteCarlo.worker.ts"],
+      "decision": "use-target-and-add-parity-fixtures",
+      "reason": "Target has auditable path sets, multi-leg payoff and richer risk metrics."
+    },
+    {
+      "id": "iv-and-options-flow",
+      "source": ["main.py:get_options_chain_summary", "gauges_engine.py:iv_rank_percentile"],
+      "target": ["src/lib/market-data/options/analytics.ts"],
+      "decision": "use-target-plus-port-iv-history-only-if-real",
+      "reason": "Target uses robust near-ATM IV and transparent OI concentration."
+    },
+    {
+      "id": "explainable-gauges",
+      "source": ["gauges_engine.py"],
+      "target": [],
+      "decision": "candidate-for-port",
+      "reason": "Unique display model, but proxy gauges must remain labeled and unavailable data must stay null."
+    },
+    {
+      "id": "directional-factor-model",
+      "source": ["ai_engine.py", "main.py:get_ai_prediction"],
+      "target": ["src/lib/options-simulator/scenario-score.ts"],
+      "decision": "reference-only-until-calibrated",
+      "reason": "Legacy probabilities are heuristic and not trained or backtested; target scenario score serves a different purpose."
+    },
+    {
+      "id": "notifications",
+      "source": ["main.py:send_line_alert"],
+      "target": ["src/lib/push", "src/lib/alerts", "app/api/cron/alerts/route.ts"],
+      "decision": "use-target",
+      "reason": "Target has server-side push, scheduling, persistence and delivery controls."
+    },
+    {
+      "id": "cache",
+      "source": ["cache.py"],
+      "target": ["src/lib/shared-request-cache.ts", "services/market-gateway/cache.ts"],
+      "decision": "use-target",
+      "reason": "Target cache is integrated with its request and gateway lifecycle."
+    }
+  ],
+  "excludedPatterns": [
+    ".env*",
+    "node_modules",
+    ".next",
+    "__pycache__",
+    "*.pyc",
+    "access tokens",
+    "machine-local configuration"
+  ]
+}

@@ -23,8 +23,11 @@ export {
   connectedFrameSchema,
   eventFrameSchema,
   limitExceededFrameSchema,
+  snapshotFrameSchema,
+  marketSnapshotSchema,
   type ClientFrame,
   type ServerFrame,
+  type MarketSnapshot,
 } from './protocol';
 export {
   normalizeAlpacaMessage,
