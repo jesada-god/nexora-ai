@@ -57,11 +57,33 @@ describe('normalizeAlpacaMessage', () => {
 });
 
 describe('classifyAlpacaControl', () => {
-  it('classifies success, error and subscription frames', () => {
+  it('classifies success and error frames', () => {
     expect(classifyAlpacaControl({ T: 'success', msg: 'authenticated' })).toEqual({ kind: 'success', message: 'authenticated' });
     expect(classifyAlpacaControl({ T: 'error', code: 402, msg: 'auth failed' })).toEqual({ kind: 'error', code: 402, message: 'auth failed' });
-    expect(classifyAlpacaControl({ T: 'subscription', trades: ['AAPL'] })).toEqual({ kind: 'subscription' });
     expect(classifyAlpacaControl({ T: 't', S: 'AAPL' })).toBeNull();
+  });
+
+  it('surfaces the subscription ack: the union of symbols and per-channel lists', () => {
+    const control = classifyAlpacaControl({
+      T: 'subscription',
+      trades: ['AAPL'],
+      quotes: ['AAPL', 'msft'],
+      bars: [],
+      statuses: ['AAPL'],
+    });
+    expect(control).toEqual({
+      kind: 'subscription',
+      symbols: ['AAPL', 'MSFT'],
+      channels: { trades: ['AAPL'], quotes: ['AAPL', 'msft'], statuses: ['AAPL'] },
+    });
+  });
+
+  it('reports an empty subscription (feed subscribed to nothing) honestly', () => {
+    expect(classifyAlpacaControl({ T: 'subscription', trades: [], quotes: [] })).toEqual({
+      kind: 'subscription',
+      symbols: [],
+      channels: {},
+    });
   });
 });
 

@@ -4,6 +4,7 @@ import {
   isRealtimeInterval,
   parseServerFrame,
   MARKET_CHANNELS,
+  MarketTracer,
   computeBackoffDelayMs,
   type NormalizedMarketEvent,
   type RealtimeInterval,
@@ -45,6 +46,8 @@ export interface WebSocketMarketSourceOptions {
   scheduler?: (callback: () => void, delayMs: number) => () => void;
   heartbeatMs?: number;
   staleMs?: number;
+  /** End-to-end pipeline tracer. Defaults to a live, sampled console tracer. */
+  tracer?: MarketTracer;
 }
 
 const DEFAULT_SELECTION: MarketSelection = { interval: '5m', session: 'regular', adjusted: false };
@@ -64,6 +67,7 @@ export class WebSocketMarketSourceImpl implements WebSocketMarketSource {
   private readonly scheduler: (callback: () => void, delayMs: number) => () => void;
   private readonly heartbeatMs: number;
   private readonly staleMs: number;
+  private readonly tracer: MarketTracer;
 
   private selection: MarketSelection;
   private session: MarketSessionKind;
@@ -118,6 +122,7 @@ export class WebSocketMarketSourceImpl implements WebSocketMarketSource {
     this.scheduler = options.scheduler ?? defaultScheduler;
     this.heartbeatMs = options.heartbeatMs ?? 15_000;
     this.staleMs = options.staleMs ?? 30_000;
+    this.tracer = options.tracer ?? new MarketTracer();
   }
 
   get connectionState(): 'idle' | 'connecting' | 'open' | 'closed' {
@@ -297,6 +302,7 @@ export class WebSocketMarketSourceImpl implements WebSocketMarketSource {
 
   private applyEvent(event: NormalizedMarketEvent): void {
     if (event.symbol !== this.symbol) return;
+    this.tracer.trace({ stage: 'browser_market_event_received', type: event.kind, symbol: event.symbol });
     let barFinalized = false;
     switch (event.kind) {
       case 'trade': {
@@ -305,6 +311,9 @@ export class WebSocketMarketSourceImpl implements WebSocketMarketSource {
           this.lastPrice = event.price;
           this.lastPriceMs = event.timestampMs;
           this.lastTradeIso = new Date(event.timestampMs).toISOString();
+          // The header's Last Price is driven by trades; trace only the accepted
+          // (newer-than-last) update so an out-of-order tick can't fake a change.
+          this.tracer.trace({ stage: 'price_header_updated', symbol: event.symbol, price: event.price });
         }
         barFinalized = result.finalizedPrevious;
         break;

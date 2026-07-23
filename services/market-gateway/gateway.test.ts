@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { FAKEPACA_SYMBOL } from '@/src/lib/market-data/realtime';
+import { FAKEPACA_SYMBOL, MarketTracer } from '@/src/lib/market-data/realtime';
 import { GatewayHub } from './hub';
 import { UpstreamConnection } from './upstream';
 import type { Scheduler, SendResult, SocketLike } from './socket';
@@ -431,5 +431,93 @@ describe('Gateway reconnect race safety', () => {
     flush(); // run the pending stale-timer tick
     expect(upstream.getState()).toBe('ready'); // not recycled
     expect(upstreamSockets).toHaveLength(1);
+  });
+});
+
+describe('Gateway end-to-end tracing', () => {
+  /** Wire a capturing tracer into both the upstream and the hub. */
+  function setupTraced() {
+    const lines: string[] = [];
+    // sampleIntervalMs 0 + a fixed clock → high-volume stages are never suppressed,
+    // so a single test trade deterministically produces one line per hop.
+    const tracer = new MarketTracer({ sink: (line) => lines.push(line), now: () => 0, sampleIntervalMs: 0 });
+    const upstreamSockets: FakeSocket[] = [];
+    let upstream!: UpstreamConnection;
+    const hub = new GatewayHub({
+      feed: 'test',
+      realtime: false,
+      applySubscribe: (refs) => upstream.subscribe(refs),
+      applyUnsubscribe: (refs) => upstream.unsubscribe(refs),
+      tracer,
+    });
+    upstream = new UpstreamConnection({
+      config: { url: 'wss://stream.data.alpaca.markets/v2/test', keyId: 'k', secretKey: 's' },
+      createSocket: () => { const socket = new FakeSocket(); upstreamSockets.push(socket); return socket; },
+      onEvent: (event) => hub.handleUpstreamEvent(event),
+      getSubscriptions: () => hub.subscriptionSnapshot(),
+      random: () => 0,
+      tracer,
+    });
+    const authenticate = (socket: FakeSocket): void => {
+      socket.emitOpen();
+      socket.emitMessage({ T: 'success', msg: 'connected' });
+      socket.emitMessage({ T: 'success', msg: 'authenticated' });
+    };
+    return { hub, upstream, upstreamSockets, tracer, lines, authenticate };
+  }
+
+  it('traces subscribe_sent when a client acquires the first interest', () => {
+    const { hub, upstream, upstreamSockets, lines, authenticate } = setupTraced();
+    upstream.start();
+    authenticate(upstreamSockets[0]);
+    const client = connectClient(hub);
+    client.emitMessage({ type: 'subscribe', symbols: [FAKEPACA_SYMBOL], channels: ['trades', 'quotes'] });
+    const line = lines.find((l) => l.includes('upstream_subscribe_sent'));
+    expect(line).toContain(`symbol=${FAKEPACA_SYMBOL}`);
+    expect(line).toMatch(/channels=.*trades/);
+  });
+
+  it('traces the Alpaca subscription ack (what is actually subscribed)', () => {
+    const { upstream, upstreamSockets, lines, authenticate } = setupTraced();
+    upstream.start();
+    authenticate(upstreamSockets[0]);
+    upstreamSockets[0].emitMessage({ T: 'subscription', trades: [FAKEPACA_SYMBOL], quotes: [FAKEPACA_SYMBOL] });
+    const line = lines.find((l) => l.includes('upstream_subscribed'));
+    expect(line).toContain(`symbol=${FAKEPACA_SYMBOL}`);
+    expect(line).toMatch(/channels=.*trades/);
+  });
+
+  it('traces every hop of a market trade: received → normalized → broadcast', () => {
+    const { hub, upstream, upstreamSockets, lines, authenticate } = setupTraced();
+    upstream.start();
+    authenticate(upstreamSockets[0]);
+    const client = connectClient(hub);
+    client.emitMessage({ type: 'subscribe', symbols: [FAKEPACA_SYMBOL], channels: ['trades'] });
+
+    upstreamSockets[0].emitMessage(fakepacaTrade(100));
+
+    expect(lines.some((l) => l.startsWith('[market-trace] upstream_market_event_received') && l.includes('type=t'))).toBe(true);
+    expect(lines.some((l) => l.includes('gateway_market_event_normalized') && l.includes('type=trade'))).toBe(true);
+    expect(lines.some((l) => l.includes('gateway_market_event_broadcast') && l.includes('clients=1'))).toBe(true);
+  });
+
+  it('traces a broadcast with clients=0 (live event for a symbol nobody wants)', () => {
+    const { upstream, upstreamSockets, lines, authenticate } = setupTraced();
+    upstream.start();
+    authenticate(upstreamSockets[0]);
+    // No client subscribed → the fan-out has zero listeners; the trace still fires.
+    upstreamSockets[0].emitMessage(fakepacaTrade(100));
+    expect(lines.some((l) => l.includes('gateway_market_event_broadcast') && l.includes('clients=0'))).toBe(true);
+  });
+
+  it('traces received-but-not-normalized when a tick fails schema validation', () => {
+    const { upstream, upstreamSockets, lines, authenticate } = setupTraced();
+    upstream.start();
+    authenticate(upstreamSockets[0]);
+    // A trade with a non-positive price is received but dropped by the schema, so
+    // it must appear as received without a matching normalized line.
+    upstreamSockets[0].emitMessage({ T: 't', S: FAKEPACA_SYMBOL, p: 0, s: 5, t: '2024-01-02T15:04:05Z' });
+    expect(lines.some((l) => l.includes('upstream_market_event_received') && l.includes('type=t'))).toBe(true);
+    expect(lines.some((l) => l.includes('gateway_market_event_normalized'))).toBe(false);
   });
 });

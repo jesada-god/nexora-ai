@@ -4,6 +4,7 @@ import {
   channelOfEvent,
   classifyAlpacaControl,
   computeBackoffDelayMs,
+  MarketTracer,
   normalizeAlpacaMessage,
   type ChannelRef,
   type MarketChannel,
@@ -50,6 +51,8 @@ export interface UpstreamOptions {
   now?: () => number;
   /** No message/heartbeat for this long → force reconnect. 0 disables it. */
   staleTimeoutMs?: number;
+  /** End-to-end pipeline tracer. Defaults to a live, sampled console tracer. */
+  tracer?: MarketTracer;
 }
 
 /**
@@ -84,11 +87,13 @@ export class UpstreamConnection {
   private readonly scheduler: Scheduler;
   private readonly random: () => number;
   private readonly now: () => number;
+  private readonly tracer: MarketTracer;
 
   constructor(private readonly options: UpstreamOptions) {
     this.scheduler = options.scheduler ?? defaultScheduler;
     this.random = options.random ?? Math.random;
     this.now = options.now ?? Date.now;
+    this.tracer = options.tracer ?? new MarketTracer();
   }
 
   getState(): UpstreamState {
@@ -126,7 +131,12 @@ export class UpstreamConnection {
   /** Subscribe the given pairs upstream (no-op unless authenticated). */
   subscribe(refs: ChannelRef[]): void {
     if (this.state !== 'ready' || refs.length === 0) return;
-    this.enqueueControl(buildSubscriptionFrame('subscribe', groupByChannel(refs)));
+    const grouped = groupByChannel(refs);
+    this.enqueueControl(buildSubscriptionFrame('subscribe', grouped));
+    for (const symbol of new Set(refs.map((ref) => ref.symbol))) {
+      const channels = refs.filter((ref) => ref.symbol === symbol).map((ref) => ref.channel).join(',');
+      this.tracer.trace({ stage: 'upstream_subscribe_sent', symbol, channels });
+    }
   }
 
   /** Unsubscribe the given pairs upstream (no-op unless authenticated). */
@@ -209,6 +219,20 @@ export class UpstreamConnection {
         this.setState('ready');
         // resubscribe happens only after authentication success.
         this.subscribe(this.options.getSubscriptions());
+      } else if (control.kind === 'subscription') {
+        // Alpaca's authoritative echo of what is ACTUALLY subscribed. Logging it
+        // is what turns "we asked for trades but the feed is quotes-only" from an
+        // invisible mystery into one grep. Symbols/channels only — never secrets.
+        if (control.symbols.length === 0) {
+          this.tracer.trace({ stage: 'upstream_subscribed', symbol: '(none)', channels: '' });
+        }
+        for (const symbol of control.symbols) {
+          const channels = Object.entries(control.channels)
+            .filter(([, syms]) => syms?.some((s) => s.toUpperCase() === symbol))
+            .map(([channel]) => channel)
+            .join(',');
+          this.tracer.trace({ stage: 'upstream_subscribed', symbol, channels });
+        }
       } else if (control.kind === 'error') {
         // Distinguish a fatal auth/protocol error from a transient drop for the
         // operator's benefit; both still recycle with backoff so a redeploy of
@@ -222,10 +246,17 @@ export class UpstreamConnection {
       }
       return;
     }
+    // Not a control frame → market data. Trace what the wire delivered BEFORE
+    // normalization so a value dropped by schema/type mapping is still visible as
+    // "received but not normalized" rather than vanishing silently.
+    const wireType = typeof (message as { T?: unknown })?.T === 'string' ? (message as { T: string }).T : 'unknown';
+    const wireSymbol = typeof (message as { S?: unknown })?.S === 'string' ? (message as { S: string }).S : undefined;
+    this.tracer.trace({ stage: 'upstream_market_event_received', type: wireType, symbol: wireSymbol });
     const event = normalizeAlpacaMessage(message);
     if (event) {
       // channelOfEvent keeps updatedBars distinct from bars for downstream fan-out.
       void channelOfEvent(event);
+      this.tracer.trace({ stage: 'gateway_market_event_normalized', type: event.kind, symbol: event.symbol });
       this.options.onEvent(event);
     }
   }

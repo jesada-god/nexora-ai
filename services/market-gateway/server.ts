@@ -1,7 +1,7 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import type { Socket } from 'node:net';
 import { WebSocket, WebSocketServer } from 'ws';
-import { resolveAlpacaConfig } from '@/src/lib/market-data/realtime';
+import { isTracingEnabled, MarketTracer, resolveAlpacaConfig } from '@/src/lib/market-data/realtime';
 import { GatewayHub } from './hub';
 import { UpstreamConnection } from './upstream';
 import { fromWs } from './socket';
@@ -64,6 +64,11 @@ function main(): void {
   const connectionGuard = new ConnectionRateGuard(CONNECTION_RATE_LIMIT, CONNECTION_RATE_WINDOW_MS);
   const startedAt = Date.now();
 
+  // Shared end-to-end pipeline tracer. On by default (MARKET_TRACE=off silences
+  // it) and sampled, so an operator can follow one event upstream→broadcast in
+  // the Railway logs without the feed flooding the process output.
+  const tracer = new MarketTracer({ enabled: isTracingEnabled(process.env.MARKET_TRACE) });
+
   // --- Upstream + fan-out hub (one upstream connection per instance) ---
   const hub = new GatewayHub({
     feed: config.feed,
@@ -71,6 +76,7 @@ function main(): void {
     applySubscribe: (refs) => upstream.subscribe(refs),
     applyUnsubscribe: (refs) => upstream.unsubscribe(refs),
     createRateLimiter: () => new SlidingWindowRateLimiter(SUBSCRIBE_RATE_LIMIT, SUBSCRIBE_RATE_WINDOW_MS),
+    tracer,
   });
 
   const upstream = new UpstreamConnection({
@@ -80,6 +86,7 @@ function main(): void {
     getSubscriptions: () => hub.subscriptionSnapshot(),
     onStateChange: (state) => log('info', `upstream ${state}`),
     staleTimeoutMs: 30_000,
+    tracer,
   });
 
   // --- HTTP server: /healthz + the WebSocket upgrade endpoint on one port ---

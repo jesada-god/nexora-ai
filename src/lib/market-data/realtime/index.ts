@@ -50,6 +50,16 @@ export {
   type ReleaseResult,
 } from './subscription-registry';
 export {
+  MarketTracer,
+  formatTrace,
+  isTracingEnabled,
+  TRACE_SAMPLE_INTERVAL_MS,
+  type TraceStage,
+  type TraceRecord,
+  type TraceSink,
+  type TracerOptions,
+} from './trace';
+export {
   resolveAlpacaConfig,
   resolvePublicMarketWsUrl,
   computeBackoffDelayMs,

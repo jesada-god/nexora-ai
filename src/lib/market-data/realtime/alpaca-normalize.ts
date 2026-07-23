@@ -164,7 +164,25 @@ export function normalizeAlpacaMessage(message: unknown): NormalizedMarketEvent 
 export type AlpacaControl =
   | { kind: 'success'; message: string }
   | { kind: 'error'; code: number | null; message: string }
-  | { kind: 'subscription' };
+  | {
+      kind: 'subscription';
+      /** Union of every symbol Alpaca reports as actually subscribed. */
+      symbols: string[];
+      /** Per-channel symbol lists Alpaca echoed (only non-empty channels). */
+      channels: Partial<Record<string, string[]>>;
+    };
+
+/**
+ * The channel arrays an Alpaca `subscription` ack can carry. Alpaca echoes the
+ * FULL current subscription (every channel, even the empty ones) on every ack,
+ * so this is the ground truth of what the upstream is really streaming — which
+ * is why the Gateway logs it: "we asked for trades but only got quotes" is
+ * otherwise invisible.
+ */
+const SUBSCRIPTION_CHANNELS = [
+  'trades', 'quotes', 'bars', 'updatedBars', 'dailyBars',
+  'statuses', 'lulds', 'corrections', 'cancelErrors',
+] as const;
 
 /** Classify a non-market Alpaca control frame, or null when it is market data. */
 export function classifyAlpacaControl(message: unknown): AlpacaControl | null {
@@ -175,8 +193,19 @@ export function classifyAlpacaControl(message: unknown): AlpacaControl | null {
       return { kind: 'success', message: str(msg.msg) ?? '' };
     case 'error':
       return { kind: 'error', code: num(msg.code), message: str(msg.msg) ?? '' };
-    case 'subscription':
-      return { kind: 'subscription' };
+    case 'subscription': {
+      const channels: Partial<Record<string, string[]>> = {};
+      const symbols = new Set<string>();
+      for (const channel of SUBSCRIPTION_CHANNELS) {
+        const raw = msg[channel];
+        if (!Array.isArray(raw)) continue;
+        const syms = raw.filter((s): s is string => typeof s === 'string' && s.length > 0);
+        if (syms.length === 0) continue;
+        channels[channel] = syms;
+        for (const s of syms) symbols.add(s.toUpperCase());
+      }
+      return { kind: 'subscription', symbols: [...symbols], channels };
+    }
     default:
       return null;
   }

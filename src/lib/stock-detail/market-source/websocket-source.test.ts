@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { MarketTracer } from '@/src/lib/market-data/realtime';
 import { WebSocketMarketSourceImpl } from './websocket-source';
 import type { RealtimeSocket } from './realtime-socket';
 import type { MarketUpdate } from './types';
@@ -194,5 +195,53 @@ describe('WebSocketMarketSource lifecycle', () => {
     const last = updates[updates.length - 1];
     expect(last.symbol).toBe('MSFT');
     expect(last.price).toBe(300);
+  });
+});
+
+describe('WebSocketMarketSource tracing', () => {
+  function tracedSetup() {
+    const lines: string[] = [];
+    const tracer = new MarketTracer({ sink: (l) => lines.push(l), now: () => 0, sampleIntervalMs: 0 });
+    const sockets: FakeSocket[] = [];
+    const source = new WebSocketMarketSourceImpl({
+      symbol: 'AAPL',
+      url: 'wss://gw.example/ws',
+      selection: { interval: '1m', session: 'regular', adjusted: false },
+      createSocket: () => { const s = new FakeSocket(); sockets.push(s); return s; },
+      now: () => 0,
+      random: () => 0,
+      scheduler: (cb) => { void cb; return () => {}; },
+      heartbeatMs: 0,
+      tracer,
+    });
+    source.subscribe(() => {});
+    source.start();
+    sockets[0].emitOpen();
+    sockets[0].emit({ type: 'connected', feed: 'iex', realtime: true });
+    return { sockets, lines };
+  }
+
+  it('traces browser_market_event_received and price_header_updated on a live trade', () => {
+    const { sockets, lines } = tracedSetup();
+    sockets[0].emit({ type: 'event', event: { kind: 'trade', symbol: 'AAPL', price: 190.5, size: 10, timestampMs: 1_000 } });
+    expect(lines.some((l) => l.includes('browser_market_event_received') && l.includes('type=trade') && l.includes('symbol=AAPL'))).toBe(true);
+    expect(lines.some((l) => l.includes('price_header_updated') && l.includes('symbol=AAPL') && l.includes('price=190.5'))).toBe(true);
+  });
+
+  it('does not emit price_header_updated for a quote (bid/ask never drives Last Price)', () => {
+    const { sockets, lines } = tracedSetup();
+    sockets[0].emit({ type: 'event', event: { kind: 'quote', symbol: 'AAPL', bidPrice: 1, bidSize: 1, askPrice: 2, askSize: 1, timestampMs: 2_000 } });
+    expect(lines.some((l) => l.includes('browser_market_event_received') && l.includes('type=quote'))).toBe(true);
+    expect(lines.some((l) => l.includes('price_header_updated'))).toBe(false);
+  });
+
+  it('does not emit price_header_updated for an out-of-order (older) trade', () => {
+    const { sockets, lines } = tracedSetup();
+    sockets[0].emit({ type: 'event', event: { kind: 'trade', symbol: 'AAPL', price: 100, size: 1, timestampMs: 5_000 } });
+    const before = lines.filter((l) => l.includes('price_header_updated')).length;
+    sockets[0].emit({ type: 'event', event: { kind: 'trade', symbol: 'AAPL', price: 999, size: 1, timestampMs: 1_000 } }); // older
+    const after = lines.filter((l) => l.includes('price_header_updated')).length;
+    expect(before).toBe(1);
+    expect(after).toBe(1); // the stale trade did not update the header
   });
 });

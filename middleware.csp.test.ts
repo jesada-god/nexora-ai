@@ -15,13 +15,21 @@ function setNodeEnv(value: string): void {
   (process.env as Record<string, string>).NODE_ENV = value;
 }
 
-async function connectSrc(): Promise<string> {
+async function directiveOf(prefix: string): Promise<string> {
   // Import lazily so each test observes the current process.env values.
   const { middleware } = await import('./middleware');
   const response = await middleware(new NextRequest('http://localhost:3000/'));
   const policy = response.headers.get('Content-Security-Policy') ?? '';
-  const directive = policy.split(';').map((part) => part.trim()).find((part) => part.startsWith('connect-src '));
+  const directive = policy.split(';').map((part) => part.trim()).find((part) => part.startsWith(prefix));
   return directive ?? '';
+}
+
+async function connectSrc(): Promise<string> {
+  return directiveOf('connect-src ');
+}
+
+async function scriptSrc(): Promise<string> {
+  return directiveOf('script-src ');
 }
 
 describe('middleware CSP connect-src for the market WebSocket Gateway', () => {
@@ -75,5 +83,35 @@ describe('middleware CSP connect-src for the market WebSocket Gateway', () => {
     const directive = await connectSrc();
     expect(directive).toBe(`connect-src 'self'`);
     expect(directive).not.toContain('*');
+  });
+});
+
+describe('middleware CSP script-src never allows unsafe-eval in production', () => {
+  beforeEach(() => {
+    vi.resetModules();
+  });
+
+  afterEach(() => {
+    setNodeEnv(ORIGINAL_NODE_ENV ?? 'test');
+  });
+
+  it('omits unsafe-eval from script-src in production', async () => {
+    setNodeEnv('production');
+    const directive = await scriptSrc();
+    expect(directive).toContain(`'self'`);
+    expect(directive).not.toContain(`'unsafe-eval'`);
+  });
+
+  it('omits unsafe-eval from script-src outside development (e.g. test/preview)', async () => {
+    setNodeEnv('test');
+    const directive = await scriptSrc();
+    expect(directive).not.toContain(`'unsafe-eval'`);
+  });
+
+  it('permits unsafe-eval ONLY in development (Next dev needs eval-source-map)', async () => {
+    setNodeEnv('development');
+    const directive = await scriptSrc();
+    // Development tooling requires it; it must never leak into a shipped build.
+    expect(directive).toContain(`'unsafe-eval'`);
   });
 });
