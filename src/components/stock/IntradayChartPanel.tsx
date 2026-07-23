@@ -2,7 +2,7 @@
 
 import dynamic from 'next/dynamic';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { DataProvenance, type DisplayDataStatus } from '@/src/components/market-data/DataProvenance';
+import { DataProvenance } from '@/src/components/market-data/DataProvenance';
 import { planChartRequest, shouldApplyResponse } from './chart-request';
 import { matchesLiveSelection, mergeLiveCandleIntoBars, shouldPollChart } from './live-candle-bridge';
 import { Skeleton } from '@/src/components/ui/Skeleton';
@@ -10,6 +10,7 @@ import { useAppActive } from '@/src/hooks/useAppActive';
 import { chartGatewayResponseSchema, type CandleInterval, type HistoricalRange, type MarketSessionMode } from '@/src/lib/market-data/gateway/contracts';
 import { historyFallbackModeFromStatus, type AcceptedPriceCandidate, type LiveCandle, type MarketDataLabel } from '@/src/lib/stock-detail/market-source';
 import type { HistoricalPrices, MarketDataEnvelope } from '@/src/lib/market-data/types';
+import { resolveChartProvenance } from './chart-live-provenance';
 
 const Chart = dynamic(() => import('./HistoricalChart'), { ssr: false, loading: () => <Skeleton className="h-[420px] w-full" /> });
 const TechnicalIndicatorControls = dynamic(() => import('@/src/components/analytics/TechnicalIndicatorControls').then((module) => module.TechnicalIndicatorControls), { ssr: false });
@@ -48,15 +49,6 @@ function limitationMessage(code: string | undefined): string {
   if (code === 'invalid-symbol') return 'This instrument is delisted or cannot be resolved safely.';
   if (code === 'not-found' || code === 'insufficient-data') return 'No real Polygon OHLCV is available for this symbol and selection.';
   return 'Market candles are temporarily unavailable.';
-}
-
-function displayStatus(value: ChartResult['bars']['dataStatus']): DisplayDataStatus {
-  // This account is not entitled to a real-time feed, so the chart provenance
-  // must never claim it — mirror the market-source label layer and downgrade a
-  // provider 'real-time'/'partial' bucket to DELAYED (a partial bar is the
-  // still-forming, non-real-time current bucket). Never surface a LIVE badge.
-  if (value === 'real-time' || value === 'partial') return 'delayed';
-  return value === 'unavailable' ? 'unavailable' : value;
 }
 
 function analyticsRange(range: HistoricalRange): HistoricalPrices['range'] {
@@ -178,6 +170,15 @@ export function MarketCandleChartPanel(props: Props) {
     () => (coveredByLiveSource ? mergeLiveCandleIntoBars(prices, liveCandle ?? null) : prices),
     [coveredByLiveSource, liveCandle, prices],
   );
+  const historyAsOf = result?.bars.asOf ? new Date(result.bars.asOf * 1_000).toISOString() : undefined;
+  const provenance = result ? resolveChartProvenance({
+    historyStatus: result.bars.dataStatus,
+    historyProvider: result.bars.provider,
+    historyAsOf,
+    coveredByLiveSource,
+    hasLiveCandle: Boolean(liveCandle),
+    marketLabel,
+  }) : null;
   // The newest completed (non-partial) bar the chart currently displays, reported
   // up as a history-fallback price candidate — the exact bar shown, never a
   // fabricated one. It is the header's last-resort price for Daily/Week/Month (or
@@ -235,16 +236,16 @@ export function MarketCandleChartPanel(props: Props) {
     : loading || cooldown > 0 || !appActive || error?.retryable === false;
   const refreshLabel = !coveredByLiveSource && cooldown ? `Refresh in ${cooldown}s` : 'Refresh';
   const tooltipContext = result ? {
-    provider: result.bars.provider,
+    provider: provenance?.provider ?? result.bars.provider,
     range,
     interval,
-    dataStatus: result.bars.dataStatus,
+    dataStatus: provenance?.realtime ? 'real-time' : result.bars.dataStatus,
     timezone: result.bars.timezone,
   } : {};
 
   return <div className="space-y-3" data-testid="market-candle-chart-panel">
-    <div className="flex flex-wrap items-center gap-2"><button type="button" disabled={refreshDisabled} onClick={onRefresh} className="min-h-11 rounded-lg border border-slate-700 px-3 text-xs text-slate-300 disabled:opacity-40">{refreshLabel}</button>{result && <span className="text-xs text-slate-500">{result.bars.bars.length.toLocaleString()} bars · {result.bars.timezone} · {result.bars.firstTimestamp ? new Date(result.bars.firstTimestamp * 1_000).toLocaleDateString() : '—'}–{result.bars.lastTimestamp ? new Date(result.bars.lastTimestamp * 1_000).toLocaleDateString() : '—'}</span>}</div>
-    <DataProvenance status={result ? displayStatus(result.bars.dataStatus) : error ? 'unavailable' : 'delayed'} provider={result?.bars.provider} asOf={result?.bars.asOf ? new Date(result.bars.asOf * 1_000).toISOString() : undefined} delayedMinutes={result?.bars.delayedByMinutes} reason={error?.message}/>
+    <div className="flex flex-wrap items-center gap-2"><button type="button" disabled={refreshDisabled} onClick={onRefresh} className="min-h-11 rounded-lg border border-slate-700 px-3 text-xs text-slate-300 disabled:opacity-40">{refreshLabel}</button>{provenance?.realtime && liveCandle && <span role="status" className="rounded-full border border-emerald-400/40 bg-emerald-400/10 px-2 py-1 font-mono text-xs text-emerald-300" data-testid="live-candle-status">LIVE · {liveCandle.close.toFixed(2)}</span>}{result && <span className="text-xs text-slate-500">{displayPrices.length.toLocaleString()} bars · {result.bars.timezone} · {result.bars.firstTimestamp ? new Date(result.bars.firstTimestamp * 1_000).toLocaleDateString() : '—'}–{result.bars.lastTimestamp ? new Date(result.bars.lastTimestamp * 1_000).toLocaleDateString() : '—'}</span>}</div>
+    <DataProvenance status={provenance?.status ?? (error ? 'unavailable' : 'delayed')} provider={provenance?.provider} asOf={provenance?.asOf} delayedMinutes={provenance?.realtime ? 0 : result?.bars.delayedByMinutes} reason={error?.message}/>
     {result?.bars.warnings.map((warning) => <p key={warning} className="text-xs text-amber-300">{warning}</p>)}
     {loading && !result && <Skeleton className="h-[420px] w-full rounded-xl" />}
     {error && !loading && <div role="alert" className="flex min-h-[300px] flex-col items-center justify-center rounded-xl border border-amber-500/20 p-4 text-center text-sm text-amber-200"><p>{error.message}</p><p className="mt-1 text-xs text-slate-500">No candle is mocked, interpolated, forward-filled, or replaced by another provider.</p>{error.diagnostics && <details className="mt-2 max-w-xl text-left text-xs text-slate-500"><summary>Development diagnostics</summary><p className="mt-1 break-words">{error.diagnostics}</p></details>}{error.retryable !== false && <button type="button" disabled={cooldown > 0} onClick={() => void request(true)} className="mt-3 min-h-11 rounded-lg border border-slate-700 px-3 disabled:opacity-40">{cooldown ? `Try again in ${cooldown}s` : 'Try again'}</button>}</div>}

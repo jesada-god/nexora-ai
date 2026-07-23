@@ -20,13 +20,15 @@ describe('Phase 11 market UI production contract', () => {
     expect(candleChart).not.toMatch(/onPan|onZoom|wheel.*fetch|pointer.*fetch/i);
   });
 
-  it('uses one server-normalized gateway route and separates timeframe from historical range', () => {
+  it('uses one server-normalized gateway route with legacy trader presets and an optional history range', () => {
     expect(candleChart).toContain('/api/market/chart?');
     expect(candleChart).not.toContain('aggregateSessionAwareIntraday');
     expect(candleChart).toContain('No candle is mocked, interpolated, forward-filled, or replaced by another provider');
     expect(chart).toContain('aria-label="Historical range"');
     expect(chart).toContain('aria-label="Candle interval"');
     expect(chart).toContain('compatibleSelection');
+    expect(chart).toContain('TRADER_TIMEFRAME_PRESETS');
+    expect(chart).toContain('data-testid="legacy-trader-chart-controls"');
   });
 
   it('lazy-loads the options UI with generation guards, cooldown and virtualization', () => {
