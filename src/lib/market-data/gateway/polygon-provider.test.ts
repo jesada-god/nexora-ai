@@ -123,6 +123,75 @@ describe('PolygonMarketDataProvider', () => {
     });
   });
 
+  it('derives the fallback daily change from two real daily closes', async () => {
+    // Production incident (RKLB): the snapshot is not entitled (403), so the free
+    // previous-close aggregate serves the price (69.75). That endpoint alone cannot
+    // express a daily change, so the provider now reads the prior session's close
+    // from the free daily aggregates and computes change from TWO real closes. The
+    // two endpoints date the SAME 2026-07-22 session differently (prev → 20:00Z
+    // close, daily → 04:00Z start), so sessions are matched by local calendar date.
+    const rklb: ResolvedInstrument = { ...instrument, canonicalSymbol: 'RKLB', providerSymbol: 'RKLB', name: 'Rocket Lab' };
+    const fetcher = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/snapshot/')) return json({ status: 'NOT_AUTHORIZED', message: 'not entitled' }, 403);
+      if (url.includes('/range/1/day/')) {
+        return json({ status: 'OK', ticker: 'RKLB', results: [
+          { T: 'RKLB', o: 66.34, h: 70.0, l: 66.0, c: 69.12, v: 18_000_000, t: Date.parse('2026-07-21T04:00:00.000Z') },
+          { T: 'RKLB', o: 70.49, h: 72.94, l: 69.25, c: 69.75, v: 21_031_353, t: Date.parse('2026-07-22T04:00:00.000Z') },
+        ] });
+      }
+      return json({ status: 'OK', ticker: 'RKLB', resultsCount: 1, results: [
+        { T: 'RKLB', o: 70.49, h: 72.94, l: 69.25, c: 69.75, v: 21_031_353, t: Date.parse('2026-07-22T20:00:00.000Z') },
+      ] });
+    });
+    const provider = new PolygonMarketDataProvider('secret', () => new Date('2026-07-23T14:00:00.000Z'), fetcher as typeof fetch);
+    const quote = await provider.getQuote(rklb);
+    expect(quote).toMatchObject({ symbol: 'RKLB', price: 69.75, previousClose: 69.12, status: 'end-of-day', provider: 'polygon' });
+    expect(quote.change).toBeCloseTo(0.63, 2);
+    expect(quote.changePercent).toBeCloseTo(0.9115, 3);
+  });
+
+  it('keeps the fallback change null when only one daily close exists (never guesses from OHLC)', async () => {
+    // A single available session (new listing / one bar) must NOT infer a change
+    // from this bar's own open/high/low. The prior-close lookup returns the same
+    // session by date, which is excluded, so change stays null and is hidden.
+    const rklb: ResolvedInstrument = { ...instrument, canonicalSymbol: 'RKLB', providerSymbol: 'RKLB' };
+    const fetcher = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/snapshot/')) return json({ status: 'NOT_AUTHORIZED' }, 403);
+      if (url.includes('/range/1/day/')) {
+        return json({ status: 'OK', ticker: 'RKLB', results: [
+          { T: 'RKLB', o: 70.49, h: 72.94, l: 69.25, c: 69.75, v: 21_031_353, t: Date.parse('2026-07-22T04:00:00.000Z') },
+        ] });
+      }
+      return json({ status: 'OK', ticker: 'RKLB', resultsCount: 1, results: [
+        { T: 'RKLB', o: 70.49, h: 72.94, l: 69.25, c: 69.75, v: 21_031_353, t: Date.parse('2026-07-22T20:00:00.000Z') },
+      ] });
+    });
+    const provider = new PolygonMarketDataProvider('secret', () => new Date('2026-07-23T14:00:00.000Z'), fetcher as typeof fetch);
+    await expect(provider.getQuote(rklb)).resolves.toMatchObject({
+      symbol: 'RKLB', price: 69.75, previousClose: null, change: null, changePercent: null, status: 'end-of-day',
+    });
+  });
+
+  it('degrades the fallback change to null when the daily-aggregates lookup fails (best-effort, never fails the quote)', async () => {
+    // The prior-close enrichment must never turn a served price into an error: a
+    // 500 on the daily endpoint leaves the price intact with the change hidden.
+    const rklb: ResolvedInstrument = { ...instrument, canonicalSymbol: 'RKLB', providerSymbol: 'RKLB' };
+    const fetcher = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/snapshot/')) return json({ status: 'NOT_AUTHORIZED' }, 403);
+      if (url.includes('/range/1/day/')) return json({ status: 'ERROR' }, 500);
+      return json({ status: 'OK', ticker: 'RKLB', resultsCount: 1, results: [
+        { T: 'RKLB', o: 70.49, h: 72.94, l: 69.25, c: 69.75, v: 21_031_353, t: Date.parse('2026-07-22T20:00:00.000Z') },
+      ] });
+    });
+    const provider = new PolygonMarketDataProvider('secret', () => new Date('2026-07-23T14:00:00.000Z'), fetcher as typeof fetch);
+    await expect(provider.getQuote(rklb)).resolves.toMatchObject({
+      symbol: 'RKLB', price: 69.75, previousClose: null, change: null, changePercent: null, status: 'end-of-day',
+    });
+  });
+
   it('never returns another symbol from the previous-close fallback', async () => {
     const fetcher = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);

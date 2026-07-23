@@ -224,9 +224,13 @@ export class PolygonMarketDataProvider implements MarketDataProviderV2 {
 
   /**
    * Free-tier previous-close aggregate fallback for the premium snapshot quote.
-   * Returns a truthful end-of-day quote (the prior completed trading day's OHLCV).
-   * Change vs. the day before is not derivable from a single aggregate, so those
-   * fields stay null rather than being fabricated.
+   * Returns a truthful end-of-day quote (the latest completed trading day's OHLCV).
+   *
+   * The daily change is derived ONLY from two real daily closes — the displayed
+   * session's close and the immediately-preceding session's close (see
+   * {@link priorDailyClose}). It is never inferred from this bar's own open/high/low,
+   * and when a genuine prior close cannot be found the change fields stay null
+   * rather than being fabricated.
    */
   private async previousCloseQuote(instrument: ResolvedInstrument) {
     try {
@@ -244,13 +248,19 @@ export class PolygonMarketDataProvider implements MarketDataProviderV2 {
       if (result.T && result.T.toUpperCase() !== instrument.providerSymbol.toUpperCase()) {
         throw new MarketDataError('invalid-provider-response', 'Polygon previous-close ticker did not match the resolved provider symbol');
       }
+      // Two real daily closes → a truthful daily change for this end-of-day quote.
+      // The prior close is the newest daily bar strictly before this session; when
+      // none exists (single available close) it stays null and change is hidden.
+      const previousClose = await this.priorDailyClose(instrument, timestamp);
+      const change = previousClose == null ? null : close! - previousClose;
+      const changePercent = previousClose ? ((close! - previousClose) / previousClose) * 100 : null;
       const recency = dataRecency(timestamp, Math.floor(this.now().valueOf() / 1_000), true);
       return normalizedQuoteSchema.parse({
         symbol: instrument.canonicalSymbol,
         price: close,
-        previousClose: null,
-        change: null,
-        changePercent: null,
+        previousClose,
+        change,
+        changePercent,
         timestamp,
         provider: this.id,
         exchange: instrument.exchange,
@@ -266,6 +276,47 @@ export class PolygonMarketDataProvider implements MarketDataProviderV2 {
       if (cause instanceof MarketDataError) throw cause;
       if (cause instanceof ZodError) throw new MarketDataError('invalid-provider-response', 'Polygon previous-close response did not match its validated schema');
       throw cause;
+    }
+  }
+
+  /**
+   * The close of the daily session immediately BEFORE the displayed session, from
+   * the free daily-aggregates endpoint. Returns null (never a guessed value) when
+   * the request fails or there is no earlier session, so the fallback change is
+   * only ever computed from two genuine daily closes. A best-effort enrichment: a
+   * failure here degrades to "no change", it never fails the quote.
+   *
+   * Sessions are matched by their exchange-local calendar DATE, not by raw
+   * timestamp: Polygon dates the `/prev` bar at the session close (e.g. 20:00Z)
+   * but the daily-aggregates bar at the session start (e.g. 04:00Z), so a naive
+   * numeric comparison would treat the SAME session as "earlier" and report a zero
+   * change. The prior close is the newest daily bar whose local date is strictly
+   * before the displayed session's local date.
+   */
+  private async priorDailyClose(instrument: ResolvedInstrument, latestSeconds: number): Promise<number | null> {
+    const tz = instrument.timezone;
+    const latestDate = localDate(latestSeconds, tz);
+    // ~3 calendar weeks guarantees at least one earlier trading session across
+    // weekends/holidays; `to` is the displayed session's date, so a still-forming
+    // current-day bar can never be mistaken for the prior close.
+    const to = latestDate;
+    const from = localDate(latestSeconds - 21 * 24 * 60 * 60, tz);
+    try {
+      const payload = aggregateSchema.parse(await this.request(
+        `/v2/aggs/ticker/${encodeURIComponent(instrument.providerSymbol)}/range/1/day/${from}/${to}`,
+        { adjusted: 'true', sort: 'asc', limit: '60' },
+      ));
+      if (payload.ticker && payload.ticker.toUpperCase() !== instrument.providerSymbol.toUpperCase()) return null;
+      let prior: number | null = null;
+      for (const bar of payload.results ?? []) {
+        const time = epochSeconds(bar.t);
+        if (time == null || !Number.isFinite(bar.c)) continue;
+        // Strictly-earlier local session only; take the newest such close (asc).
+        if (localDate(time, tz) < latestDate) prior = bar.c;
+      }
+      return prior;
+    } catch {
+      return null;
     }
   }
 
