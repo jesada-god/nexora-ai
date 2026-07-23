@@ -122,23 +122,37 @@ export interface BackoffOptions {
   baseMs?: number;
   factor?: number;
   maxMs?: number;
+  /**
+   * Jitter strategy. `full` (the default) draws uniformly in `[0, cappedBackoff]`
+   * and can return 0. `equal` draws in `[cappedBackoff/2, cappedBackoff]`, keeping
+   * a floor so a reconnect can never fire back-to-back within the same second —
+   * the property the single upstream needs after an Alpaca 406 (connection-limit)
+   * rejection, where hot-looping just re-trips the same limit.
+   */
+  jitter?: 'full' | 'equal';
   /** Injectable for deterministic tests; defaults to Math.random. */
   random?: () => number;
 }
 
 /**
- * Exponential backoff with full jitter, capped at 30s. `attempt` is 0-based
- * (the first reconnect attempt is 0). Full jitter — a uniform draw in
- * `[0, cappedBackoff]` — spreads reconnect storms so many clients do not all
- * retry on the same tick.
+ * Exponential backoff with jitter. `attempt` is 0-based (the first reconnect
+ * attempt is 0). `full` jitter — a uniform draw in `[0, cappedBackoff]` — spreads
+ * reconnect storms so many clients do not all retry on the same tick. `equal`
+ * jitter keeps a floor of `cappedBackoff/2` so a single long-lived connection
+ * never retries instantly (see {@link BackoffOptions.jitter}).
  */
 export function computeBackoffDelayMs(attempt: number, options: BackoffOptions = {}): number {
   const baseMs = options.baseMs ?? 1_000;
   const factor = options.factor ?? 2;
   const maxMs = options.maxMs ?? 30_000;
+  const jitter = options.jitter ?? 'full';
   const random = options.random ?? Math.random;
   const exponential = baseMs * factor ** Math.max(0, attempt);
   const capped = Math.min(maxMs, exponential);
+  if (jitter === 'equal') {
+    const half = capped / 2;
+    return Math.floor(half + random() * half);
+  }
   return Math.floor(random() * capped);
 }
 

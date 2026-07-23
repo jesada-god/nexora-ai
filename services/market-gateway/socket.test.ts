@@ -16,6 +16,10 @@ class FakeWs extends EventEmitter {
     if (this.readyState !== 1) throw new Error(`WebSocket is not open: readyState ${this.readyState}`);
     this.sent.push(data);
   });
+  // Mirror ws: ping() also throws synchronously unless OPEN.
+  ping = vi.fn(() => {
+    if (this.readyState !== 1) throw new Error(`WebSocket is not open: readyState ${this.readyState}`);
+  });
   close = vi.fn();
 }
 
@@ -42,6 +46,19 @@ describe('fromWs adapter', () => {
     expect(socket.isOpen()).toBe(true);
     expect(socket.send('hello')).toBe('sent');
     expect(ws.sent).toEqual(['hello']);
+  });
+
+  it('pings only while OPEN and never throws when the socket is not OPEN', () => {
+    const ws = new FakeWs();
+    const socket = adapt(ws);
+
+    ws.readyState = 0; // CONNECTING
+    expect(() => socket.ping()).not.toThrow();
+    expect(ws.ping).not.toHaveBeenCalled(); // guarded before the throwing call
+
+    ws.readyState = 1; // OPEN
+    socket.ping();
+    expect(ws.ping).toHaveBeenCalledTimes(1);
   });
 
   it('detach removes listeners and swallows a late error instead of crashing', () => {

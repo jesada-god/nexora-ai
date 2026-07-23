@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { FAKEPACA_SYMBOL, MarketTracer } from '@/src/lib/market-data/realtime';
+import { FAKEPACA_SYMBOL, MarketTracer, type ChannelRef } from '@/src/lib/market-data/realtime';
 import { GatewayHub } from './hub';
 import { UpstreamConnection } from './upstream';
 import type { Scheduler, SendResult, SocketLike } from './socket';
@@ -19,6 +19,8 @@ const CLOSED = 3;
 
 class FakeSocket implements SocketLike {
   readonly sent: string[] = [];
+  /** How many protocol pings the watchdog has sent through this socket. */
+  pinged = 0;
   closed = false;
   readyState = CONNECTING;
   detached = false;
@@ -36,6 +38,7 @@ class FakeSocket implements SocketLike {
     return 'sent';
   }
   isOpen(): boolean { return this.readyState === OPEN; }
+  ping(): void { if (this.readyState === OPEN) this.pinged += 1; }
   close(): void { this.closed = true; this.readyState = CLOSED; }
   detach(): void { this.detached = true; this.openCb = this.msgCb = this.closeCb = this.errCb = this.pingCb = this.pongCb = undefined; }
   onOpen(cb: () => void): void { this.openCb = cb; }
@@ -52,6 +55,7 @@ class FakeSocket implements SocketLike {
   emitClose(): void { this.readyState = CLOSED; this.closeCb?.(); }
   emitError(error: unknown): void { this.errCb?.(error); }
   emitPing(): void { this.pingCb?.(); }
+  emitPong(): void { this.pongCb?.(); }
 
   frames(): Array<Record<string, unknown>> { return this.sent.map((raw) => JSON.parse(raw)); }
   framesOfType(type: string): Array<Record<string, unknown>> {
@@ -401,36 +405,175 @@ describe('Gateway reconnect race safety', () => {
     expect(socket.frames().every((frame) => frame.action === 'auth')).toBe(true);
   });
 
-  it('treats a protocol ping as liveness so a quiet FAKEPACA feed is not recycled', () => {
+});
+
+/**
+ * The liveness watchdog and the connection-limit-safe reconnect backoff — the
+ * two behaviours behind the Railway 406 / stale-feed reconnect loop. A
+ * delay-aware fake scheduler lets each timer (heartbeat=interval, pong=timeout,
+ * reconnect=backoff) be fired independently and asserts cancellation actually
+ * happens, none of which a "run everything" scheduler could prove.
+ */
+describe('Gateway liveness watchdog and backoff', () => {
+  interface Task { cb: () => void; delay: number; done: boolean }
+
+  function makeWatchdog(
+    options: { getSubscriptions?: () => ChannelRef[]; heartbeatIntervalMs?: number; pongTimeoutMs?: number } = {},
+  ) {
     let clock = 0;
-    const upstreamSockets: FakeSocket[] = [];
-    const pending: Array<() => void> = [];
-    const scheduler: Scheduler = (cb) => { pending.push(cb); return () => {}; };
-    const flush = (): void => { pending.splice(0).forEach((cb) => cb()); };
+    const sockets: FakeSocket[] = [];
+    const tasks: Task[] = [];
+    const scheduler: Scheduler = (cb, delay) => {
+      const task: Task = { cb, delay, done: false };
+      tasks.push(task);
+      return () => { task.done = true; };
+    };
+    /** Fire every currently-pending timer whose delay matches, exactly once. */
+    const runDelay = (delay: number): void => {
+      for (const task of tasks.filter((t) => !t.done && t.delay === delay)) { task.done = true; task.cb(); }
+    };
+    /** Fire everything still pending, exactly once each. */
+    const runAll = (): void => {
+      for (const task of tasks.filter((t) => !t.done)) { task.done = true; task.cb(); }
+    };
+    const pending = (delay?: number): Task[] =>
+      tasks.filter((t) => !t.done && (delay === undefined || t.delay === delay));
     const upstream = new UpstreamConnection({
       config: { url: 'wss://stream.data.alpaca.markets/v2/test', keyId: 'k', secretKey: 's' },
-      createSocket: () => { const socket = new FakeSocket(); upstreamSockets.push(socket); return socket; },
+      createSocket: () => { const socket = new FakeSocket(); sockets.push(socket); return socket; },
       onEvent: () => {},
-      getSubscriptions: () => [],
+      getSubscriptions: options.getSubscriptions ?? (() => [{ symbol: 'AAPL', channel: 'trades' }]),
       scheduler,
       random: () => 0,
       now: () => clock,
-      staleTimeoutMs: 30_000,
+      heartbeatIntervalMs: options.heartbeatIntervalMs ?? 15_000,
+      pongTimeoutMs: options.pongTimeoutMs ?? 10_000,
     });
-    upstream.start();
-    const socket = upstreamSockets[0];
-    socket.emitOpen();
-    socket.emitMessage({ T: 'success', msg: 'connected' });
-    socket.emitMessage({ T: 'success', msg: 'authenticated' });
-    expect(upstream.getState()).toBe('ready');
+    const authenticate = (socket: FakeSocket): void => {
+      socket.emitOpen();
+      socket.emitMessage({ T: 'success', msg: 'connected' });
+      socket.emitMessage({ T: 'success', msg: 'authenticated' });
+    };
+    return { upstream, sockets, tasks, runDelay, runAll, pending, authenticate, setClock: (v: number) => { clock = v; } };
+  }
 
-    // Advance past the stale deadline but keep the protocol heartbeat alive.
-    clock += 20_000;
-    socket.emitPing();
-    clock += 20_000; // 40s total since open, but only 20s since the last ping
-    flush(); // run the pending stale-timer tick
-    expect(upstream.getState()).toBe('ready'); // not recycled
-    expect(upstreamSockets).toHaveLength(1);
+  it('backs off (never sub-second) after a 406 connection-limit rejection', () => {
+    const { upstream, sockets, tasks, authenticate } = makeWatchdog();
+    upstream.start();
+    authenticate(sockets[0]);
+
+    sockets[0].emitMessage({ T: 'error', code: 406, msg: 'connection limit exceeded' });
+    expect(upstream.getState()).toBe('reconnecting');
+
+    const reconnects = tasks.filter((t) => !t.done);
+    expect(reconnects).toHaveLength(1); // exactly one reconnect timer, heartbeat canceled
+    expect(reconnects[0].delay).toBeGreaterThanOrEqual(2_500); // equal jitter floor, not a hot loop
+    expect(reconnects[0].delay).toBeLessThanOrEqual(5_000);
+    expect(sockets).toHaveLength(1); // no new socket opened until the delay elapses
+  });
+
+  it('keeps exactly one reconnect timer when several failures arrive together', () => {
+    const { upstream, sockets, pending, authenticate } = makeWatchdog();
+    upstream.start();
+    authenticate(sockets[0]);
+
+    sockets[0].emitClose();
+    sockets[0].emitError(new Error('boom')); // must not double-schedule
+    expect(pending()).toHaveLength(1);
+    expect(upstream.getState()).toBe('reconnecting');
+  });
+
+  it('does not reconnect a quiet market while the protocol pong still answers', () => {
+    const { upstream, sockets, runDelay, setClock, authenticate } = makeWatchdog();
+    upstream.start();
+    authenticate(sockets[0]);
+    const socket = sockets[0];
+
+    setClock(20_000); // past the 15s silent-wire interval
+    runDelay(15_000); // heartbeat tick → active probe ping
+    expect(socket.pinged).toBe(1);
+
+    socket.emitPong(); // the feed is alive, merely quiet
+    runDelay(10_000); // pong-timeout check
+    expect(upstream.getState()).toBe('ready'); // NOT recycled
+    expect(sockets).toHaveLength(1);
+  });
+
+  it('reconnects exactly once when a probe ping is never answered', () => {
+    const { upstream, sockets, runDelay, pending, setClock, authenticate } = makeWatchdog();
+    upstream.start();
+    authenticate(sockets[0]);
+    const socket = sockets[0];
+
+    setClock(20_000);
+    runDelay(15_000); // heartbeat tick → probe ping
+    expect(socket.pinged).toBe(1);
+
+    setClock(30_000); // no pong arrives
+    runDelay(10_000); // pong-timeout check → genuine failure → recycle
+    expect(upstream.getState()).toBe('reconnecting');
+    expect(socket.closed).toBe(true);
+    expect(pending()).toHaveLength(1); // just the single reconnect timer
+
+    runDelay(pending()[0].delay); // fire the backoff
+    expect(sockets).toHaveLength(2); // exactly one new socket
+    expect(socket.pinged).toBe(1); // never pinged in a loop
+  });
+
+  it('never probes or reconnects when zero symbols are desired, however quiet', () => {
+    const { upstream, sockets, runDelay, setClock, authenticate } = makeWatchdog({ getSubscriptions: () => [] });
+    upstream.start();
+    authenticate(sockets[0]);
+    const socket = sockets[0];
+
+    setClock(60_000);
+    runDelay(15_000); // heartbeat tick with zero desired symbols
+    setClock(120_000);
+    runDelay(15_000); // and again, much later
+
+    expect(socket.pinged).toBe(0); // market silence never provokes a probe
+    expect(upstream.getState()).toBe('ready');
+    expect(sockets).toHaveLength(1); // no reconnect
+  });
+
+  it('cancels a superseded generation watchdog timer so it cannot recycle the fresh socket', () => {
+    const { upstream, sockets, runDelay, runAll, pending, setClock, authenticate } = makeWatchdog();
+    upstream.start();
+    authenticate(sockets[0]);
+    const stale = sockets[0];
+
+    setClock(20_000);
+    runDelay(15_000); // gen1 probe → a pong-timeout timer is armed for gen1
+    expect(stale.pinged).toBe(1);
+    expect(pending(10_000)).toHaveLength(1);
+
+    stale.emitClose(); // gen1 tears down → its watchdog timers are canceled
+    expect(pending(10_000)).toHaveLength(0); // the stale pong timer is gone
+
+    runDelay(2_500); // backoff → fresh gen2 socket
+    const fresh = sockets[1];
+    authenticate(fresh);
+
+    runAll(); // fire everything still pending — nothing may recycle gen2
+    expect(upstream.getState()).toBe('ready');
+    expect(fresh.closed).toBe(false);
+    expect(sockets).toHaveLength(2);
+  });
+
+  it('stop() closes the socket and cancels every watchdog timer', () => {
+    const { upstream, sockets, pending, runAll, authenticate } = makeWatchdog();
+    upstream.start();
+    authenticate(sockets[0]);
+    const socket = sockets[0];
+    expect(pending()).not.toHaveLength(0); // a heartbeat is armed
+
+    upstream.stop();
+    expect(upstream.getState()).toBe('stopped');
+    expect(socket.closed).toBe(true);
+    expect(pending()).toHaveLength(0); // every timer canceled
+
+    runAll();
+    expect(sockets).toHaveLength(1); // nothing left to open a socket
   });
 });
 

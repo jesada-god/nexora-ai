@@ -113,6 +113,19 @@ describe('computeBackoffDelayMs', () => {
   it('applies full jitter down to zero', () => {
     expect(computeBackoffDelayMs(5, { random: () => 0 })).toBe(0);
   });
+
+  it('equal jitter keeps a floor of half the cap so it never fires sub-second', () => {
+    // The upstream's connection-limit-safe policy: base 5s, cap 60s, equal jitter.
+    const opts = { baseMs: 5_000, factor: 2, maxMs: 60_000, jitter: 'equal' as const };
+    // Even at random()=0 the delay is the FLOOR (half the capped backoff), never 0.
+    expect(computeBackoffDelayMs(0, { ...opts, random: () => 0 })).toBe(2_500);
+    expect(computeBackoffDelayMs(1, { ...opts, random: () => 0 })).toBe(5_000);
+    expect(computeBackoffDelayMs(2, { ...opts, random: () => 0 })).toBe(10_000);
+    // Capped at 60s: floor 30s, ceiling 60s.
+    expect(computeBackoffDelayMs(20, { ...opts, random: () => 0 })).toBe(30_000);
+    expect(computeBackoffDelayMs(20, { ...opts, random: () => 0.999999 })).toBeLessThanOrEqual(60_000);
+    expect(computeBackoffDelayMs(20, { ...opts, random: () => 0.999999 })).toBeGreaterThan(59_000);
+  });
 });
 
 describe('Alpaca frames', () => {

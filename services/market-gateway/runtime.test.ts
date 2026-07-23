@@ -4,6 +4,7 @@ import {
   ConnectionRateGuard,
   DEFAULT_PORT,
   isOriginAllowed,
+  isUpstreamReady,
   redactSecrets,
   resolveAllowedOrigins,
   resolveGatewayPort,
@@ -83,6 +84,26 @@ describe('buildHealthReport', () => {
   it('reports degraded for any non-ready upstream state', () => {
     for (const state of ['idle', 'connecting', 'authenticating', 'reconnecting', 'stopped'] as const) {
       expect(buildHealthReport({ upstreamState: state, feed: 'test', startedAt: 0, now: 0 }).status).toBe('degraded');
+    }
+  });
+
+  it('still reports honest operational signal while the upstream is (re)connecting', () => {
+    // Liveness (/healthz) answers regardless of upstream state; the body must not
+    // pretend the feed is ready, but it must always describe the real state — this
+    // is what lets Railway keep a rolling instance alive through a transient 406.
+    for (const state of ['connecting', 'reconnecting'] as const) {
+      const report = buildHealthReport({ upstreamState: state, feed: 'iex', startedAt: 0, now: 5_000 });
+      expect(report.status).toBe('degraded');
+      expect(report.upstreamState).toBe(state);
+    }
+  });
+});
+
+describe('isUpstreamReady', () => {
+  it('is true only when the upstream is streaming (the /readyz gate)', () => {
+    expect(isUpstreamReady('ready')).toBe(true);
+    for (const state of ['idle', 'connecting', 'authenticating', 'reconnecting', 'stopped'] as const) {
+      expect(isUpstreamReady(state)).toBe(false);
     }
   });
 });

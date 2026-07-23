@@ -6,6 +6,7 @@ import {
   computeBackoffDelayMs,
   MarketTracer,
   normalizeAlpacaMessage,
+  type BackoffOptions,
   type ChannelRef,
   type MarketChannel,
   type NormalizedMarketEvent,
@@ -17,16 +18,27 @@ import { defaultScheduler, type Scheduler, type SocketLike } from './socket';
  *
  * Drives the handshake state machine (connect → authenticate → subscribe),
  * normalizes every market message before emitting it, and owns reconnection:
- * exponential backoff with full jitter (cap 30s), one pending reconnect at a
- * time, and a full resubscribe from the live registry snapshot once
- * re-authenticated. A stale-feed watchdog force-recycles a silent socket.
+ * exponential backoff with EQUAL jitter (5s → cap 60s, never sub-second), exactly
+ * one pending reconnect at a time, and a full resubscribe from the live registry
+ * snapshot once re-authenticated. This backoff is what keeps an Alpaca 406
+ * (connection-limit) rejection from hot-looping and re-tripping the same limit.
+ *
+ * LIVENESS — the watchdog is deliberately conservative. It NEVER treats "no
+ * trade/quote/bar" as a dead connection: a closed market, or an instance with
+ * zero desired subscriptions, is silent yet perfectly healthy. Only when the
+ * WIRE (any frame at all, including a subscription ack or a protocol pong) has
+ * gone quiet for a full interval does it actively ping, and it recycles solely
+ * when that ping is not answered within the pong timeout. `lastWireMessageAge`
+ * and `lastMarketEventAge` are tracked and logged separately for exactly this
+ * reason.
  *
  * CONNECTION GENERATION GUARD — every {@link open} mints a fresh generation
- * token. Each socket's open/message/close/error/ping/pong handler captures its
- * generation and no-ops unless it is still current. This is what makes reconnect
- * race-safe: a message delivered by a superseded socket can never authenticate,
- * resubscribe, or otherwise `send()` through the freshly-created (and possibly
- * still-CONNECTING) replacement socket.
+ * token. Each socket's open/message/close/error/ping/pong handler (and every
+ * watchdog timer) captures its generation and no-ops unless it is still current.
+ * This is what makes reconnect race-safe: a message delivered — or a stale-feed
+ * timer fired — by a superseded socket can never authenticate, resubscribe,
+ * close, or otherwise touch the freshly-created (and possibly still-CONNECTING)
+ * replacement socket.
  */
 
 export type UpstreamState =
@@ -49,8 +61,16 @@ export interface UpstreamOptions {
   scheduler?: Scheduler;
   random?: () => number;
   now?: () => number;
-  /** No message/heartbeat for this long → force reconnect. 0 disables it. */
-  staleTimeoutMs?: number;
+  /**
+   * Silent-wire interval: when NO frame (market, control, or protocol pong) has
+   * arrived for this long AND at least one symbol is desired, actively ping to
+   * probe liveness. 0 disables the watchdog entirely.
+   */
+  heartbeatIntervalMs?: number;
+  /** After a probe ping, recycle only if nothing answers within this window. */
+  pongTimeoutMs?: number;
+  /** Reconnect backoff. Defaults to connection-limit-safe 5s → 60s equal jitter. */
+  backoff?: BackoffOptions;
   /** End-to-end pipeline tracer. Defaults to a live, sampled console tracer. */
   tracer?: MarketTracer;
 }
@@ -62,6 +82,17 @@ export interface UpstreamOptions {
  * memory bounded rather than growing without limit.
  */
 const MAX_OUTBOX = 64;
+
+/** Fallback pong window when {@link UpstreamOptions.pongTimeoutMs} is unset. */
+const DEFAULT_PONG_TIMEOUT_MS = 10_000;
+
+/**
+ * Reconnect backoff tuned for a single, connection-limited upstream: start at
+ * 5s, double, cap at 60s, and use EQUAL jitter so two failures can never produce
+ * two reconnects inside the same second. This is the direct fix for the observed
+ * 406 hot-loop.
+ */
+const DEFAULT_BACKOFF: BackoffOptions = { baseMs: 5_000, factor: 2, maxMs: 60_000, jitter: 'equal' };
 
 function groupByChannel(refs: ChannelRef[]): Partial<Record<MarketChannel, string[]>> {
   const grouped: Partial<Record<MarketChannel, string[]>> = {};
@@ -80,8 +111,12 @@ export class UpstreamConnection {
   private stopped = false;
   private reconnectPending = false;
   private cancelReconnect: (() => void) | null = null;
-  private cancelStaleTimer: (() => void) | null = null;
-  private lastMessageAt = 0;
+  private cancelHeartbeat: (() => void) | null = null;
+  private cancelPongTimer: (() => void) | null = null;
+  /** Last time ANY frame arrived on the wire (market, control, ping, or pong). */
+  private lastWireMessageAt = 0;
+  /** Last time a normalized market event arrived — tracked distinctly from wire. */
+  private lastMarketEventAt = 0;
   /** Bounded queue of control frames awaiting an OPEN socket of this generation. */
   private outbox: string[] = [];
   private readonly scheduler: Scheduler;
@@ -180,8 +215,8 @@ export class UpstreamConnection {
 
   private onOpen(generation: number, socket: SocketLike): void {
     if (!this.isCurrent(generation)) return; // superseded socket opened late
-    this.markAlive();
-    this.armStaleTimer(generation);
+    this.markWire();
+    this.armHeartbeat(generation);
     // Alpaca sends {"T":"success","msg":"connected"} first; auth follows that.
     // Anything queued while CONNECTING can flush now that the socket is OPEN.
     this.flushOutbox(socket);
@@ -189,12 +224,14 @@ export class UpstreamConnection {
 
   private onHeartbeat(generation: number): void {
     if (!this.isCurrent(generation)) return;
-    this.markAlive();
+    // A protocol ping/pong is wire activity — proof the socket is alive even when
+    // the market is silent. This is what lets a quiet feed answer the watchdog.
+    this.markWire();
   }
 
   private onUpstreamMessage(generation: number, data: string): void {
     if (!this.isCurrent(generation)) return; // ignore stale-socket messages
-    this.markAlive();
+    this.markWire();
     let parsed: unknown;
     try {
       parsed = JSON.parse(data);
@@ -234,21 +271,25 @@ export class UpstreamConnection {
           this.tracer.trace({ stage: 'upstream_subscribed', symbol, channels });
         }
       } else if (control.kind === 'error') {
-        // Distinguish a fatal auth/protocol error from a transient drop for the
-        // operator's benefit; both still recycle with backoff so a redeploy of
-        // corrected credentials can recover the process without a manual kick.
+        // Distinguish a fatal auth error, a connection-limit rejection, and a
+        // generic protocol drop for the operator's benefit. ALL recycle through
+        // the SAME backoff path: a 406 "connection limit exceeded" must back off
+        // (5s → 60s), never hot-loop and re-trip the very limit it hit — the old
+        // deployment may still be holding the single Alpaca slot mid-rollout.
         const fatal = control.code === 401 || control.code === 402;
-        this.log('error', generation, fatal ? 'fatal-auth-error' : 'protocol-error', {
-          code: control.code,
-          message: control.message,
-        });
+        const reason =
+          control.code === 406 ? 'connection-limit' : fatal ? 'fatal-auth-error' : 'protocol-error';
+        this.log('error', generation, reason, { code: control.code, message: control.message });
         this.recycle(generation);
       }
       return;
     }
-    // Not a control frame → market data. Trace what the wire delivered BEFORE
-    // normalization so a value dropped by schema/type mapping is still visible as
-    // "received but not normalized" rather than vanishing silently.
+    // Not a control frame → market data. Track it separately from generic wire
+    // activity so the watchdog never confuses market silence with a dead socket.
+    this.markMarketEvent();
+    // Trace what the wire delivered BEFORE normalization so a value dropped by
+    // schema/type mapping is still visible as "received but not normalized"
+    // rather than vanishing silently.
     const wireType = typeof (message as { T?: unknown })?.T === 'string' ? (message as { T: string }).T : 'unknown';
     const wireSymbol = typeof (message as { S?: unknown })?.S === 'string' ? (message as { S: string }).S : undefined;
     this.tracer.trace({ stage: 'upstream_market_event_received', type: wireType, symbol: wireSymbol });
@@ -310,7 +351,14 @@ export class UpstreamConnection {
     if (this.reconnectPending || this.stopped) return; // exactly one pending reconnect
     this.reconnectPending = true;
     this.setState('reconnecting');
-    const delay = computeBackoffDelayMs(this.attempt, { random: this.random });
+    const delay = computeBackoffDelayMs(this.attempt, {
+      ...DEFAULT_BACKOFF,
+      ...this.options.backoff,
+      random: this.random,
+    });
+    // Log the attempt and the next retry delay (never a secret) so a 406 loop, if
+    // one ever recurs, is a single grep of increasing nextRetryMs values.
+    this.log('warn', this.generation, 'reconnect-scheduled', { attempt: this.attempt, nextRetryMs: delay });
     this.attempt += 1;
     this.cancelReconnect = this.scheduler(() => {
       this.reconnectPending = false;
@@ -319,48 +367,106 @@ export class UpstreamConnection {
     }, delay);
   }
 
-  private armStaleTimer(generation: number): void {
-    const timeout = this.options.staleTimeoutMs ?? 0;
-    if (timeout <= 0) return;
-    this.clearStaleTimer();
-    const tick = (): void => {
-      if (!this.isCurrent(generation) || this.socket === null) return;
-      // Only a fully-ready socket can be judged stale. While connecting or
-      // authenticating we never recycle — a slow handshake is not a dead feed,
-      // and any real connect failure arrives as a close/error event instead.
-      if (this.state !== 'ready') {
-        this.cancelStaleTimer = this.scheduler(tick, timeout);
-        return;
-      }
-      if (this.now() - this.lastMessageAt >= timeout) {
-        // Silent socket past the deadline: recycle through the reconnect path.
-        // Protocol ping/pong count as liveness (see onHeartbeat), so a quiet
-        // FAKEPACA feed with no trades is NOT mistaken for a dead connection.
-        this.log('warn', generation, 'stale-feed');
-        this.recycle(generation);
-        return;
-      }
-      this.cancelStaleTimer = this.scheduler(tick, timeout);
-    };
-    this.cancelStaleTimer = this.scheduler(tick, timeout);
+  /** (Re)arm the single recurring liveness watchdog for `generation`. */
+  private armHeartbeat(generation: number): void {
+    const interval = this.options.heartbeatIntervalMs ?? 0;
+    if (interval <= 0) return; // watchdog disabled
+    this.clearHeartbeat();
+    this.cancelHeartbeat = this.scheduler(() => this.heartbeatTick(generation), interval);
   }
 
-  private markAlive(): void {
-    this.lastMessageAt = this.now();
+  /**
+   * One watchdog tick. Recycles ONLY on a genuine ping/pong failure — never on
+   * mere market silence:
+   *  - a non-ready socket is re-armed, never judged (a slow handshake is not death);
+   *  - ZERO desired subscriptions means silence is expected → keep the socket, do
+   *    not probe and never reconnect (a closed market / idle instance is healthy);
+   *  - recent wire activity (any frame, including a subscription ack or a pong) is
+   *    proof of life → no probe;
+   *  - only a full interval of wire silence triggers an active ping, and the
+   *    reconnect decision is deferred to {@link probeLiveness}.
+   */
+  private heartbeatTick(generation: number): void {
+    if (!this.isCurrent(generation) || this.socket === null) return;
+    const interval = this.options.heartbeatIntervalMs ?? 0;
+    if (interval <= 0) return;
+    if (this.state !== 'ready') {
+      this.armHeartbeat(generation);
+      return;
+    }
+    if (this.options.getSubscriptions().length === 0) {
+      this.armHeartbeat(generation);
+      return;
+    }
+    if (this.now() - this.lastWireMessageAt < interval) {
+      this.armHeartbeat(generation);
+      return;
+    }
+    this.probeLiveness(generation);
+  }
+
+  /** Silent wire → send one protocol ping and recycle only if nothing answers. */
+  private probeLiveness(generation: number): void {
+    const socket = this.socket;
+    if (socket === null) {
+      this.armHeartbeat(generation);
+      return;
+    }
+    const pongTimeout = this.options.pongTimeoutMs ?? DEFAULT_PONG_TIMEOUT_MS;
+    const pingSentAt = this.now();
+    socket.ping();
+    this.clearPongTimer();
+    this.cancelPongTimer = this.scheduler(() => {
+      this.cancelPongTimer = null;
+      if (!this.isCurrent(generation) || this.state !== 'ready' || this.socket === null) {
+        // Superseded, no longer ready, or already torn down: never touch the
+        // (possibly brand-new) current socket. Just re-arm if we still own it.
+        this.armHeartbeat(generation);
+        return;
+      }
+      // ANY frame since the ping (pong, control, or market data) proves the socket
+      // is alive — a quiet market that still answers pong is NOT a failure.
+      if (this.lastWireMessageAt >= pingSentAt) {
+        this.armHeartbeat(generation);
+        return;
+      }
+      // Genuine ping/pong failure. Log the three signals distinctly so an operator
+      // can tell a dead socket from a merely quiet market at a glance.
+      this.log('warn', generation, 'stale-feed', {
+        desiredSymbols: this.options.getSubscriptions().length,
+        lastWireMessageAge: this.now() - this.lastWireMessageAt,
+        lastMarketEventAge: this.lastMarketEventAt === 0 ? -1 : this.now() - this.lastMarketEventAt,
+      });
+      this.recycle(generation);
+    }, pongTimeout);
+  }
+
+  private markWire(): void {
+    this.lastWireMessageAt = this.now();
+  }
+
+  private markMarketEvent(): void {
+    this.lastMarketEventAt = this.now();
   }
 
   /** Detach the current socket's listeners and drop its queued control frames. */
   private teardownSocket(): void {
-    this.clearStaleTimer();
+    this.clearHeartbeat();
+    this.clearPongTimer();
     this.outbox = [];
     const socket = this.socket;
     this.socket = null;
     socket?.detach();
   }
 
-  private clearStaleTimer(): void {
-    this.cancelStaleTimer?.();
-    this.cancelStaleTimer = null;
+  private clearHeartbeat(): void {
+    this.cancelHeartbeat?.();
+    this.cancelHeartbeat = null;
+  }
+
+  private clearPongTimer(): void {
+    this.cancelPongTimer?.();
+    this.cancelPongTimer = null;
   }
 
   private clearReconnect(): void {

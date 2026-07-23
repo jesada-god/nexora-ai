@@ -14,7 +14,9 @@ import {
   HEALTH_PATH,
   isDevelopment,
   isOriginAllowed,
+  isUpstreamReady,
   MAX_MESSAGE_BYTES,
+  READY_PATH,
   resolveAllowedOrigins,
   resolveGatewayPort,
   sanitizeError,
@@ -85,7 +87,11 @@ function main(): void {
     onEvent: (event) => hub.handleUpstreamEvent(event),
     getSubscriptions: () => hub.subscriptionSnapshot(),
     onStateChange: (state) => log('info', `upstream ${state}`),
-    staleTimeoutMs: 30_000,
+    // Liveness is a real protocol ping/pong, NOT market ticks: probe after 15s of
+    // wire silence, recycle only if no pong answers within 10s. A quiet or closed
+    // market never trips this.
+    heartbeatIntervalMs: 15_000,
+    pongTimeoutMs: 10_000,
     tracer,
   });
 
@@ -93,10 +99,20 @@ function main(): void {
   const httpServer = createServer((req: IncomingMessage, res: ServerResponse) => {
     const path = (req.url ?? '').split('?')[0];
     if (req.method === 'GET' && path === HEALTH_PATH) {
+      // Liveness: 200 as long as the server is listening, regardless of upstream
+      // state, so a reconnecting upstream never fails the Railway healthcheck.
       const report = buildHealthReport({ upstreamState: upstream.getState(), feed: config.feed, startedAt });
-      const body = JSON.stringify(report);
       res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' });
-      res.end(body);
+      res.end(JSON.stringify(report));
+      return;
+    }
+    if (req.method === 'GET' && path === READY_PATH) {
+      // Readiness: 200 only when the upstream is actually streaming; 503 while it
+      // is connecting/degraded. The body reports upstreamState honestly either way.
+      const report = buildHealthReport({ upstreamState: upstream.getState(), feed: config.feed, startedAt });
+      const code = isUpstreamReady(upstream.getState()) ? 200 : 503;
+      res.writeHead(code, { 'content-type': 'application/json', 'cache-control': 'no-store' });
+      res.end(JSON.stringify(report));
       return;
     }
     res.writeHead(404, { 'content-type': 'text/plain' });

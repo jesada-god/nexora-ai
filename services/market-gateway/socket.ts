@@ -22,6 +22,12 @@ export interface SocketLike {
   send(data: string): SendResult;
   /** True only while the transport is in the OPEN state. */
   isOpen(): boolean;
+  /**
+   * Send a protocol-level ping as a liveness probe. Never throws and no-ops
+   * unless OPEN; the peer's pong (or any other frame) is the proof of life the
+   * upstream watchdog waits for before ever recycling a socket.
+   */
+  ping(): void;
   close(code?: number, reason?: string): void;
   /** Remove every listener so a superseded socket can no longer re-enter. */
   detach(): void;
@@ -58,6 +64,17 @@ export function fromWs(socket: WsWebSocket): SocketLike {
       }
     },
     isOpen: () => socket.readyState === WS_OPEN,
+    ping: () => {
+      // Guard readyState BEFORE ws.ping — like send(), ws throws synchronously
+      // when the socket is not OPEN, and an unguarded throw here would crash the
+      // watchdog. A ping on a dead socket is pointless anyway.
+      if (socket.readyState !== WS_OPEN) return;
+      try {
+        socket.ping();
+      } catch {
+        // Slipped out of OPEN between the guard and the call — ignore.
+      }
+    },
     close: (code, reason) => {
       try {
         socket.close(code, reason);

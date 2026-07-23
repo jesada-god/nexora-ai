@@ -17,8 +17,21 @@ export const DEFAULT_PORT = 8081;
 /** The only WebSocket upgrade path the Gateway accepts. */
 export const WS_PATH = '/ws';
 
-/** The HTTP liveness/readiness path (never carries secrets). */
+/**
+ * The HTTP LIVENESS path (never carries secrets). Answers 200 whenever the
+ * server is listening on PORT — even while the upstream is (re)connecting — so a
+ * transient Alpaca 406 during a rolling deploy never fails the new instance's
+ * healthcheck and hands the single connection slot back to the old one. This is
+ * the path Railway's healthcheck uses.
+ */
 export const HEALTH_PATH = '/healthz';
+
+/**
+ * The HTTP READINESS path. Unlike {@link HEALTH_PATH}, it answers 200 only when
+ * the upstream is actually streaming (503 otherwise), for callers that want to
+ * gate on a live feed. Railway does NOT use this for liveness.
+ */
+export const READY_PATH = '/readyz';
 
 /**
  * Hard cap on a single inbound WebSocket message. Control frames
@@ -128,6 +141,11 @@ export interface HealthReport {
 
 export function healthStatusFor(upstreamState: UpstreamState): HealthStatus {
   return upstreamState === 'ready' ? 'ready' : 'degraded';
+}
+
+/** True only when the upstream feed is authenticated and streaming. */
+export function isUpstreamReady(upstreamState: UpstreamState): boolean {
+  return upstreamState === 'ready';
 }
 
 export function buildHealthReport(input: {
