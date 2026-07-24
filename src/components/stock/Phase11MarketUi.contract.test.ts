@@ -24,6 +24,8 @@ describe('Phase 11 market UI production contract', () => {
     expect(candleChart).toContain('/api/market/chart?');
     expect(candleChart).not.toContain('aggregateSessionAwareIntraday');
     expect(candleChart).toContain('No candle is mocked, interpolated, forward-filled, or replaced by another provider');
+    expect(candleChart).toContain('OptionToolRealtimeChart');
+    expect(candleChart).not.toContain('TechnicalIndicatorControls');
     expect(chart).toContain('aria-label="Historical range"');
     expect(chart).toContain('aria-label="Candle interval"');
     expect(chart).toContain('compatibleSelection');

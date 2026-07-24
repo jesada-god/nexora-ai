@@ -58,11 +58,6 @@ export function ChartPanel({
   liveRefreshDisabled,
   onSelectionChange,
   onHistoryFallbackChange,
-  technicalIndicatorsEnabled,
-  advancedChartTypesEnabled,
-  extendedIndicatorsEnabled,
-  supportResistanceEnabled,
-  fairValueEnabled,
 }: Props) {
   const { addToast } = useToast();
   const [interval, setInterval] = useState<CandleInterval>('5m');
@@ -123,6 +118,6 @@ export function ChartPanel({
     </section>
     {selectionNotice && <p role="status" className="text-xs text-amber-300">{selectionNotice}</p>}
 
-    <MarketCandleChartPanel symbol={symbol} active={active} interval={interval} range={range} session={session} adjusted={adjusted} currentPrice={currentPrice} marketLabel={marketLabel} liveCandle={liveCandle} liveActive={liveActive} onLiveRefresh={onLiveRefresh} liveRefreshDisabled={liveRefreshDisabled} onHistoryFallbackChange={onHistoryFallbackChange} technicalIndicatorsEnabled={technicalIndicatorsEnabled} advancedChartTypesEnabled={advancedChartTypesEnabled} extendedIndicatorsEnabled={extendedIndicatorsEnabled} supportResistanceEnabled={supportResistanceEnabled} fairValueEnabled={fairValueEnabled} />
+    <MarketCandleChartPanel symbol={symbol} active={active} interval={interval} range={range} session={session} adjusted={adjusted} currentPrice={currentPrice} marketLabel={marketLabel} liveCandle={liveCandle} liveActive={liveActive} onLiveRefresh={onLiveRefresh} liveRefreshDisabled={liveRefreshDisabled} onHistoryFallbackChange={onHistoryFallbackChange} />
   </div>;
 }

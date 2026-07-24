@@ -9,11 +9,12 @@ import { Skeleton } from '@/src/components/ui/Skeleton';
 import { useAppActive } from '@/src/hooks/useAppActive';
 import { chartGatewayResponseSchema, type CandleInterval, type HistoricalRange, type MarketSessionMode } from '@/src/lib/market-data/gateway/contracts';
 import { historyFallbackModeFromStatus, type AcceptedPriceCandidate, type LiveCandle, type MarketDataLabel } from '@/src/lib/stock-detail/market-source';
-import type { HistoricalPrices, MarketDataEnvelope } from '@/src/lib/market-data/types';
 import { resolveChartProvenance } from './chart-live-provenance';
 
-const Chart = dynamic(() => import('./HistoricalChart'), { ssr: false, loading: () => <Skeleton className="h-[420px] w-full" /> });
-const TechnicalIndicatorControls = dynamic(() => import('@/src/components/analytics/TechnicalIndicatorControls').then((module) => module.TechnicalIndicatorControls), { ssr: false });
+const OptionToolRealtimeChart = dynamic(
+  () => import('./option-tool-chart/OptionToolRealtimeChart').then((module) => module.OptionToolRealtimeChart),
+  { ssr: false, loading: () => <Skeleton className="h-[540px] w-full rounded-xl" /> },
+);
 
 type Envelope = { data: unknown; error?: { code?: string; message?: string; retryAfterSeconds?: number; reason?: string; retryable?: boolean } };
 type ChartResult = ReturnType<typeof chartGatewayResponseSchema.parse>;
@@ -34,11 +35,6 @@ interface Props {
   liveRefreshDisabled?: boolean;
   /** Report the newest completed displayed bar up as a history-fallback price candidate. */
   onHistoryFallbackChange?: (fallback: AcceptedPriceCandidate | null) => void;
-  technicalIndicatorsEnabled: boolean;
-  advancedChartTypesEnabled: boolean;
-  extendedIndicatorsEnabled: boolean;
-  supportResistanceEnabled: boolean;
-  fairValueEnabled: boolean;
 }
 
 function limitationMessage(code: string | undefined): string {
@@ -49,14 +45,6 @@ function limitationMessage(code: string | undefined): string {
   if (code === 'invalid-symbol') return 'This instrument is delisted or cannot be resolved safely.';
   if (code === 'not-found' || code === 'insufficient-data') return 'No real Polygon OHLCV is available for this symbol and selection.';
   return 'Market candles are temporarily unavailable.';
-}
-
-function analyticsRange(range: HistoricalRange): HistoricalPrices['range'] {
-  if (range === '1d' || range === '5d' || range === '1m') return '1m';
-  if (range === '3m') return '3m';
-  if (range === '6m') return '6m';
-  if (range === 'ytd' || range === '1y') return '1y';
-  return '5y';
 }
 
 export function MarketCandleChartPanel(props: Props) {
@@ -204,28 +192,6 @@ export function MarketCandleChartPanel(props: Props) {
   }, [result, displayPrices]);
   useEffect(() => { onHistoryFallbackChange?.(historyFallback); }, [historyFallback, onHistoryFallbackChange]);
 
-  const history = useMemo<HistoricalPrices | null>(() => result ? {
-    symbol: result.instrument.canonicalSymbol,
-    range: analyticsRange(range),
-    interval: '1d',
-    prices: displayPrices,
-    providerUsed: result.bars.provider,
-    fallbackReason: null,
-    asOf: result.bars.asOf ? new Date(result.bars.asOf * 1_000).toISOString() : null,
-    freshness: result.bars.dataStatus === 'stale' ? 'stale' : result.bars.dataStatus === 'cached' ? 'cached' : 'fresh',
-    methodology: `Canonical ${interval} Polygon OHLCV for ${result.instrument.providerSymbol}`,
-    limitations: result.bars.warnings,
-  } : null, [displayPrices, interval, range, result]);
-  const meta = useMemo<MarketDataEnvelope<HistoricalPrices>['meta'] | null>(() => result ? {
-    provider: result.bars.provider,
-    timestamp: new Date().toISOString(),
-    freshness: {
-      status: result.bars.dataStatus === 'real-time' || result.bars.dataStatus === 'partial' ? 'realtime' : result.bars.dataStatus,
-      asOf: result.bars.asOf ? new Date(result.bars.asOf * 1_000).toISOString() : null,
-      maxAgeSeconds: ['1D', 'Week', 'Month'].includes(interval) ? 21_600 : 60,
-    },
-  } : null, [interval, result]);
-  const analyticsEnabled = props.technicalIndicatorsEnabled || props.advancedChartTypesEnabled || props.extendedIndicatorsEnabled || props.supportResistanceEnabled || props.fairValueEnabled;
   const cooldown = Math.max(0, Math.ceil((cooldownUntil - now) / 1_000));
   // When the shared source owns this bucket, Refresh triggers exactly one
   // shared request that updates the header and current candle together — it never
@@ -235,14 +201,6 @@ export function MarketCandleChartPanel(props: Props) {
     ? Boolean(liveRefreshDisabled) || !appActive
     : loading || cooldown > 0 || !appActive || error?.retryable === false;
   const refreshLabel = !coveredByLiveSource && cooldown ? `Refresh in ${cooldown}s` : 'Refresh';
-  const tooltipContext = result ? {
-    provider: provenance?.provider ?? result.bars.provider,
-    range,
-    interval,
-    dataStatus: provenance?.realtime ? 'real-time' : result.bars.dataStatus,
-    timezone: result.bars.timezone,
-  } : {};
-
   return <div className="space-y-3" data-testid="market-candle-chart-panel">
     <div className="flex flex-wrap items-center gap-2"><button type="button" disabled={refreshDisabled} onClick={onRefresh} className="min-h-11 rounded-lg border border-slate-700 px-3 text-xs text-slate-300 disabled:opacity-40">{refreshLabel}</button>{provenance?.realtime && liveCandle && <span role="status" className="rounded-full border border-emerald-400/40 bg-emerald-400/10 px-2 py-1 font-mono text-xs text-emerald-300" data-testid="live-candle-status">LIVE · {liveCandle.close.toFixed(2)}</span>}{result && <span className="text-xs text-slate-500">{displayPrices.length.toLocaleString()} bars · {result.bars.timezone} · {result.bars.firstTimestamp ? new Date(result.bars.firstTimestamp * 1_000).toLocaleDateString() : '—'}–{result.bars.lastTimestamp ? new Date(result.bars.lastTimestamp * 1_000).toLocaleDateString() : '—'}</span>}</div>
     <DataProvenance status={provenance?.status ?? (error ? 'unavailable' : 'delayed')} provider={provenance?.provider} asOf={provenance?.asOf} delayedMinutes={provenance?.realtime ? 0 : result?.bars.delayedByMinutes} reason={error?.message}/>
@@ -250,9 +208,13 @@ export function MarketCandleChartPanel(props: Props) {
     {loading && !result && <Skeleton className="h-[420px] w-full rounded-xl" />}
     {error && !loading && <div role="alert" className="flex min-h-[300px] flex-col items-center justify-center rounded-xl border border-amber-500/20 p-4 text-center text-sm text-amber-200"><p>{error.message}</p><p className="mt-1 text-xs text-slate-500">No candle is mocked, interpolated, forward-filled, or replaced by another provider.</p>{error.diagnostics && <details className="mt-2 max-w-xl text-left text-xs text-slate-500"><summary>Development diagnostics</summary><p className="mt-1 break-words">{error.diagnostics}</p></details>}{error.retryable !== false && <button type="button" disabled={cooldown > 0} onClick={() => void request(true)} className="mt-3 min-h-11 rounded-lg border border-slate-700 px-3 disabled:opacity-40">{cooldown ? `Try again in ${cooldown}s` : 'Try again'}</button>}</div>}
     {result && displayPrices.length === 1 && <div role="status" className="rounded-xl border border-amber-500/20 p-5 text-sm text-amber-200">ช่วงนี้มีข้อมูลจริงเพียง 1 แท่ง อาจเป็นหลักทรัพย์เพิ่งเข้าตลาดหรือช่วงที่เลือกสั้นเกินไป กรุณาเลือก range ที่ยาวขึ้น</div>}
-    {result && displayPrices.length >= 2 && history && meta && (analyticsEnabled
-      ? <TechnicalIndicatorControls history={history} meta={meta} interval={interval} visibleBarCount={Math.min(1_260, displayPrices.length)} technicalIndicatorsEnabled={props.technicalIndicatorsEnabled} advancedChartTypesEnabled={props.advancedChartTypesEnabled} extendedIndicatorsEnabled={props.extendedIndicatorsEnabled} supportResistanceEnabled={props.supportResistanceEnabled} fairValueEnabled={props.fairValueEnabled} currentPrice={currentPrice} marketLabel={marketLabel} datasetKey={requestKey} tooltipContext={tooltipContext}/>
-      : <Chart symbol={result.instrument.canonicalSymbol} prices={displayPrices} interval={interval} chartType="candlestick" currentPrice={currentPrice} marketLabel={marketLabel} datasetKey={requestKey} tooltipContext={tooltipContext}/>)}
+    {result && displayPrices.length >= 2 && <OptionToolRealtimeChart
+      symbol={result.instrument.canonicalSymbol}
+      interval={interval}
+      prices={displayPrices}
+      currentPrice={currentPrice}
+      datasetKey={requestKey}
+    />}
     {result && displayPrices.length === 0 && <p className="rounded-xl border border-amber-500/20 p-4 text-sm text-amber-200">No validated real Polygon candles are available for this selection.</p>}
     {process.env.NODE_ENV === 'development' && result && <details className="rounded-xl border border-slate-800 p-3 text-xs text-slate-400"><summary>Development diagnostics</summary><dl className="mt-2 grid gap-1 sm:grid-cols-2"><div>Requested: {symbol}</div><div>Canonical/provider: {result.instrument.canonicalSymbol} / {result.instrument.providerSymbol}</div><div>Exchange/MIC: {result.instrument.exchange ?? '—'} / {result.instrument.mic ?? '—'}</div><div>Asset: {result.instrument.assetType}</div><div>Interval/range: {interval} / {range}</div><div>Actual first/last: {result.bars.firstTimestamp ?? '—'} / {result.bars.lastTimestamp ?? '—'}</div><div>Bars: {result.bars.bars.length}</div><div>Status: {result.bars.dataStatus}</div></dl></details>}
   </div>;
