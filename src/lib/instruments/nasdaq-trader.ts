@@ -7,6 +7,8 @@ export type NasdaqTraderDirectory = 'nasdaqlisted' | 'otherlisted';
 
 const EXCHANGE_NAMES: Readonly<Record<string, string>> = {
   Q: 'NASDAQ',
+  G: 'NASDAQ',
+  S: 'NASDAQ',
   NASDAQ: 'NASDAQ',
   N: 'NYSE',
   NYSE: 'NYSE',

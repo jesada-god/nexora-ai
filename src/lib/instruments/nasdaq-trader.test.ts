@@ -39,6 +39,17 @@ describe('Nasdaq Trader Symbol Directory parser', () => {
     expect(result.instruments.map((row) => row.exchange)).toEqual(['NYSE American', 'IEX', 'UNKNOWN']);
   });
 
+  it('maps every Nasdaq market category to NASDAQ', () => {
+    const header = 'Symbol|Security Name|Market Category|Test Issue|Financial Status|Round Lot Size|ETF|NextShares';
+    const rows = [
+      ['SELECT', 'Nasdaq Global Select', 'Q', 'N', 'N', '100', 'N', 'N'],
+      ['GLOBAL', 'Nasdaq Global Market', 'G', 'N', 'N', '100', 'N', 'N'],
+      ['CAPITAL', 'Nasdaq Capital Market', 'S', 'N', 'N', '100', 'N', 'N'],
+    ].map((row) => row.join('|')).join('\n');
+    const result = parseNasdaqTraderDirectory(`${header}\n${rows}`, 'nasdaqlisted');
+    expect(result.instruments.map((row) => row.exchange)).toEqual(['NASDAQ', 'NASDAQ', 'NASDAQ']);
+  });
+
   it('deduplicates by normalized provider symbol across both directories', () => {
     const merged = mergeNasdaqTraderDirectories(
       parseNasdaqTraderDirectory(fixture('nasdaqlisted.txt'), 'nasdaqlisted'),

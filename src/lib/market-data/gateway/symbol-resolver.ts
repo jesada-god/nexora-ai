@@ -19,7 +19,11 @@ export interface InstrumentRepository {
 }
 
 const EXCHANGES: Array<{ pattern: RegExp; mic: string; timezone: string; supported: boolean }> = [
-  { pattern: /NASDAQ/i, mic: 'XNAS', timezone: 'America/New_York', supported: true },
+  // Nasdaq Trader's `Market Category` uses Q (Global Select), G (Global
+  // Market), and S (Capital Market). Accept those legacy stored values as well
+  // as normalized NASDAQ names so an instrument sync fallback cannot make a
+  // valid Nasdaq symbol unsupported.
+  { pattern: /NASDAQ|^[QGS]$/i, mic: 'XNAS', timezone: 'America/New_York', supported: true },
   { pattern: /NYSE\s*ARCA|ARCA/i, mic: 'ARCX', timezone: 'America/New_York', supported: true },
   { pattern: /NYSE/i, mic: 'XNYS', timezone: 'America/New_York', supported: true },
   { pattern: /AMEX|NYSE\s*MKT/i, mic: 'XASE', timezone: 'America/New_York', supported: true },
@@ -101,4 +105,3 @@ export class SymbolResolver {
     });
   }
 }
-

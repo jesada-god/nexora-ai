@@ -8,6 +8,8 @@ const records: InstrumentRecord[] = [
   { symbol: 'AAPL', provider_symbol: 'AAPL', name: 'Apple Inc.', exchange: 'NASDAQ', asset_type: 'Stock', currency: 'USD', status: 'active' },
   { symbol: 'RKLB', provider_symbol: 'RKLB', name: 'Rocket Lab', exchange: 'NASDAQ', asset_type: 'Stock', currency: 'USD', status: 'active' },
   { symbol: 'NVDA', provider_symbol: 'NVDA', name: 'NVIDIA', exchange: 'NASDAQ', asset_type: 'Stock', currency: 'USD', status: 'active' },
+  { symbol: 'NVTS', provider_symbol: 'NVTS', name: 'Navitas Semiconductor', exchange: 'G', asset_type: 'Stock', currency: 'USD', status: 'active' },
+  { symbol: 'CAP', provider_symbol: 'CAP', name: 'Nasdaq Capital Market Corp', exchange: 'S', asset_type: 'Stock', currency: 'USD', status: 'active' },
   { symbol: 'SPY', provider_symbol: 'SPY', name: 'SPDR S&P 500 ETF', exchange: 'NYSE Arca', asset_type: 'ETF', currency: 'USD', status: 'active' },
   { symbol: 'BRK.B', provider_symbol: 'BRK.B', name: 'Berkshire Hathaway Class B', exchange: 'NYSE', asset_type: 'Stock', currency: 'USD', status: 'active' },
   { symbol: 'OLD', provider_symbol: 'OLD', name: 'Old Corp', exchange: 'NYSE', asset_type: 'Stock', currency: 'USD', status: 'delisted' },
@@ -21,7 +23,7 @@ class FixtureRepository implements InstrumentRepository {
 describe('SymbolResolver', () => {
   const resolver = new SymbolResolver(new FixtureRepository());
 
-  it.each(['AAPL', 'RKLB', 'NVDA'])('resolves %s through market_instruments identity', async (symbol) => {
+  it.each(['AAPL', 'RKLB', 'NVDA', 'NVTS', 'CAP'])('resolves %s through market_instruments identity', async (symbol) => {
     await expect(resolver.resolve(symbol)).resolves.toMatchObject({ canonicalSymbol: symbol, providerSymbol: symbol, mic: 'XNAS', supported: true });
   });
 
@@ -36,4 +38,3 @@ describe('SymbolResolver', () => {
     await expect(resolver.resolve('GLOBAL')).resolves.toMatchObject({ supported: false, unsupportedReason: 'Unsupported exchange: LSE' });
   });
 });
-
